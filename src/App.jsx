@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { 
   CheckCircle2, Clock, AlertCircle, Plus, Search, 
-  LogOut, ShieldAlert, LayoutDashboard, Ticket as TicketIcon, Trash2, Edit3, Play, Square, MessageSquare, FolderPlus, RefreshCw, Calendar, Users, Crown, Folder, UserCheck 
+  LogOut, ShieldAlert, LayoutDashboard, Ticket as TicketIcon, Trash2, Edit3, Play, Square, MessageSquare, FolderPlus, RefreshCw, Calendar, Users, Crown, Folder, UserCheck, Kanban, ListFilter, ArrowUpDown 
 } from 'lucide-react';
 
 const API_URL = 'http://127.0.0.1:8000'; 
@@ -12,17 +12,24 @@ export default function App() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   
-  const [activeTab, setActiveTab] = useState('dashboard');
+  // Dashboard é a página principal por defeito e guarda o estado no F5
+  const [activeTab, setActiveTab] = useState(localStorage.getItem('activeTab') || 'dashboard');
+  const [taskViewMode, setTaskViewMode] = useState('kanban'); // 'kanban' ou 'list'
 
   const [tickets, setTickets] = useState([]);
   const [projects, setProjects] = useState([]);
   const [teams, setTeams] = useState([]);
   const [usersList, setUsersList] = useState([]);
   const [stats, setStats] = useState({ total_tickets: 0, to_do: 0, in_progress: 0, done: 0 });
+  
+  // Filtros e Ordenação
   const [search, setSearch] = useState('');
   const [teamSearch, setTeamSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
-  
+  const [projectFilter, setProjectFilter] = useState('');
+  const [priorityFilter, setPriorityFilter] = useState('');
+  const [sortBy, setSortBy] = useState('newest');
+
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
@@ -35,7 +42,7 @@ export default function App() {
   const [editMode, setEditMode] = useState(false);
   const [currentTicketId, setCurrentTicketId] = useState(null);
 
-  // Form Fields de Tarefa (incluindo Atribuição)
+  // Form Fields de Tarefa
   const [newTitle, setNewTitle] = useState('');
   const [newDesc, setNewDesc] = useState('');
   const [newPriority, setNewPriority] = useState('Média');
@@ -70,7 +77,7 @@ export default function App() {
 
   useEffect(() => {
     if (token) fetchData();
-  }, [token, search, statusFilter]);
+  }, [token, search, statusFilter, projectFilter, priorityFilter]);
 
   useEffect(() => {
     let interval = null;
@@ -81,6 +88,11 @@ export default function App() {
     }
     return () => clearInterval(interval);
   }, [activeTimerTask]);
+
+  const changeTab = (tabName) => {
+    setActiveTab(tabName);
+    localStorage.setItem('activeTab', tabName);
+  };
 
   const formatTime = (totalSeconds) => {
     const hours = Math.floor(totalSeconds / 3600);
@@ -128,6 +140,7 @@ export default function App() {
 
   const handleLogout = () => {
     localStorage.removeItem('token');
+    localStorage.removeItem('activeTab');
     setToken('');
   };
 
@@ -137,7 +150,6 @@ export default function App() {
       const headers = { Authorization: `Bearer ${token}` };
       let query = `${API_URL}/tickets/?`;
       if (search) query += `search=${search}&`;
-      if (statusFilter) query += `status=${statusFilter}&`;
 
       try {
         const ticketsRes = await axios.get(query, { headers });
@@ -350,6 +362,16 @@ export default function App() {
     }
   };
 
+  const handleStatusChange = async (ticketId, newStat) => {
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      await axios.put(`${API_URL}/tickets/${ticketId}`, { status: newStat }, { headers });
+      fetchData();
+    } catch (err) {
+      alert('Erro ao alterar o estado.');
+    }
+  };
+
   const handleDeleteTicket = async (id) => {
     if (!window.confirm("Tens a certeza que pretendes apagar esta tarefa?")) return;
     try {
@@ -358,6 +380,23 @@ export default function App() {
       fetchData();
     } catch (err) {
       alert('Erro ao apagar tarefa.');
+    }
+  };
+
+  // Drag and Drop para o Kanban
+  const handleDragStart = (e, ticketId) => {
+    e.dataTransfer.setData('text/plain', ticketId);
+  };
+
+  const handleDragOver = (e) => {
+    e.preventDefault();
+  };
+
+  const handleDrop = (e, targetStatus) => {
+    e.preventDefault();
+    const ticketId = e.dataTransfer.getData('text/plain');
+    if (ticketId) {
+      handleStatusChange(Number(ticketId), targetStatus);
     }
   };
 
@@ -403,16 +442,37 @@ export default function App() {
   const dueTodayTickets = tickets.filter(t => t.due_date && t.due_date.split('T')[0] === todayStr && t.status !== 'Done');
   const overdueTickets = tickets.filter(t => t.due_date && t.due_date.split('T')[0] < todayStr && t.status !== 'Done');
 
-  const displayedTickets = tickets.filter(ticket => {
-    if (statusFilter) return true;
-    return ticket.status !== 'Done';
+  // Filtrar e Ordenar Tarefas
+  const filteredTickets = tickets.filter(ticket => {
+    if (projectFilter && ticket.project_id !== Number(projectFilter)) return false;
+    if (priorityFilter && ticket.priority !== priorityFilter) return false;
+    
+    if (taskViewMode === 'list') {
+      if (statusFilter) {
+        if (ticket.status !== statusFilter) return false;
+      } else {
+        if (ticket.status === 'Done') return false;
+      }
+    }
+    return true;
+  });
+
+  const sortedTickets = [...filteredTickets].sort((a, b) => {
+    if (sortBy === 'newest') {
+      return b.id - a.id;
+    } else if (sortBy === 'deadline') {
+      if (!a.due_date) return 1;
+      if (!b.due_date) return -1;
+      return new Date(a.due_date) - new Date(b.due_date);
+    } else if (sortBy === 'priority') {
+      const weights = { 'Crítica': 4, 'Alta': 3, 'Média': 2, 'Baixa': 1 };
+      return (weights[b.priority] || 0) - (weights[a.priority] || 0);
+    }
+    return 0;
   });
 
   const activeTasksList = tickets.filter(t => t.status !== 'Done');
-
-  const filteredTeams = teams.filter(team => 
-    team.name.toLowerCase().includes(teamSearch.toLowerCase())
-  );
+  const filteredTeams = teams.filter(team => team.name.toLowerCase().includes(teamSearch.toLowerCase()));
 
   const getUserDisplayName = (user) => {
     if (!user) return 'Desconhecido';
@@ -431,10 +491,22 @@ export default function App() {
     return user ? getUserDisplayName(user) : null;
   };
 
+  const getProjectName = (projectId) => {
+    const p = projects.find(proj => proj.id === projectId);
+    return p ? p.name : 'Projeto Geral';
+  };
+
+  const kanbanColumns = [
+    { id: 'To Do', title: 'A fazer', color: 'bg-zinc-500' },
+    { id: 'In Progress', title: 'Em progresso', color: 'bg-blue-500' },
+    { id: 'In Review', title: 'Em revisão', color: 'bg-amber-500' },
+    { id: 'Done', title: 'Concluído', color: 'bg-emerald-500' }
+  ];
+
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 flex overflow-hidden">
       
-      {/* SIDEBAR LATERAL */}
+      {/* SIDEBAR */}
       <aside className="w-64 bg-zinc-900 border-r border-zinc-800 flex flex-col p-4 shrink-0 h-screen sticky top-0">
         <div className="flex items-center gap-3 px-3 py-3 mb-6">
           <div className="p-2 bg-zinc-800 rounded-lg"><TicketIcon className="w-5 h-5 text-zinc-200" /></div>
@@ -442,28 +514,16 @@ export default function App() {
         </div>
 
         <nav className="space-y-1.5 flex-1">
-          <button 
-            onClick={() => setActiveTab('dashboard')} 
-            className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition ${activeTab === 'dashboard' ? 'bg-zinc-100 text-zinc-950 shadow-sm' : 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-850'}`}
-          >
+          <button onClick={() => changeTab('dashboard')} className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition ${activeTab === 'dashboard' ? 'bg-zinc-100 text-zinc-950 shadow-sm' : 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-850'}`}>
             <LayoutDashboard className="w-4 h-4" /> Dashboard
           </button>
-          <button 
-            onClick={() => setActiveTab('projects')} 
-            className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition ${activeTab === 'projects' ? 'bg-zinc-100 text-zinc-950 shadow-sm' : 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-850'}`}
-          >
+          <button onClick={() => changeTab('projects')} className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition ${activeTab === 'projects' ? 'bg-zinc-100 text-zinc-950 shadow-sm' : 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-850'}`}>
             <FolderPlus className="w-4 h-4" /> Projetos
           </button>
-          <button 
-            onClick={() => setActiveTab('tasks')} 
-            className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition ${activeTab === 'tasks' ? 'bg-zinc-100 text-zinc-950 shadow-sm' : 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-850'}`}
-          >
+          <button onClick={() => changeTab('tasks')} className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition ${activeTab === 'tasks' ? 'bg-zinc-100 text-zinc-950 shadow-sm' : 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-850'}`}>
             <CheckCircle2 className="w-4 h-4" /> Tarefas
           </button>
-          <button 
-            onClick={() => setActiveTab('teams')} 
-            className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition ${activeTab === 'teams' ? 'bg-zinc-100 text-zinc-950 shadow-sm' : 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-850'}`}
-          >
+          <button onClick={() => changeTab('teams')} className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition ${activeTab === 'teams' ? 'bg-zinc-100 text-zinc-950 shadow-sm' : 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-850'}`}>
             <Users className="w-4 h-4" /> Equipas
           </button>
         </nav>
@@ -475,10 +535,10 @@ export default function App() {
         </div>
       </aside>
 
-      {/* MAIN CONTENT AREA */}
+      {/* MAIN CONTENT */}
       <main className="flex-1 h-screen overflow-y-auto p-8 pb-16">
         
-        {/* BARRA SUPERIOR DE CRONÓMETRO ATIVO */}
+        {/* CRONÓMETRO ATIVO */}
         {activeTimerTask && (
           <div className="mb-6 bg-gradient-to-r from-blue-900/40 to-zinc-900 border border-blue-500/30 p-4 rounded-2xl flex items-center justify-between shadow-lg">
             <div className="flex items-center gap-3">
@@ -497,17 +557,16 @@ export default function App() {
           </div>
         )}
 
-        {/* CONTEÚDO DINÂMICO */}
+        {/* DASHBOARD (AGORA COM AS TAREFAS COMPLETAS COMO QUERIAS) */}
         {activeTab === 'dashboard' && (
           <div>
             <div className="flex items-center justify-between mb-6">
-              <h1 className="text-xl font-bold tracking-tight">Dashboard</h1>
+              <h1 className="text-xl font-bold tracking-tight">Dashboard & Tarefas Ativas</h1>
               <button onClick={fetchData} className="flex items-center gap-2 bg-zinc-900 border border-zinc-800 hover:bg-zinc-850 text-zinc-300 px-4 py-2 rounded-xl text-sm transition">
                 <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} /> Atualizar
               </button>
             </div>
 
-            {/* 4 Cards Superiores */}
             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4 mb-6">
               <div className="bg-zinc-900/80 border border-zinc-800/80 p-5 rounded-2xl flex items-center justify-between">
                 <div>
@@ -533,65 +592,18 @@ export default function App() {
               <div className="bg-zinc-900/80 border border-zinc-800/80 p-5 rounded-2xl flex items-center justify-between">
                 <div>
                   <p className="text-xs font-medium text-blue-400 uppercase tracking-wider">Horas Hoje</p>
-                  <p className="text-3xl font-bold mt-1 text-blue-400">
-                    {tickets.reduce((acc, t) => acc + (t.tracked_hours || 0), 0).toFixed(1)}h
-                  </p>
+                  <p className="text-3xl font-bold mt-1 text-blue-400">{tickets.reduce((acc, t) => acc + (t.tracked_hours || 0), 0).toFixed(1)}h</p>
                 </div>
                 <div className="p-3 bg-blue-500/10 rounded-xl text-blue-400 border border-blue-500/20"><Clock className="w-5 h-5" /></div>
               </div>
             </div>
 
-            {/* Grelha Prazo Hoje & Atrasadas */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8">
-              <div className="bg-zinc-900/60 border border-zinc-800/80 p-6 rounded-2xl">
-                <div className="flex items-center gap-2.5 mb-2 text-amber-400 font-semibold text-sm">
-                  <span className="text-base">🔥</span> Prazo Hoje ({dueTodayTickets.length})
-                </div>
-                <p className="text-xs text-zinc-400 mb-4">Tarefas com deadline para hoje</p>
-                {dueTodayTickets.length === 0 ? (
-                  <div className="py-6 text-center text-xs text-zinc-500 border border-dashed border-zinc-800/80 rounded-xl">
-                    Nenhuma tarefa com prazo para hoje
-                  </div>
-                ) : (
-                  <div className="space-y-2">
-                    {dueTodayTickets.map(t => (
-                      <div key={t.id} className="bg-zinc-950 border border-zinc-800 p-3 rounded-xl flex items-center justify-between text-xs">
-                        <span className="font-medium text-zinc-200">{t.title}</span>
-                        <span className="text-amber-400 font-mono">Hoje</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              <div className="bg-zinc-900/60 border border-zinc-800/80 p-6 rounded-2xl">
-                <div className="flex items-center gap-2.5 mb-2 text-red-400 font-semibold text-sm">
-                  <AlertCircle className="w-4 h-4" /> Atrasadas ({overdueTickets.length})
-                </div>
-                <p className="text-xs text-zinc-400 mb-4">Tarefas com prazo ultrapassado</p>
-                {overdueTickets.length === 0 ? (
-                  <div className="py-6 text-center text-xs text-zinc-500 border border-dashed border-zinc-800/80 rounded-xl">
-                    Nenhuma tarefa atrasada
-                  </div>
-                ) : (
-                  <div className="space-y-2">
-                    {overdueTickets.map(t => (
-                      <div key={t.id} className="bg-zinc-950 border border-red-500/20 p-3 rounded-xl flex items-center justify-between text-xs">
-                        <span className="font-medium text-zinc-200">{t.title}</span>
-                        <span className="text-red-400 font-mono">{t.due_date.split('T')[0]}</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {/* ÁREA DE TAREFAS ATIVAS */}
+            {/* Lista Completa de Tarefas na Dashboard */}
             <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-6">
               <div className="flex items-center justify-between mb-4">
                 <div>
-                  <h2 className="text-base font-semibold text-zinc-100">Tarefas Ativas</h2>
-                  <p className="text-xs text-zinc-400">As tuas tarefas para despachar</p>
+                  <h2 className="text-base font-semibold text-zinc-100">Tarefas do Sistema</h2>
+                  <p className="text-xs text-zinc-400">Visão geral e gestão rápida</p>
                 </div>
                 <button onClick={handleOpenCreateModal} className="flex items-center gap-1.5 bg-zinc-100 text-zinc-950 font-medium text-xs px-3.5 py-2 rounded-xl hover:bg-white transition">
                   <Plus className="w-3.5 h-3.5" /> Nova Tarefa
@@ -600,7 +612,7 @@ export default function App() {
 
               {activeTasksList.length === 0 ? (
                 <div className="py-10 text-center text-xs text-zinc-500 border border-dashed border-zinc-800 rounded-xl">
-                  Não tens tarefas ativas neste momento.
+                  Nenhuma tarefa ativa neste momento.
                 </div>
               ) : (
                 <div className="space-y-2.5">
@@ -608,31 +620,33 @@ export default function App() {
                     const isRunning = activeTimerTask?.id === ticket.id;
                     const assignee = getAssigneeName(ticket.assigned_to_id);
                     return (
-                      <div key={ticket.id} className="bg-zinc-950 border border-zinc-800/80 p-4 rounded-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 hover:border-zinc-700 transition">
+                      <div key={ticket.id} className="bg-zinc-950 border border-zinc-800/80 p-4 rounded-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
                         <div className="space-y-1">
                           <div className="flex items-center gap-2.5">
                             <span className="text-xs text-zinc-500 font-mono">#{ticket.id}</span>
                             <h3 className="font-medium text-sm text-zinc-100">{ticket.title}</h3>
+                            <span className="text-[10px] bg-zinc-900 border border-zinc-800 px-2 py-0.5 rounded text-zinc-400">📁 {getProjectName(ticket.project_id)}</span>
                             {isRunning && <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-400 border border-blue-500/30 animate-pulse">ATIVO</span>}
                           </div>
                           <p className="text-xs text-zinc-400 pl-6">{ticket.description || 'Sem descrição'}</p>
                           <div className="text-[11px] text-zinc-500 pl-6 flex items-center gap-3 pt-1">
-                            <span>⏱️ Registado: <strong>{ticket.tracked_hours || 0}h</strong></span>
-                            <span>🎯 Estimado: <strong>{ticket.estimated_hours || 0}h</strong></span>
-                            {ticket.due_date && <span>📅 Deadline: <strong>{ticket.due_date.split('T')[0]}</strong></span>}
-                            {assignee && (
-                              <span className="flex items-center gap-1 text-zinc-300 bg-zinc-900 px-2 py-0.5 rounded-md border border-zinc-800">
-                                <UserCheck className="w-3 h-3 text-emerald-400" /> {assignee}
-                              </span>
-                            )}
+                            <span>⏱️ <strong>{ticket.tracked_hours || 0}h</strong> / 🎯 <strong>{ticket.estimated_hours || 0}h</strong></span>
+                            {ticket.due_date && <span>📅 <strong>{ticket.due_date.split('T')[0]}</strong></span>}
+                            {assignee && <span className="text-emerald-400">👤 {assignee}</span>}
                           </div>
                         </div>
                         <div className="flex items-center gap-2">
-                          <button 
-                            onClick={() => startTimer(ticket)} 
-                            className={`p-2 rounded-lg border transition ${isRunning ? 'bg-blue-500 text-zinc-950 border-blue-400' : 'bg-zinc-900 text-zinc-400 hover:text-zinc-100 border-zinc-800'}`} 
-                            title="Iniciar Cronómetro"
+                          <select 
+                            value={ticket.status} 
+                            onChange={e => handleStatusChange(ticket.id, e.target.value)}
+                            className="bg-zinc-900 border border-zinc-800 text-xs text-zinc-300 rounded-lg px-2.5 py-1.5 focus:outline-none"
                           >
+                            <option value="To Do">A fazer</option>
+                            <option value="In Progress">Em progresso</option>
+                            <option value="In Review">Em revisão</option>
+                            <option value="Done">Concluído</option>
+                          </select>
+                          <button onClick={() => startTimer(ticket)} className={`p-2 rounded-lg border transition ${isRunning ? 'bg-blue-500 text-zinc-950 border-blue-400' : 'bg-zinc-900 text-zinc-400 hover:text-zinc-100 border-zinc-800'}`} title="Iniciar Cronómetro">
                             <Play className="w-3.5 h-3.5 fill-current" />
                           </button>
                           <button onClick={() => openComments(ticket)} className="p-2 text-zinc-400 hover:text-zinc-100 bg-zinc-900 border border-zinc-800 rounded-lg transition" title="Comentários">
@@ -651,6 +665,7 @@ export default function App() {
           </div>
         )}
 
+        {/* PROJETOS */}
         {activeTab === 'projects' && (
           <div>
             <div className="flex items-center justify-between mb-6">
@@ -676,94 +691,194 @@ export default function App() {
           </div>
         )}
 
+        {/* TAREFAS (COM KANBAN / LISTA + ORDENAÇÃO) */}
         {activeTab === 'tasks' && (
-          <div>
-            <div className="flex flex-col sm:flex-row gap-4 items-center justify-between mb-6">
-              <div className="relative w-full sm:w-80">
+          <div className="flex flex-col h-[calc(100vh-100px)]">
+            <div className="flex flex-col sm:flex-row gap-4 items-center justify-between mb-6 shrink-0">
+              <div className="relative w-full sm:w-64">
                 <Search className="w-4 h-4 text-zinc-500 absolute left-3.5 top-3" />
                 <input type="text" placeholder="Pesquisar tarefas..." value={search} onChange={e => setSearch(e.target.value)} className="w-full bg-zinc-900 border border-zinc-800 rounded-xl pl-10 pr-4 py-2 text-sm text-zinc-100 focus:outline-none" />
               </div>
-              <div className="flex items-center gap-3 w-full sm:w-auto">
-                <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)} className="bg-zinc-900 border border-zinc-800 text-zinc-300 text-sm rounded-xl px-3.5 py-2 focus:outline-none">
-                  <option value="">Todos os Estados (Ativos)</option>
-                  <option value="To Do">Por Fazer</option>
-                  <option value="In Progress">Em Progresso</option>
-                  <option value="Done">Concluído</option>
+
+              <div className="flex items-center gap-3 w-full sm:w-auto flex-wrap">
+                <div className="bg-zinc-900 border border-zinc-800 p-1 rounded-xl flex items-center">
+                  <button onClick={() => setTaskViewMode('kanban')} className={`px-3 py-1.5 rounded-lg text-xs font-medium transition flex items-center gap-1.5 ${taskViewMode === 'kanban' ? 'bg-zinc-800 text-zinc-100 shadow-sm' : 'text-zinc-400 hover:text-zinc-200'}`}>
+                    <Kanban className="w-3.5 h-3.5" /> Kanban
+                  </button>
+                  <button onClick={() => setTaskViewMode('list')} className={`px-3 py-1.5 rounded-lg text-xs font-medium transition flex items-center gap-1.5 ${taskViewMode === 'list' ? 'bg-zinc-800 text-zinc-100 shadow-sm' : 'text-zinc-400 hover:text-zinc-200'}`}>
+                    <ListFilter className="w-3.5 h-3.5" /> Lista
+                  </button>
+                </div>
+
+                <div className="flex items-center bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-sm text-zinc-300">
+                  <ArrowUpDown className="w-3.5 h-3.5 mr-2 text-zinc-500" />
+                  <select value={sortBy} onChange={e => setSortBy(e.target.value)} className="bg-transparent text-zinc-300 focus:outline-none text-xs">
+                    <option value="newest" className="bg-zinc-900">Ordem de criação</option>
+                    <option value="deadline" className="bg-zinc-900">Deadline (Prazo)</option>
+                    <option value="priority" className="bg-zinc-900">Prioridade</option>
+                  </select>
+                </div>
+
+                <select value={projectFilter} onChange={e => setProjectFilter(e.target.value)} className="bg-zinc-900 border border-zinc-800 text-zinc-300 text-sm rounded-xl px-3 py-2 focus:outline-none">
+                  <option value="">Todos os projetos</option>
+                  {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
                 </select>
+
+                {taskViewMode === 'list' && (
+                  <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)} className="bg-zinc-900 border border-zinc-800 text-zinc-300 text-sm rounded-xl px-3 py-2 focus:outline-none">
+                    <option value="">Estados (Ativos)</option>
+                    <option value="To Do">A fazer</option>
+                    <option value="In Progress">Em progresso</option>
+                    <option value="In Review">Em revisão</option>
+                    <option value="Done">Concluído</option>
+                  </select>
+                )}
+
                 <button onClick={handleOpenCreateModal} className="flex items-center gap-2 bg-zinc-100 text-zinc-950 font-medium text-sm px-4 py-2 rounded-xl hover:bg-white transition ml-auto sm:ml-0">
                   <Plus className="w-4 h-4" /> Nova Tarefa
                 </button>
               </div>
             </div>
 
-            <div className="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden">
-              {loading ? <div className="p-8 text-center text-zinc-500 text-sm">A carregar...</div> : displayedTickets.length === 0 ? <div className="p-12 text-center text-zinc-500 text-sm">Nenhuma tarefa encontrada.</div> : (
-                <div className="divide-y divide-zinc-800">
-                  {displayedTickets.map(ticket => {
-                    const isRunning = activeTimerTask?.id === ticket.id;
-                    const isDone = ticket.status === 'Done';
-                    const assignee = getAssigneeName(ticket.assigned_to_id);
-                    return (
-                      <div key={ticket.id} className={`p-5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 transition ${isDone ? 'bg-zinc-900/30 opacity-60' : 'hover:bg-zinc-850/50'}`}>
-                        <div className="space-y-1">
-                          <div className="flex items-center gap-3">
-                            <span className="text-xs text-zinc-500 font-mono">#{ticket.id}</span>
-                            <h2 className={`font-medium text-sm ${isDone ? 'line-through text-zinc-400' : 'text-zinc-100'}`}>{ticket.title}</h2>
-                            {isDone && <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">CONCLUÍDO</span>}
-                            {isRunning && <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-400 border border-blue-500/30 animate-pulse">ATIVO</span>}
-                          </div>
-                          <p className="text-xs text-zinc-400 pl-7">{ticket.description || 'Sem descrição'}</p>
-                          <div className="text-[11px] text-zinc-500 pl-7 flex items-center gap-3">
-                            <span>⏱️ Registado: <strong>{ticket.tracked_hours || 0}h</strong></span>
-                            <span>🎯 Estimado: <strong>{ticket.estimated_hours || 0}h</strong></span>
-                            {ticket.due_date && <span>📅 Deadline: <strong>{ticket.due_date.split('T')[0]}</strong></span>}
-                            {assignee && (
-                              <span className="flex items-center gap-1 text-zinc-300 bg-zinc-900 px-2 py-0.5 rounded-md border border-zinc-800">
-                                <UserCheck className="w-3 h-3 text-emerald-400" /> {assignee}
-                              </span>
-                            )}
-                          </div>
+            {taskViewMode === 'kanban' ? (
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-4 flex-1 overflow-x-auto pb-4 items-start">
+                {kanbanColumns.map(col => {
+                  const columnTickets = sortedTickets.filter(t => t.status === col.id);
+                  return (
+                    <div 
+                      key={col.id} 
+                      onDragOver={handleDragOver}
+                      onDrop={(e) => handleDrop(e, col.id)}
+                      className="bg-zinc-900/60 border border-zinc-800/80 rounded-2xl p-4 flex flex-col h-full min-h-[500px]"
+                    >
+                      <div className="flex items-center justify-between mb-4 pb-3 border-b border-zinc-800">
+                        <div className="flex items-center gap-2.5">
+                          <span className={`w-2.5 h-2.5 rounded-full ${col.color}`}></span>
+                          <h3 className="font-semibold text-sm text-zinc-200">{col.title}</h3>
                         </div>
-                        <div className="flex items-center gap-3">
-                          <button 
-                            onClick={() => startTimer(ticket)} 
-                            disabled={isDone}
-                            className={`p-2 rounded-lg border transition ${isDone ? 'bg-zinc-950 border-zinc-900 text-zinc-700 cursor-not-allowed opacity-40' : isRunning ? 'bg-blue-500 text-zinc-950 border-blue-400' : 'bg-zinc-950 text-zinc-400 hover:text-zinc-100 border-zinc-800'}`} 
-                            title={isDone ? 'Cronómetro desativado (tarefa concluída)' : 'Iniciar Cronómetro'}
-                          >
-                            <Play className="w-4 h-4 fill-current" />
-                          </button>
-                          <button onClick={() => openComments(ticket)} className="p-2 text-zinc-400 hover:text-zinc-100 bg-zinc-950 border border-zinc-800 rounded-lg transition" title="Comentários">
-                            <MessageSquare className="w-4 h-4" />
-                          </button>
-                          <button onClick={() => handleOpenEditModal(ticket)} className="p-2 text-zinc-400 hover:text-zinc-100 bg-zinc-950 border border-zinc-800 rounded-lg transition" title="Editar">
-                            <Edit3 className="w-4 h-4" />
-                          </button>
-                          <button onClick={() => handleDeleteTicket(ticket.id)} className="p-2 text-red-400 hover:text-red-300 bg-zinc-950 border border-zinc-800 rounded-lg transition" title="Apagar">
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        </div>
+                        <span className="text-xs font-mono text-zinc-400 bg-zinc-800 px-2 py-0.5 rounded-full">{columnTickets.length}</span>
                       </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
+
+                      <div className="flex-1 overflow-y-auto space-y-3 pr-1">
+                        {columnTickets.length === 0 ? (
+                          <div className="h-32 border border-dashed border-zinc-800/80 rounded-xl flex items-center justify-center text-xs text-zinc-600">
+                            Arraste tarefas aqui
+                          </div>
+                        ) : (
+                          columnTickets.map(ticket => {
+                            const isRunning = activeTimerTask?.id === ticket.id;
+                            const assignee = getAssigneeName(ticket.assigned_to_id);
+                            return (
+                              <div 
+                                key={ticket.id}
+                                draggable
+                                onDragStart={(e) => handleDragStart(e, ticket.id)}
+                                className="bg-zinc-950 border border-zinc-800/90 hover:border-zinc-700 p-4 rounded-xl cursor-grab active:cursor-grabbing transition space-y-3 shadow-sm group"
+                              >
+                                <div className="flex items-start justify-between gap-2">
+                                  <span className="text-xs font-mono text-zinc-500">#{ticket.id}</span>
+                                  <div className="flex items-center gap-1 opacity-80 group-hover:opacity-100 transition">
+                                    <button onClick={() => startTimer(ticket)} title="Iniciar Cronómetro" className={`p-1.5 rounded-md border transition ${isRunning ? 'bg-blue-500 text-zinc-950 border-blue-400 animate-pulse' : 'bg-zinc-900 text-zinc-400 hover:text-zinc-100 border-zinc-800'}`}>
+                                      <Play className="w-3 h-3 fill-current" />
+                                    </button>
+                                    <button onClick={() => openComments(ticket)} title="Comentários" className="p-1.5 bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-zinc-100 rounded-md transition">
+                                      <MessageSquare className="w-3 h-3" />
+                                    </button>
+                                    <button onClick={() => handleOpenEditModal(ticket)} title="Editar" className="p-1.5 bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-zinc-100 rounded-md transition">
+                                      <Edit3 className="w-3 h-3" />
+                                    </button>
+                                    <button onClick={() => handleDeleteTicket(ticket.id)} title="Apagar" className="p-1.5 bg-zinc-900 border border-zinc-800 text-red-400 hover:text-red-300 rounded-md transition">
+                                      <Trash2 className="w-3 h-3" />
+                                    </button>
+                                  </div>
+                                </div>
+
+                                <div>
+                                  <h4 className="font-medium text-sm text-zinc-100 leading-snug">{ticket.title}</h4>
+                                  <p className="text-xs text-zinc-400 mt-1 line-clamp-2">{ticket.description || 'Sem descrição'}</p>
+                                </div>
+
+                                <div className="flex items-center justify-between text-[11px] pt-2 border-t border-zinc-900">
+                                  <span className="bg-zinc-900 text-zinc-400 px-2 py-0.5 rounded border border-zinc-800">📁 {getProjectName(ticket.project_id)}</span>
+                                  {assignee && <span className="text-emerald-400 font-medium">👤 {assignee}</span>}
+                                </div>
+                              </div>
+                            );
+                          })
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden flex-1 overflow-y-auto">
+                {sortedTickets.length === 0 ? (
+                  <div className="p-12 text-center text-zinc-500 text-sm">Nenhuma tarefa encontrada.</div>
+                ) : (
+                  <div className="divide-y divide-zinc-800">
+                    {sortedTickets.map(ticket => {
+                      const isRunning = activeTimerTask?.id === ticket.id;
+                      const isDone = ticket.status === 'Done';
+                      const assignee = getAssigneeName(ticket.assigned_to_id);
+                      return (
+                        <div key={ticket.id} className={`p-5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 transition ${isDone ? 'bg-zinc-900/30 opacity-60' : 'hover:bg-zinc-850/50'}`}>
+                          <div className="space-y-1">
+                            <div className="flex items-center gap-3">
+                              <span className="text-xs text-zinc-500 font-mono">#{ticket.id}</span>
+                              <h2 className={`font-medium text-sm ${isDone ? 'line-through text-zinc-400' : 'text-zinc-100'}`}>{ticket.title}</h2>
+                              <span className="text-[10px] bg-zinc-950 border border-zinc-800 px-2 py-0.5 rounded text-zinc-400">📁 {getProjectName(ticket.project_id)}</span>
+                              {isDone && <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">CONCLUÍDO</span>}
+                              {isRunning && <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-400 border border-blue-500/30 animate-pulse">ATIVO</span>}
+                            </div>
+                            <p className="text-xs text-zinc-400 pl-7">{ticket.description || 'Sem descrição'}</p>
+                            <div className="text-[11px] text-zinc-500 pl-7 flex items-center gap-3">
+                              <span>⏱️ <strong>{ticket.tracked_hours || 0}h</strong> / 🎯 <strong>{ticket.estimated_hours || 0}h</strong></span>
+                              {ticket.due_date && <span>📅 <strong>{ticket.due_date.split('T')[0]}</strong></span>}
+                              {assignee && <span className="text-emerald-400">👤 {assignee}</span>}
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-3">
+                            <select 
+                              value={ticket.status} 
+                              onChange={e => handleStatusChange(ticket.id, e.target.value)}
+                              className="bg-zinc-950 border border-zinc-800 text-xs text-zinc-300 rounded-lg px-2.5 py-1.5 focus:outline-none"
+                            >
+                              <option value="To Do">A fazer</option>
+                              <option value="In Progress">Em progresso</option>
+                              <option value="In Review">Em revisão</option>
+                              <option value="Done">Concluído</option>
+                            </select>
+                            <button onClick={() => startTimer(ticket)} disabled={isDone} className={`p-2 rounded-lg border transition ${isDone ? 'opacity-40 cursor-not-allowed bg-zinc-950 border-zinc-900 text-zinc-700' : isRunning ? 'bg-blue-500 text-zinc-950 border-blue-400' : 'bg-zinc-950 text-zinc-400 hover:text-zinc-100 border-zinc-800'}`} title="Iniciar Cronómetro">
+                              <Play className="w-4 h-4 fill-current" />
+                            </button>
+                            <button onClick={() => openComments(ticket)} className="p-2 text-zinc-400 hover:text-zinc-100 bg-zinc-950 border border-zinc-800 rounded-lg transition" title="Comentários">
+                              <MessageSquare className="w-4 h-4" />
+                            </button>
+                            <button onClick={() => handleOpenEditModal(ticket)} className="p-2 text-zinc-400 hover:text-zinc-100 bg-zinc-950 border border-zinc-800 rounded-lg transition" title="Editar">
+                              <Edit3 className="w-4 h-4" />
+                            </button>
+                            <button onClick={() => handleDeleteTicket(ticket.id)} className="p-2 text-red-400 hover:text-red-300 bg-zinc-950 border border-zinc-800 rounded-lg transition" title="Apagar">
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         )}
 
+        {/* EQUIPAS */}
         {activeTab === 'teams' && (
           <div>
             <div className="flex flex-col sm:flex-row gap-4 items-center justify-between mb-6">
               <div className="relative w-full sm:w-80">
                 <Search className="w-4 h-4 text-zinc-500 absolute left-3.5 top-3" />
-                <input 
-                  type="text" 
-                  placeholder="Pesquisar equipas..." 
-                  value={teamSearch} 
-                  onChange={e => setTeamSearch(e.target.value)} 
-                  className="w-full bg-zinc-900 border border-zinc-800 rounded-xl pl-10 pr-4 py-2 text-sm text-zinc-100 focus:outline-none" 
-                />
+                <input type="text" placeholder="Pesquisar equipas..." value={teamSearch} onChange={e => setTeamSearch(e.target.value)} className="w-full bg-zinc-900 border border-zinc-800 rounded-xl pl-10 pr-4 py-2 text-sm text-zinc-100 focus:outline-none" />
               </div>
               <button onClick={() => setShowTeamModal(true)} className="flex items-center gap-2 bg-zinc-100 text-zinc-950 font-medium text-sm px-4 py-2 rounded-xl hover:bg-white transition ml-auto sm:ml-0">
                 <Users className="w-4 h-4" /> Nova Equipa
@@ -781,75 +896,44 @@ export default function App() {
                   const leaderName = getTeamLeaderName(team);
                   return (
                     <div key={team.id} className="bg-zinc-900 border border-zinc-800/80 rounded-2xl p-6 shadow-xl space-y-6">
-                      
-                      {/* Cabeçalho do Card */}
                       <div className="flex items-start justify-between">
                         <div>
                           <h2 className="text-lg font-bold text-zinc-100 tracking-tight">{team.name}</h2>
                           <p className="text-xs text-zinc-400 mt-0.5">{team.description || 'Sem descrição'}</p>
                         </div>
                         <div className="flex items-center gap-2">
-                          <button onClick={() => openEditTeamModal(team)} className="p-2 bg-zinc-950 border border-zinc-800 text-zinc-400 hover:text-zinc-100 rounded-xl transition" title="Editar Equipa">
-                            <Edit3 className="w-4 h-4" />
-                          </button>
-                          <button onClick={() => handleDeleteTeam(team.id)} className="p-2 bg-zinc-950 border border-zinc-800 text-red-400 hover:text-red-300 rounded-xl transition" title="Apagar Equipa">
-                            <Trash2 className="w-4 h-4" />
-                          </button>
+                          <button onClick={() => openEditTeamModal(team)} className="p-2 bg-zinc-950 border border-zinc-800 text-zinc-400 hover:text-zinc-100 rounded-xl transition"><Edit3 className="w-4 h-4" /></button>
+                          <button onClick={() => handleDeleteTeam(team.id)} className="p-2 bg-zinc-950 border border-zinc-800 text-red-400 hover:text-red-300 rounded-xl transition"><Trash2 className="w-4 h-4" /></button>
                         </div>
                       </div>
 
-                      {/* Meta info */}
                       <div className="flex flex-wrap items-center gap-6 text-xs text-zinc-300 border-y border-zinc-800/60 py-4">
-                        <div className="flex items-center gap-2">
-                          <Crown className="w-4 h-4 text-amber-400" />
-                          <span>Líder: <strong className="text-zinc-100">{leaderName}</strong></span>
-                        </div>
-                        <div className="flex items-center gap-2 text-zinc-400">
-                          <Users className="w-4 h-4 text-zinc-400" />
-                          <span>{team.members ? team.members.length : 0} membro(s)</span>
-                        </div>
-                        <div className="flex items-center gap-2 text-zinc-400">
-                          <Folder className="w-4 h-4 text-zinc-400" />
-                          <span>{teamProjects.length} projeto(s) associado(s)</span>
-                        </div>
+                        <div className="flex items-center gap-2"><Crown className="w-4 h-4 text-amber-400" /><span>Líder: <strong className="text-zinc-100">{leaderName}</strong></span></div>
+                        <div className="flex items-center gap-2 text-zinc-400"><Users className="w-4 h-4 text-zinc-400" /><span>{team.members ? team.members.length : 0} membro(s)</span></div>
+                        <div className="flex items-center gap-2 text-zinc-400"><Folder className="w-4 h-4 text-zinc-400" /><span>{teamProjects.length} projeto(s)</span></div>
                       </div>
 
-                      {/* Secção de Membros e Projetos */}
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                         <div className="space-y-3">
-                          <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-400">Membros da Equipa</h3>
+                          <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-400">Membros</h3>
                           <div className="space-y-2">
-                            {team.members && team.members.length > 0 ? (
-                              team.members.map(member => (
-                                <div key={member.id} className="bg-zinc-950 border border-zinc-800/80 p-3 rounded-xl flex items-center justify-between text-xs">
-                                  <span className="font-medium text-zinc-200">{getUserDisplayName(member)}</span>
-                                  {member.id === team.owner_id && (
-                                    <span className="text-[10px] text-amber-400 font-medium bg-amber-500/10 border border-amber-500/20 px-2 py-0.5 rounded-lg">Líder</span>
-                                  )}
-                                </div>
-                              ))
-                            ) : (
-                              <div className="bg-zinc-950 border border-zinc-800/80 p-3 rounded-xl text-xs text-zinc-500">Sem membros.</div>
-                            )}
+                            {team.members && team.members.map(member => (
+                              <div key={member.id} className="bg-zinc-950 border border-zinc-800 p-3 rounded-xl flex items-center justify-between text-xs">
+                                <span className="font-medium text-zinc-200">{getUserDisplayName(member)}</span>
+                                {member.id === team.owner_id && <span className="text-[10px] text-amber-400 font-medium bg-amber-500/10 border border-amber-500/20 px-2 py-0.5 rounded-lg">Líder</span>}
+                              </div>
+                            ))}
                           </div>
                         </div>
-
                         <div className="space-y-3">
-                          <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-400">Projetos da Equipa</h3>
+                          <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-400">Projetos</h3>
                           <div className="space-y-2">
-                            {teamProjects.length > 0 ? (
-                              teamProjects.map(proj => (
-                                <div key={proj.id} className="bg-zinc-950 border border-zinc-800/80 p-3 rounded-xl text-xs text-zinc-200 font-medium">
-                                  📁 {proj.name}
-                                </div>
-                              ))
-                            ) : (
-                              <div className="bg-zinc-950 border border-zinc-800/80 p-3 rounded-xl text-xs text-zinc-500">Nenhum projeto associado.</div>
-                            )}
+                            {teamProjects.map(proj => (
+                              <div key={proj.id} className="bg-zinc-950 border border-zinc-800 p-3 rounded-xl text-xs text-zinc-200 font-medium">📁 {proj.name}</div>
+                            ))}
                           </div>
                         </div>
                       </div>
-
                     </div>
                   );
                 })}
@@ -860,7 +944,7 @@ export default function App() {
 
       </main>
 
-      {/* Modal de Criar/Editar Tarefa */}
+      {/* MODAL DE TAREFA */}
       {showModal && (
         <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 z-50">
           <div className="bg-zinc-900 border border-zinc-800 rounded-2xl max-w-md w-full p-6 shadow-2xl">
@@ -884,7 +968,10 @@ export default function App() {
                 <div>
                   <label className="block text-xs font-medium text-zinc-400 mb-1">Estado</label>
                   <select value={newStatus} onChange={e => setNewStatus(e.target.value)} className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-sm text-zinc-100 focus:outline-none">
-                    <option value="To Do">Por Fazer</option><option value="In Progress">Em Progresso</option><option value="Done">Concluído</option>
+                    <option value="To Do">A fazer</option>
+                    <option value="In Progress">Em progresso</option>
+                    <option value="In Review">Em revisão</option>
+                    <option value="Done">Concluído</option>
                   </select>
                 </div>
               </div>
@@ -899,9 +986,7 @@ export default function App() {
                   <label className="block text-xs font-medium text-zinc-400 mb-1">Atribuir a</label>
                   <select value={newAssignedTo} onChange={e => setNewAssignedTo(e.target.value)} className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-sm text-zinc-100 focus:outline-none">
                     <option value="">Não atribuído</option>
-                    {usersList.map(u => (
-                      <option key={u.id} value={u.id}>{getUserDisplayName(u)}</option>
-                    ))}
+                    {usersList.map(u => <option key={u.id} value={u.id}>{getUserDisplayName(u)}</option>)}
                   </select>
                 </div>
               </div>
@@ -924,7 +1009,7 @@ export default function App() {
         </div>
       )}
 
-      {/* Demais Modais mantêm-se iguais (Projeto, Equipa, Comentários) */}
+      {/* OUTROS MODAIS */}
       {showProjectModal && (
         <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 z-50">
           <div className="bg-zinc-900 border border-zinc-800 rounded-2xl max-w-md w-full p-6 shadow-2xl">
@@ -964,26 +1049,18 @@ export default function App() {
                 <label className="block text-xs font-medium text-zinc-400 mb-1">Líder da Equipa</label>
                 <select value={newTeamOwnerId} onChange={e => setNewTeamOwnerId(e.target.value)} className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2 text-sm text-zinc-100 focus:outline-none">
                   <option value="">Seleciona o líder...</option>
-                  {usersList.map(u => (
-                    <option key={u.id} value={u.id}>{getUserDisplayName(u)}</option>
-                  ))}
+                  {usersList.map(u => <option key={u.id} value={u.id}>{getUserDisplayName(u)}</option>)}
                 </select>
               </div>
               <div>
-                <label className="block text-xs font-medium text-zinc-400 mb-1.5 uppercase tracking-wider">Membros da Equipa</label>
+                <label className="block text-xs font-medium text-zinc-400 mb-1.5 uppercase tracking-wider">Membros</label>
                 <div className="bg-zinc-950 border border-zinc-800 rounded-xl p-3 space-y-2 max-h-40 overflow-y-auto">
                   {usersList.map(user => {
                     const isSelected = newTeamMemberIds.includes(user.id);
                     return (
-                      <div 
-                        key={user.id} 
-                        onClick={() => toggleNewTeamMember(user.id)}
-                        className={`p-2.5 rounded-lg flex items-center justify-between text-xs cursor-pointer transition ${isSelected ? 'bg-zinc-800 border border-zinc-700 text-zinc-100' : 'bg-zinc-900/50 text-zinc-400 hover:bg-zinc-900'}`}
-                      >
+                      <div key={user.id} onClick={() => toggleNewTeamMember(user.id)} className={`p-2.5 rounded-lg flex items-center justify-between text-xs cursor-pointer transition ${isSelected ? 'bg-zinc-800 border border-zinc-700 text-zinc-100' : 'bg-zinc-900/50 text-zinc-400 hover:bg-zinc-900'}`}>
                         <span>{getUserDisplayName(user)}</span>
-                        <span className={`text-[10px] px-2 py-0.5 rounded ${isSelected ? 'bg-emerald-500/20 text-emerald-400 font-bold' : 'bg-zinc-800 text-zinc-500'}`}>
-                          {isSelected ? 'Selecionado' : 'Adicionar'}
-                        </span>
+                        <span className={`text-[10px] px-2 py-0.5 rounded ${isSelected ? 'bg-emerald-500/20 text-emerald-400 font-bold' : 'bg-zinc-800 text-zinc-500'}`}>{isSelected ? 'Selecionado' : 'Adicionar'}</span>
                       </div>
                     );
                   })}
@@ -1014,9 +1091,7 @@ export default function App() {
               <div>
                 <label className="block text-xs font-medium text-zinc-400 mb-1">Líder da Equipa</label>
                 <select value={editTeamOwnerId} onChange={e => setEditTeamOwnerId(e.target.value)} className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2 text-sm text-zinc-100 focus:outline-none">
-                  {usersList.map(u => (
-                    <option key={u.id} value={u.id}>{getUserDisplayName(u)}</option>
-                  ))}
+                  {usersList.map(u => <option key={u.id} value={u.id}>{getUserDisplayName(u)}</option>)}
                 </select>
               </div>
               <div>
@@ -1025,15 +1100,9 @@ export default function App() {
                   {usersList.map(user => {
                     const isSelected = selectedMemberIds.includes(user.id);
                     return (
-                      <div 
-                        key={user.id} 
-                        onClick={() => toggleMemberSelection(user.id)}
-                        className={`p-2.5 rounded-lg flex items-center justify-between text-xs cursor-pointer transition ${isSelected ? 'bg-zinc-800 border border-zinc-700 text-zinc-100' : 'bg-zinc-900/50 text-zinc-400 hover:bg-zinc-900'}`}
-                      >
+                      <div key={user.id} onClick={() => toggleMemberSelection(user.id)} className={`p-2.5 rounded-lg flex items-center justify-between text-xs cursor-pointer transition ${isSelected ? 'bg-zinc-800 border border-zinc-700 text-zinc-100' : 'bg-zinc-900/50 text-zinc-400 hover:bg-zinc-900'}`}>
                         <span>{getUserDisplayName(user)}</span>
-                        <span className={`text-[10px] px-2 py-0.5 rounded ${isSelected ? 'bg-emerald-500/20 text-emerald-400 font-bold' : 'bg-zinc-800 text-zinc-500'}`}>
-                          {isSelected ? 'Membro' : 'Adicionar'}
-                        </span>
+                        <span className={`text-[10px] px-2 py-0.5 rounded ${isSelected ? 'bg-emerald-500/20 text-emerald-400 font-bold' : 'bg-zinc-800 text-zinc-500'}`}>{isSelected ? 'Membro' : 'Adicionar'}</span>
                       </div>
                     );
                   })}
@@ -1045,15 +1114,9 @@ export default function App() {
                   {projects.map(proj => {
                     const isSelected = selectedProjectIds.includes(proj.id);
                     return (
-                      <div 
-                        key={proj.id} 
-                        onClick={() => toggleProjectSelection(proj.id)}
-                        className={`p-2.5 rounded-lg flex items-center justify-between text-xs cursor-pointer transition ${isSelected ? 'bg-zinc-800 border border-zinc-700 text-zinc-100' : 'bg-zinc-900/50 text-zinc-400 hover:bg-zinc-900'}`}
-                      >
+                      <div key={proj.id} onClick={() => toggleProjectSelection(proj.id)} className={`p-2.5 rounded-lg flex items-center justify-between text-xs cursor-pointer transition ${isSelected ? 'bg-zinc-800 border border-zinc-700 text-zinc-100' : 'bg-zinc-900/50 text-zinc-400 hover:bg-zinc-900'}`}>
                         <span>{proj.name}</span>
-                        <span className={`text-[10px] px-2 py-0.5 rounded ${isSelected ? 'bg-blue-500/20 text-blue-400 font-bold' : 'bg-zinc-800 text-zinc-500'}`}>
-                          {isSelected ? 'Associado' : 'Adicionar'}
-                        </span>
+                        <span className={`text-[10px] px-2 py-0.5 rounded ${isSelected ? 'bg-blue-500/20 text-blue-400 font-bold' : 'bg-zinc-800 text-zinc-500'}`}>{isSelected ? 'Associado' : 'Adicionar'}</span>
                       </div>
                     );
                   })}
