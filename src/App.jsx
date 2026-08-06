@@ -2,10 +2,10 @@ import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { 
   CheckCircle2, Clock, AlertCircle, Plus, Search, 
-  LogOut, ShieldAlert, LayoutDashboard, Ticket as TicketIcon 
+  LogOut, ShieldAlert, LayoutDashboard, Ticket as TicketIcon, Trash2, Edit3, Play, Square, Check
 } from 'lucide-react';
 
-const API_URL = 'https://flowpulse-hqkh.onrender.com'; 
+const API_URL = 'http://127.0.0.1:8000'; 
 
 export default function App() {
   const [token, setToken] = useState(localStorage.getItem('token') || '');
@@ -13,6 +13,7 @@ export default function App() {
   const [password, setPassword] = useState('');
   
   const [tickets, setTickets] = useState([]);
+  const [projects, setProjects] = useState([]);
   const [stats, setStats] = useState({ total_tickets: 0, to_do: 0, in_progress: 0, done: 0 });
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
@@ -20,17 +21,76 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
+  // Cronómetro / Timer Ativo
+  const [activeTimerTask, setActiveTimerTask] = useState(null);
+  const [secondsElapsed, setSecondsElapsed] = useState(0);
+
+  // Modais
   const [showModal, setShowModal] = useState(false);
+  const [editMode, setEditMode] = useState(false);
+  const [currentTicketId, setCurrentTicketId] = useState(null);
+
+  // Form Fields
   const [newTitle, setNewTitle] = useState('');
   const [newDesc, setNewDesc] = useState('');
   const [newPriority, setNewPriority] = useState('Média');
+  const [newStatus, setNewStatus] = useState('To Do');
   const [newProjectId, setNewProjectId] = useState(1);
+  const [newEstimatedHours, setNewEstimatedHours] = useState(0);
 
   useEffect(() => {
     if (token) {
       fetchData();
     }
   }, [token, search, statusFilter]);
+
+  // Gestão do Cronómetro Global
+  useEffect(() => {
+    let interval = null;
+    if (activeTimerTask) {
+      interval = setInterval(() => {
+        setSecondsElapsed((prev) => prev + 1);
+      }, 1000);
+    } else {
+      clearInterval(interval);
+    }
+    return () => clearInterval(interval);
+  }, [activeTimerTask]);
+
+  const formatTime = (totalSeconds) => {
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+    return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+  };
+
+  const startTimer = (task) => {
+    if (activeTimerTask) {
+      stopTimer(); // Para o anterior se houver
+    }
+    setActiveTimerTask(task);
+    setSecondsElapsed(0);
+  };
+
+  const stopTimer = async () => {
+    if (!activeTimerTask) return;
+    
+    const hoursSpent = secondsElapsed / 3600; // converter segundos em horas decimais
+    const updatedTrackedHours = (activeTimerTask.tracked_hours || 0) + hoursSpent;
+
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      await axios.put(`${API_URL}/tickets/${activeTimerTask.id}`, {
+        tracked_hours: Number(updatedTrackedHours.toFixed(2))
+      }, { headers });
+
+      setActiveTimerTask(null);
+      setSecondsElapsed(0);
+      fetchData();
+    } catch (err) {
+      alert('Erro ao guardar o tempo registado.');
+    }
+  };
 
   const handleLogin = async (e) => {
     e.preventDefault();
@@ -66,13 +126,15 @@ export default function App() {
       if (search) query += `search=${search}&`;
       if (statusFilter) query += `status=${statusFilter}&`;
 
-      const [ticketsRes, statsRes] = await Promise.all([
+      const [ticketsRes, statsRes, projectsRes] = await Promise.all([
         axios.get(query, { headers }),
-        axios.get(`${API_URL}/tickets/me/stats`, { headers })
+        axios.get(`${API_URL}/tickets/me/stats`, { headers }),
+        axios.get(`${API_URL}/projects/`, { headers })
       ]);
 
       setTickets(ticketsRes.data);
       setStats(statsRes.data);
+      setProjects(projectsRes.data);
     } catch (err) {
       console.error(err);
       if (err.response?.status === 401) handleLogout();
@@ -81,24 +143,63 @@ export default function App() {
     }
   };
 
-  const handleCreateTicket = async (e) => {
+  const handleOpenCreateModal = () => {
+    setEditMode(false);
+    setNewTitle('');
+    setNewDesc('');
+    setNewPriority('Média');
+    setNewStatus('To Do');
+    setNewEstimatedHours(0);
+    setNewProjectId(projects.length > 0 ? projects[0].id : 1);
+    setShowModal(true);
+  };
+
+  const handleOpenEditModal = (ticket) => {
+    setEditMode(true);
+    setCurrentTicketId(ticket.id);
+    setNewTitle(ticket.title);
+    setNewDesc(ticket.description || '');
+    setNewPriority(ticket.priority);
+    setNewStatus(ticket.status);
+    setNewEstimatedHours(ticket.estimated_hours || 0);
+    setNewProjectId(ticket.project_id);
+    setShowModal(true);
+  };
+
+  const handleSaveTicket = async (e) => {
     e.preventDefault();
     try {
       const headers = { Authorization: `Bearer ${token}` };
-      await axios.post(`${API_URL}/tickets/`, {
+      const payload = {
         title: newTitle,
         description: newDesc,
         priority: newPriority,
+        status: newStatus,
         project_id: Number(newProjectId),
-        status: "To Do"
-      }, { headers });
+        estimated_hours: Number(newEstimatedHours)
+      };
+
+      if (editMode) {
+        await axios.put(`${API_URL}/tickets/${currentTicketId}`, payload, { headers });
+      } else {
+        await axios.post(`${API_URL}/tickets/`, payload, { headers });
+      }
 
       setShowModal(false);
-      setNewTitle('');
-      setNewDesc('');
       fetchData();
     } catch (err) {
-      alert('Erro ao criar ticket. Tens a certeza que estás logado como Manager? E que o Projeto com esse ID existe?');
+      alert('Erro ao guardar a tarefa. Verifica os dados.');
+    }
+  };
+
+  const handleDeleteTicket = async (id) => {
+    if (!window.confirm("Tens a certeza que pretendes apagar esta tarefa?")) return;
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      await axios.delete(`${API_URL}/tickets/${id}`, { headers });
+      fetchData();
+    } catch (err) {
+      alert('Erro ao apagar a tarefa.');
     }
   };
 
@@ -124,7 +225,7 @@ export default function App() {
 
           <form onSubmit={handleLogin} className="space-y-4">
             <div>
-              <label className="block text-xs font-medium text-zinc-400 mb-1.5 uppercase tracking-wider">Email (Username)</label>
+              <label className="block text-xs font-medium text-zinc-400 mb-1.5 uppercase tracking-wider">Email</label>
               <input 
                 type="text" 
                 value={email} 
@@ -175,21 +276,46 @@ export default function App() {
       </header>
 
       <main className="max-w-6xl mx-auto px-6 mt-8">
+        {/* Banner do Cronómetro Ativo */}
+        {activeTimerTask && (
+          <div className="mb-6 bg-gradient-to-r from-blue-900/40 to-zinc-900 border border-blue-500/30 p-4 rounded-2xl flex items-center justify-between shadow-lg">
+            <div className="flex items-center gap-3">
+              <div className="p-2 bg-blue-500/20 text-blue-400 rounded-xl animate-pulse">
+                <Clock className="w-5 h-5" />
+              </div>
+              <div>
+                <p className="text-xs text-blue-400 font-medium uppercase tracking-wider">A trabalhar em:</p>
+                <p className="text-sm font-semibold text-zinc-100">{activeTimerTask.title}</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-4">
+              <span className="font-mono text-xl font-bold tracking-wider text-zinc-100">{formatTime(secondsElapsed)}</span>
+              <button 
+                onClick={stopTimer}
+                className="bg-red-500/20 hover:bg-red-500/30 border border-red-500/30 text-red-400 p-2.5 rounded-xl transition flex items-center gap-2 text-xs font-medium"
+                title="Parar e Registar Horas"
+              >
+                <Square className="w-4 h-4 fill-current" /> Parar
+              </button>
+            </div>
+          </div>
+        )}
+
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
           <div className="bg-zinc-900 border border-zinc-800 p-5 rounded-xl">
-            <p className="text-xs font-medium text-zinc-400 uppercase tracking-wider">Total Atribuídos</p>
+            <p className="text-xs font-medium text-zinc-400 uppercase tracking-wider">Total de Tarefas</p>
             <p className="text-2xl font-semibold mt-1">{stats.total_tickets}</p>
           </div>
           <div className="bg-zinc-900 border border-zinc-800 p-5 rounded-xl">
-            <p className="text-xs font-medium text-amber-400 uppercase tracking-wider">To Do</p>
+            <p className="text-xs font-medium text-amber-400 uppercase tracking-wider">Por Fazer</p>
             <p className="text-2xl font-semibold mt-1">{stats.to_do}</p>
           </div>
           <div className="bg-zinc-900 border border-zinc-800 p-5 rounded-xl">
-            <p className="text-xs font-medium text-blue-400 uppercase tracking-wider">In Progress</p>
+            <p className="text-xs font-medium text-blue-400 uppercase tracking-wider">Em Progresso</p>
             <p className="text-2xl font-semibold mt-1">{stats.in_progress}</p>
           </div>
           <div className="bg-zinc-900 border border-zinc-800 p-5 rounded-xl">
-            <p className="text-xs font-medium text-emerald-400 uppercase tracking-wider">Done</p>
+            <p className="text-xs font-medium text-emerald-400 uppercase tracking-wider">Concluído</p>
             <p className="text-2xl font-semibold mt-1">{stats.done}</p>
           </div>
         </div>
@@ -213,25 +339,25 @@ export default function App() {
               className="bg-zinc-900 border border-zinc-800 text-zinc-300 text-sm rounded-xl px-3.5 py-2 focus:outline-none focus:border-zinc-700"
             >
               <option value="">Todos os Estados</option>
-              <option value="To Do">To Do</option>
-              <option value="In Progress">In Progress</option>
-              <option value="Done">Done</option>
+              <option value="To Do">Por Fazer</option>
+              <option value="In Progress">Em Progresso</option>
+              <option value="Done">Concluído</option>
             </select>
 
             <button 
-              onClick={() => setShowModal(true)}
+              onClick={handleOpenCreateModal}
               className="flex items-center gap-2 bg-zinc-100 text-zinc-950 font-medium text-sm px-4 py-2 rounded-xl hover:bg-white transition ml-auto sm:ml-0"
             >
-              <Plus className="w-4 h-4" /> Novo Ticket
+              <Plus className="w-4 h-4" /> Nova Tarefa
             </button>
           </div>
         </div>
 
         <div className="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden">
           {loading ? (
-            <div className="p-8 text-center text-zinc-500 text-sm">A carregar tickets...</div>
+            <div className="p-8 text-center text-zinc-500 text-sm">A carregar tarefas...</div>
           ) : tickets.length === 0 ? (
-            <div className="p-12 text-center text-zinc-500 text-sm">Nenhum ticket encontrado.</div>
+            <div className="p-12 text-center text-zinc-500 text-sm">Nenhuma tarefa encontrada.</div>
           ) : (
             <div className="divide-y divide-zinc-800">
               {tickets.map((ticket) => {
@@ -240,10 +366,17 @@ export default function App() {
                   ticket.priority === 'Alta' ? 'bg-amber-500/10 text-amber-400 border-amber-500/20' :
                   'bg-blue-500/10 text-blue-400 border-blue-500/20';
 
+                const statusText = 
+                  ticket.status === 'Done' ? 'Concluído' :
+                  ticket.status === 'In Progress' ? 'Em Progresso' :
+                  'Por Fazer';
+
                 const statusColor = 
                   ticket.status === 'Done' ? 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20' :
                   ticket.status === 'In Progress' ? 'text-blue-400 bg-blue-500/10 border-blue-500/20' :
                   'text-amber-400 bg-amber-500/10 border-amber-500/20';
+
+                const isRunning = activeTimerTask?.id === ticket.id;
 
                 return (
                   <div key={ticket.id} className="p-5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 hover:bg-zinc-850/50 transition">
@@ -254,14 +387,47 @@ export default function App() {
                         <span className={`text-[10px] font-medium px-2 py-0.5 rounded-full border ${priorityColor}`}>
                           {ticket.priority}
                         </span>
+                        {isRunning && (
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-400 border border-blue-500/30 animate-pulse">
+                            ATIVO
+                          </span>
+                        )}
                       </div>
                       <p className="text-xs text-zinc-400 line-clamp-1 pl-7">{ticket.description || 'Sem descrição'}</p>
+                      <div className="text-[11px] text-zinc-500 pl-7 flex items-center gap-3">
+                        <span>⏱️ Registado: <strong>{ticket.tracked_hours || 0}h</strong></span>
+                        <span>🎯 Estimado: <strong>{ticket.estimated_hours || 0}h</strong></span>
+                      </div>
                     </div>
 
                     <div className="flex items-center gap-3 pl-7 sm:pl-0">
                       <span className={`text-xs px-2.5 py-1 rounded-lg border font-medium ${statusColor}`}>
-                        {ticket.status}
+                        {statusText}
                       </span>
+
+                      {/* Botão de Play para o Cronómetro */}
+                      <button 
+                        onClick={() => startTimer(ticket)}
+                        className={`p-2 rounded-lg border transition ${isRunning ? 'bg-blue-500 text-zinc-950 border-blue-400' : 'bg-zinc-950 text-zinc-400 hover:text-zinc-100 border-zinc-800'}`}
+                        title="Iniciar Cronómetro"
+                      >
+                        <Play className="w-4 h-4 fill-current" />
+                      </button>
+                      
+                      <button 
+                        onClick={() => handleOpenEditModal(ticket)}
+                        className="p-2 text-zinc-400 hover:text-zinc-100 bg-zinc-950 border border-zinc-800 rounded-lg transition"
+                        title="Editar Tarefa"
+                      >
+                        <Edit3 className="w-4 h-4" />
+                      </button>
+                      <button 
+                        onClick={() => handleDeleteTicket(ticket.id)}
+                        className="p-2 text-red-400 hover:text-red-300 bg-zinc-950 border border-zinc-800 rounded-lg transition"
+                        title="Apagar Tarefa"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
                     </div>
                   </div>
                 );
@@ -274,8 +440,8 @@ export default function App() {
       {showModal && (
         <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 z-50">
           <div className="bg-zinc-900 border border-zinc-800 rounded-2xl max-w-md w-full p-6 shadow-2xl">
-            <h2 className="text-lg font-semibold mb-4">Criar Novo Ticket</h2>
-            <form onSubmit={handleCreateTicket} className="space-y-4">
+            <h2 className="text-lg font-semibold mb-4">{editMode ? 'Editar Tarefa' : 'Criar Nova Tarefa'}</h2>
+            <form onSubmit={handleSaveTicket} className="space-y-4">
               <div>
                 <label className="block text-xs font-medium text-zinc-400 mb-1">Título</label>
                 <input 
@@ -310,11 +476,42 @@ export default function App() {
                   </select>
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-zinc-400 mb-1">ID do Projeto</label>
-                  <input 
-                    type="number" 
+                  <label className="block text-xs font-medium text-zinc-400 mb-1">Estado</label>
+                  <select 
+                    value={newStatus}
+                    onChange={(e) => setNewStatus(e.target.value)}
+                    className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-sm text-zinc-100 focus:outline-none"
+                  >
+                    <option value="To Do">Por Fazer</option>
+                    <option value="In Progress">Em Progresso</option>
+                    <option value="Done">Concluído</option>
+                  </select>
+                </div>
+              </div>
+              
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-zinc-400 mb-1">Projeto</label>
+                  <select 
                     value={newProjectId} 
                     onChange={(e) => setNewProjectId(e.target.value)}
+                    className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2 text-sm text-zinc-100 focus:outline-none"
+                    required
+                  >
+                    {projects.map((proj) => (
+                      <option key={proj.id} value={proj.id}>
+                        {proj.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-zinc-400 mb-1">Horas Estimadas</label>
+                  <input 
+                    type="number" 
+                    step="0.5"
+                    value={newEstimatedHours} 
+                    onChange={(e) => setNewEstimatedHours(e.target.value)}
                     className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2 text-sm text-zinc-100 focus:outline-none"
                   />
                 </div>
@@ -332,7 +529,7 @@ export default function App() {
                   type="submit"
                   className="bg-zinc-100 text-zinc-950 font-medium text-sm px-4 py-2 rounded-xl hover:bg-white transition"
                 >
-                  Guardar Ticket
+                  {editMode ? 'Atualizar Tarefa' : 'Guardar Tarefa'}
                 </button>
               </div>
             </form>
