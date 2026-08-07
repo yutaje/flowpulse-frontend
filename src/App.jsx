@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { 
   CheckCircle2, Clock, AlertCircle, Plus, Search, 
-  LogOut, ShieldAlert, LayoutDashboard, Ticket as TicketIcon, Trash2, Edit3, Play, Square, MessageSquare, FolderPlus, RefreshCw, Calendar, Users, Crown, Folder, UserCheck, Kanban, ListFilter, ArrowUpDown, ChevronLeft, ChevronRight, Settings 
+  LogOut, ShieldAlert, LayoutDashboard, Ticket as TicketIcon, Trash2, Edit3, Play, Square, MessageSquare, FolderPlus, RefreshCw, Calendar, Users, Crown, Folder, UserCheck, Kanban, ListFilter, ArrowUpDown, ChevronLeft, ChevronRight, Settings, BarChart3, Bell, Check, Download 
 } from 'lucide-react';
 
 const API_URL = 'http://127.0.0.1:8000'; 
@@ -20,6 +20,8 @@ export default function App() {
   const [teams, setTeams] = useState([]);
   const [usersList, setUsersList] = useState([]);
   const [stats, setStats] = useState({ total_tickets: 0, to_do: 0, in_progress: 0, done: 0 });
+  const [notifications, setNotifications] = useState([]); 
+  const [showNotificationsModal, setShowNotificationsModal] = useState(false); 
   
   const [activeWorkers, setActiveWorkers] = useState([]);
   const [currentUserInfo, setCurrentUserInfo] = useState({ id: null, role: 'Member', name: '', email: '' });
@@ -33,12 +35,16 @@ export default function App() {
   const [profileMessage, setProfileMessage] = useState('');
   const [securityMessage, setSecurityMessage] = useState('');
 
+  // Filtros Globais
   const [search, setSearch] = useState('');
   const [teamSearch, setTeamSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [projectFilter, setProjectFilter] = useState('');
   const [priorityFilter, setPriorityFilter] = useState('');
   const [sortBy, setSortBy] = useState('newest');
+  
+  // Filtro de Estatísticas
+  const [statsPeriod, setStatsPeriod] = useState('7'); 
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -46,10 +52,10 @@ export default function App() {
   const [activeTimerTask, setActiveTimerTask] = useState(null);
   const [secondsElapsed, setSecondsElapsed] = useState(0);
 
+  // Estados Modais de Tarefa
   const [showModal, setShowModal] = useState(false);
   const [editMode, setEditMode] = useState(false);
   const [currentTicketId, setCurrentTicketId] = useState(null);
-
   const [newTitle, setNewTitle] = useState('');
   const [newDesc, setNewDesc] = useState('');
   const [newPriority, setNewPriority] = useState('Média');
@@ -68,6 +74,7 @@ export default function App() {
   const [projectTeamId, setProjectTeamId] = useState('');
   const [projectTicketIds, setProjectTicketIds] = useState([]); 
 
+  // Estados das Equipas
   const [showTeamModal, setShowTeamModal] = useState(false);
   const [newTeamName, setNewTeamName] = useState('');
   const [newTeamDesc, setNewTeamDesc] = useState('');
@@ -82,6 +89,13 @@ export default function App() {
   const [selectedMemberIds, setSelectedMemberIds] = useState([]);
   const [selectedProjectIds, setSelectedProjectIds] = useState([]);
 
+  // Estados da Administração (Criação de Utilizador)
+  const [showUserModal, setShowUserModal] = useState(false);
+  const [newUserName, setNewUserName] = useState('');
+  const [newUserEmail, setNewUserEmail] = useState('');
+  const [newUserPassword, setNewUserPassword] = useState('');
+  const [newUserRole, setNewUserRole] = useState('Member');
+
   const [showCommentsModal, setShowCommentsModal] = useState(false);
   const [activeTaskForComments, setActiveTaskForComments] = useState(null);
   const [comments, setComments] = useState([]);
@@ -90,7 +104,6 @@ export default function App() {
   const [currentDate, setCurrentDate] = useState(new Date());
   const [calendarTeamFilter, setCalendarTeamFilter] = useState('all');
   const [selectedCalendarDate, setSelectedCalendarDate] = useState(null);
-
 
   useEffect(() => {
     if (token) fetchData();
@@ -115,13 +128,42 @@ export default function App() {
     } catch (e) { console.error("Erro a buscar online", e); }
   };
 
+  const fetchNotifications = async () => {
+    if (!token) return;
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      const res = await axios.get(`${API_URL}/notifications/`, { headers });
+      setNotifications(res.data);
+    } catch (e) { console.error(e); }
+  };
+
   useEffect(() => {
     if (token) {
       fetchActiveWorkers();
-      const radar = setInterval(fetchActiveWorkers, 10000); 
-      return () => clearInterval(radar);
+      fetchNotifications();
+      const radarWorkers = setInterval(fetchActiveWorkers, 10000); 
+      const radarNotifs = setInterval(fetchNotifications, 15000); 
+      return () => { clearInterval(radarWorkers); clearInterval(radarNotifs); };
     }
   }, [token]);
+
+  const markNotifAsRead = async (id) => {
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      await axios.put(`${API_URL}/notifications/${id}/read`, {}, { headers });
+      fetchNotifications();
+    } catch (e) {}
+  };
+
+  const markAllNotifsAsRead = async () => {
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      await axios.put(`${API_URL}/notifications/read-all`, {}, { headers });
+      fetchNotifications();
+    } catch (e) {}
+  };
+
+  const unreadCount = notifications.filter(n => !n.is_read).length;
 
   const changeTab = (tabName) => {
     setActiveTab(tabName);
@@ -137,22 +179,17 @@ export default function App() {
 
   const startTimer = async (task) => {
     if (task.status === 'Done') return;
-    
-    // AQUI ESTÁ A MUDANÇA: Bloquear se já houver um cronómetro a contar
     if (activeTimerTask) {
       alert('Já tens um cronómetro a contar! Pára a tarefa atual antes de iniciares outra.');
       return;
     }
-
     try {
       const headers = { Authorization: `Bearer ${token}` };
       let updatePayload = { is_running: true };
-      
       if (!task.assigned_to_id && currentUserInfo.id) {
         updatePayload.assigned_to_id = currentUserInfo.id;
         task.assigned_to_id = currentUserInfo.id;
       }
-
       await axios.put(`${API_URL}/tickets/${task.id}`, updatePayload, { headers });
       setActiveTimerTask(task);
       setSecondsElapsed(0);
@@ -167,16 +204,13 @@ export default function App() {
     if (!activeTimerTask) return;
     const hoursSpent = secondsElapsed / 3600;
     const updatedTracked = (activeTimerTask.tracked_hours || 0) + hoursSpent;
-    
     try {
       const headers = { Authorization: `Bearer ${token}` };
-      
       await axios.put(`${API_URL}/tickets/${activeTimerTask.id}`, { 
         tracked_hours: Number(updatedTracked.toFixed(2)),
         is_running: false,
         session_hours: hoursSpent 
       }, { headers });
-      
       setActiveTimerTask(null);
       setSecondsElapsed(0);
       fetchData(); 
@@ -244,10 +278,84 @@ export default function App() {
         setTeams(teamsRes.data);
       } catch (e) { console.error(e); }
 
+      fetchNotifications();
     } catch (err) {
       if (err.response?.status === 401) handleLogout();
     } finally {
       setLoading(false);
+    }
+  };
+
+  // Função para exportar relatório CSV de horas
+  const handleExportCSV = async () => {
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      const response = await axios.get(`${API_URL}/reports/export-csv`, {
+        headers,
+        responseType: 'blob',
+      });
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', 'relatorio_horas_flowpulse.csv');
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+    } catch (err) {
+      alert('Erro ao exportar relatório.');
+    }
+  };
+
+  // Funções de Administração de Utilizadores
+  const handleOpenCreateUserModal = () => {
+    setNewUserName('');
+    setNewUserEmail('');
+    setNewUserPassword('');
+    setNewUserRole('Member');
+    setShowUserModal(true);
+  };
+
+  const handleCreateUser = async (e) => {
+    e.preventDefault();
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      await axios.post(`${API_URL}/users/`, {
+        name: newUserName,
+        email: newUserEmail,
+        password: newUserPassword,
+        role: newUserRole
+      }, { headers });
+      setShowUserModal(false);
+      fetchData();
+      alert('Utilizador criado com sucesso!');
+    } catch (err) {
+      alert(err.response?.data?.detail || 'Erro ao criar utilizador.');
+    }
+  };
+
+  const handleRoleChange = async (userId, newRole) => {
+    if (!window.confirm(`Tens a certeza que pretendes alterar o cargo para ${newRole}?`)) return;
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      await axios.put(`${API_URL}/users/${userId}`, { role: newRole }, { headers });
+      fetchData();
+    } catch (err) {
+      alert('Erro ao alterar o cargo.');
+    }
+  };
+
+  const handleDeleteUser = async (userId) => {
+    if (userId === currentUserInfo.id) {
+      alert('Não podes apagar a tua própria conta!');
+      return;
+    }
+    if (!window.confirm("ATENÇÃO: Tens a certeza absoluta que pretendes apagar este utilizador?")) return;
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      await axios.delete(`${API_URL}/users/${userId}`, { headers });
+      fetchData();
+    } catch (err) {
+      alert('Erro ao apagar utilizador.');
     }
   };
 
@@ -491,7 +599,7 @@ export default function App() {
     setNewAssignedTo('');
     setNewEstimatedHours(0);
     setNewDueDate('');
-    setNewProjectId(projects.length > 0 ? projects[0].id : 1);
+    setNewProjectId(availableProjects.length > 0 ? availableProjects[0].id : 1);
     setShowModal(true);
   };
 
@@ -546,7 +654,6 @@ export default function App() {
             setSecondsElapsed(0);
         }
       }
-
       await axios.put(`${API_URL}/tickets/${ticketId}`, updatePayload, { headers });
       fetchData();
       fetchActiveWorkers();
@@ -585,36 +692,31 @@ export default function App() {
 
   const getPriorityBadgeStyle = (priority) => {
     switch (priority) {
-      case 'Crítica':
-        return 'bg-red-950/80 text-red-400 border-red-500/40';
-      case 'Alta':
-        return 'bg-orange-950/80 text-orange-400 border-orange-500/40';
-      case 'Média':
-        return 'bg-amber-950/80 text-amber-400 border-amber-500/40';
-      case 'Baixa':
-        return 'bg-zinc-900 text-zinc-400 border-zinc-800';
-      default:
-        return 'bg-zinc-900 text-zinc-400 border-zinc-800';
+      case 'Crítica': return 'bg-red-950/80 text-red-400 border-red-500/40';
+      case 'Alta': return 'bg-orange-950/80 text-orange-400 border-orange-500/40';
+      case 'Média': return 'bg-amber-950/80 text-amber-400 border-amber-500/40';
+      case 'Baixa': return 'bg-zinc-900 text-zinc-400 border-zinc-800';
+      default: return 'bg-zinc-900 text-zinc-400 border-zinc-800';
     }
   };
 
   const getCalendarTicketStyle = (ticket) => {
     const isDone = ticket.status && ['done', 'concluído', 'concluido'].includes(ticket.status.toLowerCase());
-    if (isDone) {
-      return 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400 line-through opacity-70';
-    }
+    if (isDone) return 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400 line-through opacity-70';
     switch (ticket.priority) {
-      case 'Crítica':
-        return 'bg-red-950/40 border-red-500/30 text-red-300';
-      case 'Alta':
-        return 'bg-orange-950/40 border-orange-500/30 text-orange-300';
-      case 'Média':
-        return 'bg-amber-950/40 border-amber-500/30 text-amber-300';
-      case 'Baixa':
-      default:
-        return 'bg-zinc-900 border-zinc-800 text-zinc-300 hover:bg-zinc-850 hover:text-zinc-100';
+      case 'Crítica': return 'bg-red-950/40 border-red-500/30 text-red-300';
+      case 'Alta': return 'bg-orange-950/40 border-orange-500/30 text-orange-300';
+      case 'Média': return 'bg-amber-950/40 border-amber-500/30 text-amber-300';
+      case 'Baixa': default: return 'bg-zinc-900 border-zinc-800 text-zinc-300 hover:bg-zinc-850 hover:text-zinc-100';
     }
   };
+
+  const isAdmin = currentUserInfo.role === 'Admin';
+  const availableTeams = isAdmin ? teams : teams.filter(t => t.members?.some(m => m.id === currentUserInfo.id) || t.owner_id === currentUserInfo.id);
+  const availableTeamIds = availableTeams.map(t => t.id);
+  const availableProjects = isAdmin ? projects : projects.filter(p => !p.team_id || availableTeamIds.includes(p.team_id));
+  const availableProjectIds = availableProjects.map(p => p.id);
+  const availableTickets = isAdmin ? tickets : tickets.filter(t => t.assigned_to_id === currentUserInfo.id || availableProjectIds.includes(t.project_id));
 
   if (!token) {
     return (
@@ -646,24 +748,22 @@ export default function App() {
     );
   }
 
-  const getLocalDateString = () => {
-    const d = new Date();
-    const year = d.getFullYear();
-    const month = String(d.getMonth() + 1).padStart(2, '0');
-    const day = String(d.getDate()).padStart(2, '0');
-    return `${year}-${month}-${day}`;
+  const getLocalDateString = (d) => {
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    return `${yyyy}-${mm}-${dd}`;
   };
 
-  const todayStr = getLocalDateString();
+  const todayStr = getLocalDateString(new Date());
   
-  const activeTasksList = tickets.filter(t => t.status && !['done', 'concluído', 'concluido'].includes(t.status.toLowerCase()));
-  const doneTickets = tickets.filter(t => t.status && ['done', 'concluído', 'concluido'].includes(t.status.toLowerCase()));
-  const overdueTickets = tickets.filter(t => t.due_date && t.due_date.split('T')[0] < todayStr && t.status && !['done', 'concluído', 'concluido'].includes(t.status.toLowerCase()));
+  const activeTasksList = availableTickets.filter(t => t.status && !['done', 'concluído', 'concluido'].includes(t.status.toLowerCase()));
+  const doneTickets = availableTickets.filter(t => t.status && ['done', 'concluído', 'concluido'].includes(t.status.toLowerCase()));
+  const overdueTickets = availableTickets.filter(t => t.due_date && t.due_date.split('T')[0] < todayStr && t.status && !['done', 'concluído', 'concluido'].includes(t.status.toLowerCase()));
 
-  const filteredTickets = tickets.filter(ticket => {
+  const filteredTickets = availableTickets.filter(ticket => {
     if (projectFilter && ticket.project_id !== Number(projectFilter)) return false;
     if (priorityFilter && ticket.priority !== priorityFilter) return false;
-    
     if (taskViewMode === 'list') {
       if (statusFilter) {
         if (ticket.status !== statusFilter) return false;
@@ -675,9 +775,8 @@ export default function App() {
   });
 
   const sortedTickets = [...filteredTickets].sort((a, b) => {
-    if (sortBy === 'newest') {
-      return b.id - a.id;
-    } else if (sortBy === 'deadline') {
+    if (sortBy === 'newest') return b.id - a.id;
+    else if (sortBy === 'deadline') {
       if (!a.due_date) return 1;
       if (!b.due_date) return -1;
       return new Date(a.due_date) - new Date(b.due_date);
@@ -688,7 +787,7 @@ export default function App() {
     return 0;
   });
 
-  const filteredTeams = teams.filter(team => team.name.toLowerCase().includes(teamSearch.toLowerCase()));
+  const filteredTeams = availableTeams.filter(team => team.name.toLowerCase().includes(teamSearch.toLowerCase()));
 
   const getUserDisplayName = (user) => {
     if (!user) return 'Desconhecido';
@@ -708,7 +807,7 @@ export default function App() {
   };
 
   const getProjectName = (projectId) => {
-    const p = projects.find(proj => proj.id === projectId);
+    const p = availableProjects.find(proj => proj.id === projectId);
     return p ? p.name : 'Projeto Geral';
   };
 
@@ -720,26 +819,54 @@ export default function App() {
   ];
 
   const getVisibleWorkers = () => {
-    if (currentUserInfo.role === 'Admin' || currentUserInfo.role === 'Manager') {
-      return activeWorkers;
-    }
-    const myTeams = teams.filter(t => t.members?.some(m => m.id === currentUserInfo.id));
+    if (isAdmin) return activeWorkers;
     const colleagueIds = new Set();
-    
     if (currentUserInfo.id) colleagueIds.add(currentUserInfo.id);
-
-    myTeams.forEach(t => t.members?.forEach(m => colleagueIds.add(m.id)));
-    
+    availableTeams.forEach(t => t.members?.forEach(m => colleagueIds.add(m.id)));
     return activeWorkers.filter(w => colleagueIds.has(w.assigned_to_id));
   };
 
   const visibleWorkers = getVisibleWorkers();
 
+  // ----- LÓGICA ESTATÍSTICAS -----
+  const periodLabels = { '7': 'na última semana', '30': 'no último mês', '180': 'nos últimos 6 meses' };
+  let chartLabels = [];
+  let tasksPerPeriod = [];
+  let hoursPerPeriod = [];
+
+  const safeNumber = (val) => { const n = Number(val); return isNaN(n) ? 0 : n; };
+
+  if (statsPeriod === '7' || statsPeriod === '30') {
+    const numDays = parseInt(statsPeriod) || 7;
+    const daysArray = Array.from({length: numDays}).map((_, i) => {
+      const d = new Date();
+      d.setDate(d.getDate() - (numDays - 1 - i));
+      return getLocalDateString(d); 
+    });
+    tasksPerPeriod = daysArray.map(date => availableTickets.filter(t => t.status && ['done', 'concluído', 'concluido'].includes(t.status.toLowerCase()) && t.due_date && t.due_date.startsWith(date)).length || 0);
+    hoursPerPeriod = daysArray.map(date => availableTickets.filter(t => t.due_date && t.due_date.startsWith(date)).reduce((sum, t) => sum + safeNumber(t.tracked_hours), 0));
+    chartLabels = daysArray.map(date => { const parts = date.split('-'); return `${parts[2]}/${parts[1]}`; });
+  } else {
+    const monthsArray = Array.from({length: 6}).map((_, i) => {
+      const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - (5 - i));
+      const yyyy = d.getFullYear(); const mm = String(d.getMonth() + 1).padStart(2, '0');
+      return `${yyyy}-${mm}`;
+    });
+    tasksPerPeriod = monthsArray.map(month => availableTickets.filter(t => t.status && ['done', 'concluído', 'concluido'].includes(t.status.toLowerCase()) && t.due_date && t.due_date.startsWith(month)).length || 0);
+    hoursPerPeriod = monthsArray.map(month => availableTickets.filter(t => t.due_date && t.due_date.startsWith(month)).reduce((sum, t) => sum + safeNumber(t.tracked_hours), 0));
+    chartLabels = monthsArray.map(month => { const parts = month.split('-'); return `${parts[1]}/${parts[0].slice(2)}`; }); 
+  }
+
+  const maxTasks = Math.max(...(tasksPerPeriod.length ? tasksPerPeriod : [0]), 5); 
+  const maxHours = Math.max(...(hoursPerPeriod.length ? hoursPerPeriod : [0]), 10);
+  const totalTasksPeriod = tasksPerPeriod.reduce((sum, val) => sum + safeNumber(val), 0);
+  const totalHoursPeriod = hoursPerPeriod.reduce((sum, val) => sum + safeNumber(val), 0);
+
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 flex overflow-hidden">
       
       {/* SIDEBAR */}
-      <aside className="w-64 bg-zinc-900 border-r border-zinc-800 flex flex-col p-4 shrink-0 h-screen sticky top-0">
+      <aside className="w-64 bg-zinc-900 border-r border-zinc-800 flex flex-col p-4 shrink-0 h-screen sticky top-0 z-20">
         <div className="flex items-center gap-3 px-3 py-3 mb-6">
           <div className="p-2 bg-zinc-800 rounded-lg"><TicketIcon className="w-5 h-5 text-zinc-200" /></div>
           <span className="font-semibold tracking-tight text-lg">FlowPulse</span>
@@ -749,21 +876,39 @@ export default function App() {
           <button onClick={() => changeTab('dashboard')} className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition ${activeTab === 'dashboard' ? 'bg-zinc-800 text-zinc-100 shadow-sm' : 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-850'}`}>
             <LayoutDashboard className="w-4 h-4" /> Dashboard
           </button>
+          
           <button onClick={() => changeTab('projects')} className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition ${activeTab === 'projects' ? 'bg-zinc-800 text-zinc-100 shadow-sm' : 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-850'}`}>
             <FolderPlus className="w-4 h-4" /> Projetos
           </button>
+
           <button onClick={() => changeTab('tasks')} className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition ${activeTab === 'tasks' ? 'bg-zinc-800 text-zinc-100 shadow-sm' : 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-850'}`}>
             <CheckCircle2 className="w-4 h-4" /> Tarefas
           </button>
+
           <button onClick={() => changeTab('teams')} className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition ${activeTab === 'teams' ? 'bg-zinc-800 text-zinc-100 shadow-sm' : 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-850'}`}>
             <Users className="w-4 h-4" /> Equipas
           </button>
+
           <button onClick={() => changeTab('calendar')} className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition ${activeTab === 'calendar' ? 'bg-zinc-800 text-zinc-100 shadow-sm' : 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-850'}`}>
             <Calendar className="w-4 h-4" /> Calendário
           </button>
-          <button onClick={() => changeTab('settings')} className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition ${activeTab === 'settings' ? 'bg-zinc-800 text-zinc-100 shadow-sm' : 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-850'}`}>
-            <Settings className="w-4 h-4" /> Definições
+
+          <button onClick={() => changeTab('statistics')} className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition ${activeTab === 'statistics' ? 'bg-zinc-800 text-zinc-100 shadow-sm' : 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-850'}`}>
+            <BarChart3 className="w-4 h-4" /> Estatísticas
           </button>
+
+          {/* RENDER CONDICIONAL DO TAB DE ADMINISTRAÇÃO */}
+          {isAdmin && (
+            <button onClick={() => changeTab('admin')} className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition mt-4 border ${activeTab === 'admin' ? 'bg-amber-500/10 text-amber-400 border-amber-500/30 shadow-sm' : 'border-transparent text-amber-500/70 hover:text-amber-400 hover:bg-amber-500/10'}`}>
+              <ShieldAlert className="w-4 h-4" /> Administração
+            </button>
+          )}
+
+          <div className="pt-4 mt-2 border-t border-zinc-800/80">
+            <button onClick={() => changeTab('settings')} className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition ${activeTab === 'settings' ? 'bg-zinc-800 text-zinc-100 shadow-sm' : 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-850'}`}>
+              <Settings className="w-4 h-4" /> Definições
+            </button>
+          </div>
         </nav>
 
         <div className="pt-4 border-t border-zinc-800">
@@ -773,453 +918,208 @@ export default function App() {
         </div>
       </aside>
 
-      {/* MAIN CONTENT */}
-      <main className="flex-1 h-screen overflow-y-auto p-8 pb-16">
+      {/* MAIN CONTENT AREA */}
+      <main className="flex-1 flex flex-col h-screen overflow-hidden relative">
         
-        {/* CRONÓMETRO ATIVO */}
-        {activeTimerTask && (
-          <div className="mb-6 bg-gradient-to-r from-blue-900/40 to-zinc-900 border border-blue-500/30 p-4 rounded-2xl flex items-center justify-between shadow-lg">
-            <div className="flex items-center gap-3">
-              <div className="p-2 bg-blue-500/20 text-blue-400 rounded-xl animate-pulse"><Clock className="w-5 h-5" /></div>
-              <div>
-                <p className="text-xs text-blue-400 font-medium uppercase tracking-wider">A trabalhar em:</p>
-                <p className="text-sm font-semibold text-zinc-100">{activeTimerTask.title}</p>
-              </div>
-            </div>
-            <div className="flex items-center gap-4">
-              <span className="font-mono text-xl font-bold tracking-wider text-zinc-100">{formatTime(secondsElapsed)}</span>
-              <button onClick={stopTimer} className="bg-red-500/20 hover:bg-red-500/30 border border-red-500/30 text-red-400 p-2.5 rounded-xl transition flex items-center gap-2 text-xs font-medium">
-                <Square className="w-4 h-4 fill-current" /> Parar e Guardar
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* DASHBOARD */}
-        {activeTab === 'dashboard' && (
-          <div>
-            <div className="flex items-center justify-between mb-6">
-              <h1 className="text-xl font-bold tracking-tight">Dashboard & Gestão</h1>
-              <button onClick={() => {fetchData(); fetchActiveWorkers();}} className="flex items-center gap-2 bg-zinc-900 border border-zinc-800 hover:bg-zinc-850 text-zinc-300 px-4 py-2 rounded-xl text-sm transition">
-                <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} /> Atualizar
-              </button>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-              <div 
-                onClick={() => { changeTab('tasks'); setStatusFilter(''); }}
-                className="bg-zinc-900/80 border border-zinc-800/80 hover:border-zinc-700 p-5 rounded-2xl flex items-center justify-between cursor-pointer transition shadow-sm group"
-              >
-                <div>
-                  <p className="text-xs font-medium text-zinc-400 uppercase tracking-wider group-hover:text-zinc-200 transition">Tarefas Ativas</p>
-                  <p className="text-3xl font-bold mt-1 text-zinc-100">{activeTasksList.length}</p>
-                </div>
-                <div className="p-3 bg-zinc-800/50 rounded-xl text-zinc-400 border border-zinc-700/50 group-hover:bg-zinc-800 transition"><Calendar className="w-5 h-5" /></div>
-              </div>
-
-              <div 
-                onClick={() => { changeTab('tasks'); setStatusFilter(''); }}
-                className="bg-zinc-900/80 border border-zinc-800/80 hover:border-red-500/40 p-5 rounded-2xl flex items-center justify-between cursor-pointer transition shadow-sm group"
-              >
-                <div>
-                  <p className="text-xs font-medium text-red-400 uppercase tracking-wider">Atrasadas</p>
-                  <p className="text-3xl font-bold mt-1 text-red-400">{overdueTickets.length}</p>
-                </div>
-                <div className="p-3 bg-red-500/10 rounded-xl text-red-400 border border-red-500/20 group-hover:bg-red-500/20 transition"><AlertCircle className="w-5 h-5" /></div>
-              </div>
-
-              <div 
-                onClick={() => { changeTab('tasks'); setStatusFilter('Done'); }}
-                className="bg-zinc-900/80 border border-zinc-800/80 hover:border-emerald-500/40 p-5 rounded-2xl flex items-center justify-between cursor-pointer transition shadow-sm group"
-              >
-                <div>
-                  <p className="text-xs font-medium text-emerald-400 uppercase tracking-wider">Concluídas</p>
-                  <p className="text-3xl font-bold mt-1 text-emerald-400">{doneTickets.length}</p>
-                </div>
-                <div className="p-3 bg-emerald-500/10 rounded-xl text-emerald-400 border border-emerald-500/20 group-hover:bg-emerald-500/20 transition"><CheckCircle2 className="w-5 h-5" /></div>
-              </div>
-
-              <div className="bg-zinc-900/80 border border-zinc-800/80 p-5 rounded-2xl flex items-center justify-between shadow-sm">
-                <div>
-                  <p className="text-xs font-medium text-blue-400 uppercase tracking-wider">Horas Hoje</p>
-                  <p className="text-3xl font-bold mt-1 text-blue-400">
-                    {((stats.hours_today || 0) + (activeTimerTask ? (secondsElapsed / 3600) : 0)).toFixed(2)}h
-                  </p>
-                </div>
-                <div className="p-3 bg-blue-500/10 rounded-xl text-blue-400 border border-blue-500/20"><Clock className="w-5 h-5" /></div>
-              </div>
-            </div>
-
-            <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-6 mb-6">
-              <div className="flex items-center justify-between mb-4">
-                <div>
-                  <h2 className="text-base font-semibold text-zinc-100 flex items-center gap-2.5">
-                    <span className="relative flex h-2.5 w-2.5">
-                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                      <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
-                    </span>
-                    A trabalhar agora
-                  </h2>
-                  <p className="text-xs text-zinc-400">
-                    {currentUserInfo.role === 'Admin' || currentUserInfo.role === 'Manager' 
-                      ? 'Visão global da empresa' 
-                      : 'Colegas das tuas equipas'}
-                  </p>
-                </div>
-                <div className="text-xs font-mono text-zinc-500 bg-zinc-950 border border-zinc-800 px-2.5 py-1 rounded-lg">
-                  {visibleWorkers.length} online
-                </div>
-              </div>
-
-              {visibleWorkers.length === 0 ? (
-                <div className="py-6 text-center text-xs text-zinc-500 border border-dashed border-zinc-800 rounded-xl">
-                  Nenhum colega a faturar tempo neste momento.
-                </div>
-              ) : (
-                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
-                  {visibleWorkers.map(ticket => {
-                    const workerName = getAssigneeName(ticket.assigned_to_id);
-                    return (
-                      <div key={ticket.id} className="bg-zinc-950 border border-zinc-800/80 p-3.5 rounded-xl flex items-center gap-3 shadow-sm group hover:border-emerald-500/30 transition">
-                        <div className="w-9 h-9 rounded-full bg-emerald-500/10 flex items-center justify-center border border-emerald-500/20 text-emerald-400 font-bold text-xs">
-                          {workerName ? workerName.charAt(0).toUpperCase() : '?'}
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <p className="text-sm font-medium text-zinc-100 truncate">{workerName || 'Sem dono'}</p>
-                          <p className="text-[11px] text-zinc-500 truncate mt-0.5" title={ticket.title}>Em: {ticket.title}</p>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-
-            <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-6">
-              <div className="flex items-center justify-between mb-4">
-                <div>
-                  <h2 className="text-base font-semibold text-zinc-100">Tarefas do Sistema</h2>
-                  <p className="text-xs text-zinc-400">Visão geral e gestão rápida</p>
-                </div>
-                <button onClick={handleOpenCreateModal} className="flex items-center gap-1.5 bg-zinc-100 text-zinc-950 font-medium text-xs px-3.5 py-2 rounded-xl hover:bg-white transition">
-                  <Plus className="w-3.5 h-3.5" /> Nova Tarefa
-                </button>
-              </div>
-
-              {activeTasksList.length === 0 ? (
-                <div className="py-10 text-center text-xs text-zinc-500 border border-dashed border-zinc-800 rounded-xl">
-                  Nenhuma tarefa ativa neste momento.
-                </div>
-              ) : (
-                <div className="space-y-2.5">
-                  {activeTasksList.map(ticket => {
-                    const isRunning = activeTimerTask?.id === ticket.id;
-                    const assignee = getAssigneeName(ticket.assigned_to_id);
-                    return (
-                      <div key={ticket.id} className="bg-zinc-950 border border-zinc-800/80 p-4 rounded-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-                        <div className="space-y-1">
-                          <div className="flex items-center gap-2.5">
-                            <span className="text-xs text-zinc-500 font-mono">#{ticket.id}</span>
-                            <h3 className="font-medium text-sm text-zinc-100">{ticket.title}</h3>
-                            <span className="text-[10px] bg-zinc-900 border border-zinc-800 px-2 py-0.5 rounded text-zinc-400">📁 {getProjectName(ticket.project_id)}</span>
-                            {ticket.priority && (
-                              <span className={`text-[10px] px-2 py-0.5 rounded border font-medium ${getPriorityBadgeStyle(ticket.priority)}`}>
-                                {ticket.priority}
-                              </span>
-                            )}
-                            {isRunning && <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-400 border border-blue-500/30 animate-pulse">ATIVO</span>}
-                          </div>
-                          <p className="text-xs text-zinc-400 pl-6">{ticket.description || 'Sem descrição'}</p>
-                          <div className="text-[11px] text-zinc-500 pl-6 flex items-center gap-3 pt-1">
-                            <span>⏱️ <strong>{ticket.tracked_hours || 0}h</strong> / 🎯 <strong>{ticket.estimated_hours || 0}h</strong></span>
-                            {ticket.due_date && <span>📅 <strong>{ticket.due_date.split('T')[0]}</strong></span>}
-                            {assignee && <span className="text-emerald-400">👤 {assignee}</span>}
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <select 
-                            value={ticket.status} 
-                            onChange={e => handleStatusChange(ticket.id, e.target.value)}
-                            className="bg-zinc-900 border border-zinc-800 text-xs text-zinc-300 rounded-lg px-2.5 py-1.5 focus:outline-none"
-                          >
-                            <option value="To Do">A fazer</option>
-                            <option value="In Progress">Em progresso</option>
-                            <option value="In Review">Em revisão</option>
-                            <option value="Done">Concluído</option>
-                          </select>
-                          <button onClick={() => startTimer(ticket)} className={`p-2 rounded-lg border transition ${isRunning ? 'bg-blue-500 text-zinc-950 border-blue-400' : 'bg-zinc-900 text-zinc-400 hover:text-zinc-100 border-zinc-800'}`} title="Iniciar Cronómetro">
-                            <Play className="w-3.5 h-3.5 fill-current" />
-                          </button>
-                          <button onClick={() => openComments(ticket)} className="p-2 text-zinc-400 hover:text-zinc-100 bg-zinc-900 border border-zinc-800 rounded-lg transition" title="Comentários">
-                            <MessageSquare className="w-3.5 h-3.5" />
-                          </button>
-                          <button onClick={() => handleOpenEditModal(ticket)} className="p-2 text-zinc-400 hover:text-zinc-100 bg-zinc-900 border border-zinc-800 rounded-lg transition" title="Editar">
-                            <Edit3 className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {/* PROJETOS */}
-        {activeTab === 'projects' && (
-          <div>
-            <div className="flex items-center justify-between mb-6">
-              <h1 className="text-xl font-bold tracking-tight">Projetos</h1>
-              <button onClick={handleOpenCreateProjectModal} className="flex items-center gap-2 bg-zinc-100 text-zinc-950 font-medium text-sm px-4 py-2 rounded-xl hover:bg-white transition">
-                <FolderPlus className="w-4 h-4" /> Novo Projeto
-              </button>
-            </div>
-            
-            {projects.length === 0 ? (
-              <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-12 text-center text-zinc-500 text-sm">
-                Nenhum projeto registado.
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                {projects.map(proj => {
-                  const projTickets = tickets.filter(t => t.project_id === proj.id);
-                  const total = projTickets.length;
-                  const done = projTickets.filter(t => t.status && ['done', 'concluído', 'concluido'].includes(t.status.toLowerCase())).length;
-                  const percent = total === 0 ? 0 : Math.round((done / total) * 100);
-                  const team = teams.find(t => t.id === proj.team_id);
-
-                  return (
-                    <div key={proj.id} className="bg-zinc-900 border border-zinc-800/80 rounded-2xl p-6 shadow-xl flex flex-col group hover:border-zinc-700 transition">
-                      <div className="flex items-start justify-between mb-2">
-                        <div className="flex-1 pr-4">
-                          <h2 className="font-semibold text-base text-zinc-100 truncate" title={proj.name}>{proj.name}</h2>
-                          <p className="text-xs text-zinc-400 mt-1 line-clamp-2 min-h-[32px]">{proj.description || 'Sem descrição'}</p>
-                        </div>
-                        <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition">
-                          <button onClick={() => openEditProjectModal(proj)} className="p-1.5 bg-zinc-950 border border-zinc-800 text-zinc-400 hover:text-zinc-100 rounded-lg transition" title="Editar Projeto"><Edit3 className="w-3.5 h-3.5" /></button>
-                          <button onClick={() => handleDeleteProject(proj.id)} className="p-1.5 bg-zinc-950 border border-zinc-800 text-red-400 hover:text-red-300 rounded-lg transition" title="Apagar Projeto"><Trash2 className="w-3.5 h-3.5" /></button>
-                        </div>
-                      </div>
-
-                      <div className="flex items-center gap-2 mt-4 text-xs">
-                        <div className="flex items-center gap-1.5 bg-zinc-950 border border-zinc-800 px-2 py-1 rounded-md text-zinc-400">
-                          <Users className="w-3.5 h-3.5" />
-                          <span className="truncate max-w-[120px]">{team ? team.name : 'Equipa Geral'}</span>
-                        </div>
-                      </div>
-
-                      <div className="mt-6 mb-4">
-                        <div className="flex items-center justify-between text-xs mb-2">
-                          <span className="text-zinc-400 font-medium">Progresso</span>
-                          <span className="text-emerald-400 font-bold">{percent}%</span>
-                        </div>
-                        <div className="w-full bg-zinc-950 border border-zinc-800 rounded-full h-2.5 overflow-hidden">
-                          <div 
-                            className="bg-emerald-500 h-2.5 rounded-full transition-all duration-500 ease-out" 
-                            style={{ width: `${percent}%` }}
-                          ></div>
-                        </div>
-                        <p className="text-[10px] text-zinc-500 mt-2 text-right">
-                          {done} de {total} tarefas concluídas
-                        </p>
-                      </div>
-
-                      <button 
-                        onClick={() => goToProjectTasks(proj.id)}
-                        className="mt-auto w-full flex items-center justify-center gap-2 bg-zinc-950 hover:bg-zinc-800 border border-zinc-800 text-zinc-300 py-2 rounded-xl text-xs font-medium transition"
-                      >
-                        <ListFilter className="w-3.5 h-3.5" /> Ver Tarefas
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
+        {/* GLOBAL HEADER WITH NOTIFICATIONS */}
+        <header className="shrink-0 h-16 border-b border-zinc-800/80 bg-zinc-950/80 backdrop-blur-md px-8 flex items-center justify-end z-10 sticky top-0">
+          <button 
+            onClick={() => setShowNotificationsModal(true)}
+            className="relative p-2 text-zinc-400 hover:text-zinc-100 bg-zinc-900 border border-zinc-800 rounded-xl transition"
+            title="Notificações"
+          >
+            <Bell className="w-4 h-4" />
+            {unreadCount > 0 && (
+              <span className="absolute -top-1 -right-1 flex h-3 w-3">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-3 w-3 bg-red-500"></span>
+              </span>
             )}
-          </div>
-        )}
+          </button>
+        </header>
 
-        {/* TAREFAS */}
-        {activeTab === 'tasks' && (
-          <div className="flex flex-col h-[calc(100vh-100px)]">
-            <div className="flex flex-col sm:flex-row gap-4 items-center justify-between mb-6 shrink-0">
-              <div className="relative w-full sm:w-64">
-                <Search className="w-4 h-4 text-zinc-500 absolute left-3.5 top-3" />
-                <input type="text" placeholder="Pesquisar tarefas..." value={search} onChange={e => setSearch(e.target.value)} className="w-full bg-zinc-900 border border-zinc-800 rounded-xl pl-10 pr-4 py-2 text-sm text-zinc-100 focus:outline-none" />
+        {/* SCROLLABLE VIEW CONTENT */}
+        <div className="flex-1 overflow-y-auto p-8 pb-16 relative">
+          
+          {/* CRONÓMETRO ATIVO */}
+          {activeTimerTask && (
+            <div className="mb-6 bg-gradient-to-r from-blue-900/40 to-zinc-900 border border-blue-500/30 p-4 rounded-2xl flex items-center justify-between shadow-lg">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-blue-500/20 text-blue-400 rounded-xl animate-pulse"><Clock className="w-5 h-5" /></div>
+                <div>
+                  <p className="text-xs text-blue-400 font-medium uppercase tracking-wider">A trabalhar em:</p>
+                  <p className="text-sm font-semibold text-zinc-100">{activeTimerTask.title}</p>
+                </div>
               </div>
-
-              <div className="flex items-center gap-3 w-full sm:w-auto flex-wrap">
-                <div className="bg-zinc-900 border border-zinc-800 p-1 rounded-xl flex items-center">
-                  <button onClick={() => setTaskViewMode('kanban')} className={`px-3 py-1.5 rounded-lg text-xs font-medium transition flex items-center gap-1.5 ${taskViewMode === 'kanban' ? 'bg-zinc-800 text-zinc-100 shadow-sm' : 'text-zinc-400 hover:text-zinc-200'}`}>
-                    <Kanban className="w-3.5 h-3.5" /> Kanban
-                  </button>
-                  <button onClick={() => setTaskViewMode('list')} className={`px-3 py-1.5 rounded-lg text-xs font-medium transition flex items-center gap-1.5 ${taskViewMode === 'list' ? 'bg-zinc-800 text-zinc-100 shadow-sm' : 'text-zinc-400 hover:text-zinc-200'}`}>
-                    <ListFilter className="w-3.5 h-3.5" /> Lista
-                  </button>
-                </div>
-
-                <div className="flex items-center bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-sm text-zinc-300">
-                  <ArrowUpDown className="w-3.5 h-3.5 mr-2 text-zinc-500" />
-                  <select value={sortBy} onChange={e => setSortBy(e.target.value)} className="bg-transparent text-zinc-300 focus:outline-none text-xs">
-                    <option value="newest" className="bg-zinc-900">Ordem de criação</option>
-                    <option value="deadline" className="bg-zinc-900">Deadline (Prazo)</option>
-                    <option value="priority" className="bg-zinc-900">Prioridade</option>
-                  </select>
-                </div>
-
-                <select value={projectFilter} onChange={e => setProjectFilter(e.target.value)} className="bg-zinc-900 border border-zinc-800 text-zinc-300 text-sm rounded-xl px-3 py-2 focus:outline-none">
-                  <option value="">Todos os projetos</option>
-                  {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-                </select>
-
-                {taskViewMode === 'list' && (
-                  <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)} className="bg-zinc-900 border border-zinc-800 text-zinc-300 text-sm rounded-xl px-3 py-2 focus:outline-none">
-                    <option value="">Estados (Ativos)</option>
-                    <option value="To Do">A fazer</option>
-                    <option value="In Progress">Em progresso</option>
-                    <option value="In Review">Em revisão</option>
-                    <option value="Done">Concluído</option>
-                  </select>
-                )}
-
-                <button onClick={handleOpenCreateModal} className="flex items-center gap-2 bg-zinc-100 text-zinc-950 font-medium text-sm px-4 py-2 rounded-xl hover:bg-white transition ml-auto sm:ml-0">
-                  <Plus className="w-4 h-4" /> Nova Tarefa
+              <div className="flex items-center gap-4">
+                <span className="font-mono text-xl font-bold tracking-wider text-zinc-100">{formatTime(secondsElapsed)}</span>
+                <button onClick={stopTimer} className="bg-red-500/20 hover:bg-red-500/30 border border-red-500/30 text-red-400 p-2.5 rounded-xl transition flex items-center gap-2 text-xs font-medium">
+                  <Square className="w-4 h-4 fill-current" /> Parar e Guardar
                 </button>
               </div>
             </div>
+          )}
 
-            {taskViewMode === 'kanban' ? (
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-4 flex-1 overflow-x-auto pb-4 items-start">
-                {kanbanColumns.map(col => {
-                  const columnTickets = sortedTickets.filter(t => t.status === col.id);
-                  return (
-                    <div 
-                      key={col.id} 
-                      onDragOver={handleDragOver}
-                      onDrop={(e) => handleDrop(e, col.id)}
-                      className="bg-zinc-900/60 border border-zinc-800/80 rounded-2xl p-4 flex flex-col h-full min-h-[500px]"
-                    >
-                      <div className="flex items-center justify-between mb-4 pb-3 border-b border-zinc-800">
-                        <div className="flex items-center gap-2.5">
-                          <span className={`w-2.5 h-2.5 rounded-full ${col.color}`}></span>
-                          <h3 className="font-semibold text-sm text-zinc-200">{col.title}</h3>
-                        </div>
-                        <span className="text-xs font-mono text-zinc-400 bg-zinc-800 px-2 py-0.5 rounded-full">{columnTickets.length}</span>
-                      </div>
-
-                      <div className="flex-1 overflow-y-auto space-y-3 pr-1">
-                        {columnTickets.length === 0 ? (
-                          <div className="h-32 border border-dashed border-zinc-800/80 rounded-xl flex items-center justify-center text-xs text-zinc-600">
-                            Arraste tarefas aqui
-                          </div>
-                        ) : (
-                          columnTickets.map(ticket => {
-                            const isRunning = activeTimerTask?.id === ticket.id;
-                            const assignee = getAssigneeName(ticket.assigned_to_id);
-                            return (
-                              <div 
-                                key={ticket.id}
-                                draggable
-                                onDragStart={(e) => handleDragStart(e, ticket.id)}
-                                className="bg-zinc-950 border border-zinc-800/90 hover:border-zinc-700 p-4 rounded-xl cursor-grab active:cursor-grabbing transition space-y-3 shadow-sm group"
-                              >
-                                <div className="flex items-start justify-between gap-2">
-                                  <div className="flex items-center gap-2">
-                                    <span className="text-xs font-mono text-zinc-500">#{ticket.id}</span>
-                                    {ticket.priority && (
-                                      <span className={`text-[10px] px-2 py-0.5 rounded border font-medium ${getPriorityBadgeStyle(ticket.priority)}`}>
-                                        {ticket.priority}
-                                      </span>
-                                    )}
-                                  </div>
-                                  <div className="flex items-center gap-1 opacity-80 group-hover:opacity-100 transition">
-                                    <button onClick={() => startTimer(ticket)} title="Iniciar Cronómetro" className={`p-1.5 rounded-md border transition ${isRunning ? 'bg-blue-500 text-zinc-950 border-blue-400 animate-pulse' : 'bg-zinc-900 text-zinc-400 hover:text-zinc-100 border-zinc-800'}`}>
-                                      <Play className="w-3 h-3 fill-current" />
-                                    </button>
-                                    <button onClick={() => openComments(ticket)} title="Comentários" className="p-1.5 bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-zinc-100 rounded-md transition">
-                                      <MessageSquare className="w-3 h-3" />
-                                    </button>
-                                    <button onClick={() => handleOpenEditModal(ticket)} title="Editar" className="p-1.5 bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-zinc-100 rounded-md transition">
-                                      <Edit3 className="w-3 h-3" />
-                                    </button>
-                                    <button onClick={() => handleDeleteTicket(ticket.id)} title="Apagar" className="p-1.5 bg-zinc-900 border border-zinc-800 text-red-400 hover:text-red-300 rounded-md transition">
-                                      <Trash2 className="w-3 h-3" />
-                                    </button>
-                                  </div>
-                                </div>
-
-                                <div>
-                                  <h4 className="font-medium text-sm text-zinc-100 leading-snug">{ticket.title}</h4>
-                                  <p className="text-xs text-zinc-400 mt-1 line-clamp-2">{ticket.description || 'Sem descrição'}</p>
-                                </div>
-
-                                <div className="flex items-center justify-between text-[11px] pt-2 border-t border-zinc-900">
-                                  <span className="bg-zinc-900 text-zinc-400 px-2 py-0.5 rounded border border-zinc-800">📁 {getProjectName(ticket.project_id)}</span>
-                                  {assignee && <span className="text-emerald-400 font-medium">👤 {assignee}</span>}
-                                </div>
-                              </div>
-                            );
-                          })
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
+          {/* DASHBOARD */}
+          {activeTab === 'dashboard' && (
+            <div>
+              <div className="flex items-center justify-between mb-6">
+                <h1 className="text-xl font-bold tracking-tight">Dashboard & Gestão</h1>
+                <button onClick={() => {fetchData(); fetchActiveWorkers();}} className="flex items-center gap-2 bg-zinc-900 border border-zinc-800 hover:bg-zinc-850 text-zinc-300 px-4 py-2 rounded-xl text-sm transition">
+                  <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} /> Atualizar
+                </button>
               </div>
-            ) : (
-              <div className="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden flex-1 overflow-y-auto">
-                {sortedTickets.length === 0 ? (
-                  <div className="p-12 text-center text-zinc-500 text-sm">Nenhuma tarefa encontrada.</div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+                <div 
+                  onClick={() => { changeTab('tasks'); setStatusFilter(''); }}
+                  className="bg-zinc-900/80 border border-zinc-800/80 hover:border-zinc-700 p-5 rounded-2xl flex items-center justify-between cursor-pointer transition shadow-sm group"
+                >
+                  <div>
+                    <p className="text-xs font-medium text-zinc-400 uppercase tracking-wider group-hover:text-zinc-200 transition">Tarefas Ativas</p>
+                    <p className="text-3xl font-bold mt-1 text-zinc-100">{activeTasksList.length}</p>
+                  </div>
+                  <div className="p-3 bg-zinc-800/50 rounded-xl text-zinc-400 border border-zinc-700/50 group-hover:bg-zinc-800 transition"><Calendar className="w-5 h-5" /></div>
+                </div>
+
+                <div 
+                  onClick={() => { changeTab('tasks'); setStatusFilter(''); }}
+                  className="bg-zinc-900/80 border border-zinc-800/80 hover:border-red-500/40 p-5 rounded-2xl flex items-center justify-between cursor-pointer transition shadow-sm group"
+                >
+                  <div>
+                    <p className="text-xs font-medium text-red-400 uppercase tracking-wider">Atrasadas</p>
+                    <p className="text-3xl font-bold mt-1 text-red-400">{overdueTickets.length}</p>
+                  </div>
+                  <div className="p-3 bg-red-500/10 rounded-xl text-red-400 border border-red-500/20 group-hover:bg-red-500/20 transition"><AlertCircle className="w-5 h-5" /></div>
+                </div>
+
+                <div 
+                  onClick={() => { changeTab('tasks'); setStatusFilter('Done'); }}
+                  className="bg-zinc-900/80 border border-zinc-800/80 hover:border-emerald-500/40 p-5 rounded-2xl flex items-center justify-between cursor-pointer transition shadow-sm group"
+                >
+                  <div>
+                    <p className="text-xs font-medium text-emerald-400 uppercase tracking-wider">Concluídas</p>
+                    <p className="text-3xl font-bold mt-1 text-emerald-400">{doneTickets.length}</p>
+                  </div>
+                  <div className="p-3 bg-emerald-500/10 rounded-xl text-emerald-400 border border-emerald-500/20 group-hover:bg-emerald-500/20 transition"><CheckCircle2 className="w-5 h-5" /></div>
+                </div>
+
+                <div className="bg-zinc-900/80 border border-zinc-800/80 p-5 rounded-2xl flex items-center justify-between shadow-sm">
+                  <div>
+                    <p className="text-xs font-medium text-blue-400 uppercase tracking-wider">Horas Hoje</p>
+                    <p className="text-3xl font-bold mt-1 text-blue-400">
+                      {((stats.hours_today || 0) + (activeTimerTask ? (secondsElapsed / 3600) : 0)).toFixed(2)}h
+                    </p>
+                  </div>
+                  <div className="p-3 bg-blue-500/10 rounded-xl text-blue-400 border border-blue-500/20"><Clock className="w-5 h-5" /></div>
+                </div>
+              </div>
+
+              <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-6 mb-6">
+                <div className="flex items-center justify-between mb-4">
+                  <div>
+                    <h2 className="text-base font-semibold text-zinc-100 flex items-center gap-2.5">
+                      <span className="relative flex h-2.5 w-2.5">
+                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                        <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
+                      </span>
+                      A trabalhar agora
+                    </h2>
+                    <p className="text-xs text-zinc-400">
+                      {isAdmin 
+                        ? 'Visão global da empresa' 
+                        : 'Colegas das tuas equipas'}
+                    </p>
+                  </div>
+                  <div className="text-xs font-mono text-zinc-500 bg-zinc-950 border border-zinc-800 px-2.5 py-1 rounded-lg">
+                    {visibleWorkers.length} online
+                  </div>
+                </div>
+
+                {visibleWorkers.length === 0 ? (
+                  <div className="py-6 text-center text-xs text-zinc-500 border border-dashed border-zinc-800 rounded-xl">
+                    Nenhum colega a faturar tempo neste momento.
+                  </div>
                 ) : (
-                  <div className="divide-y divide-zinc-800">
-                    {sortedTickets.map(ticket => {
+                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+                    {visibleWorkers.map(ticket => {
+                      const workerName = getAssigneeName(ticket.assigned_to_id);
+                      return (
+                        <div key={ticket.id} className="bg-zinc-950 border border-zinc-800/80 p-3.5 rounded-xl flex items-center gap-3 shadow-sm group hover:border-emerald-500/30 transition">
+                          <div className="w-9 h-9 rounded-full bg-emerald-500/10 flex items-center justify-center border border-emerald-500/20 text-emerald-400 font-bold text-xs">
+                            {workerName ? workerName.charAt(0).toUpperCase() : '?'}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-medium text-zinc-100 truncate">{workerName || 'Sem dono'}</p>
+                            <p className="text-[11px] text-zinc-500 truncate mt-0.5" title={ticket.title}>Em: {ticket.title}</p>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-6">
+                <div className="flex items-center justify-between mb-4">
+                  <div>
+                    <h2 className="text-base font-semibold text-zinc-100">Tarefas do Sistema</h2>
+                    <p className="text-xs text-zinc-400">Visão geral e gestão rápida</p>
+                  </div>
+                  <button onClick={handleOpenCreateModal} className="flex items-center gap-1.5 bg-zinc-100 text-zinc-950 font-medium text-xs px-3.5 py-2 rounded-xl hover:bg-white transition">
+                    <Plus className="w-3.5 h-3.5" /> Nova Tarefa
+                  </button>
+                </div>
+
+                {activeTasksList.length === 0 ? (
+                  <div className="py-10 text-center text-xs text-zinc-500 border border-dashed border-zinc-800 rounded-xl">
+                    Nenhuma tarefa ativa neste momento.
+                  </div>
+                ) : (
+                  <div className="space-y-2.5">
+                    {activeTasksList.map(ticket => {
                       const isRunning = activeTimerTask?.id === ticket.id;
-                      const isDone = ticket.status && ['done', 'concluído', 'concluido'].includes(ticket.status.toLowerCase());
                       const assignee = getAssigneeName(ticket.assigned_to_id);
                       return (
-                        <div key={ticket.id} className={`p-5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 transition ${isDone ? 'bg-zinc-900/30 opacity-60' : 'hover:bg-zinc-850/50'}`}>
+                        <div key={ticket.id} className="bg-zinc-950 border border-zinc-800/80 p-4 rounded-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
                           <div className="space-y-1">
-                            <div className="flex items-center gap-3">
+                            <div className="flex items-center gap-2.5">
                               <span className="text-xs text-zinc-500 font-mono">#{ticket.id}</span>
-                              <h2 className={`font-medium text-sm ${isDone ? 'line-through text-zinc-400' : 'text-zinc-100'}`}>{ticket.title}</h2>
-                              <span className="text-[10px] bg-zinc-950 border border-zinc-800 px-2 py-0.5 rounded text-zinc-400">📁 {getProjectName(ticket.project_id)}</span>
+                              <h3 className="font-medium text-sm text-zinc-100">{ticket.title}</h3>
+                              <span className="text-[10px] bg-zinc-900 border border-zinc-800 px-2 py-0.5 rounded text-zinc-400">📁 {getProjectName(ticket.project_id)}</span>
                               {ticket.priority && (
                                 <span className={`text-[10px] px-2 py-0.5 rounded border font-medium ${getPriorityBadgeStyle(ticket.priority)}`}>
                                   {ticket.priority}
                                 </span>
                               )}
-                              {isDone && <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">CONCLUÍDO</span>}
                               {isRunning && <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-400 border border-blue-500/30 animate-pulse">ATIVO</span>}
                             </div>
-                            <p className="text-xs text-zinc-400 pl-7">{ticket.description || 'Sem descrição'}</p>
-                            <div className="text-[11px] text-zinc-500 pl-7 flex items-center gap-3">
+                            <p className="text-xs text-zinc-400 pl-6">{ticket.description || 'Sem descrição'}</p>
+                            <div className="text-[11px] text-zinc-500 pl-6 flex items-center gap-3 pt-1">
                               <span>⏱️ <strong>{ticket.tracked_hours || 0}h</strong> / 🎯 <strong>{ticket.estimated_hours || 0}h</strong></span>
                               {ticket.due_date && <span>📅 <strong>{ticket.due_date.split('T')[0]}</strong></span>}
                               {assignee && <span className="text-emerald-400">👤 {assignee}</span>}
                             </div>
                           </div>
-                          <div className="flex items-center gap-3">
+                          <div className="flex items-center gap-2">
                             <select 
                               value={ticket.status} 
                               onChange={e => handleStatusChange(ticket.id, e.target.value)}
-                              className="bg-zinc-950 border border-zinc-800 text-xs text-zinc-300 rounded-lg px-2.5 py-1.5 focus:outline-none"
+                              className="bg-zinc-900 border border-zinc-800 text-xs text-zinc-300 rounded-lg px-2.5 py-1.5 focus:outline-none"
                             >
                               <option value="To Do">A fazer</option>
                               <option value="In Progress">Em progresso</option>
                               <option value="In Review">Em revisão</option>
                               <option value="Done">Concluído</option>
                             </select>
-                            <button onClick={() => startTimer(ticket)} disabled={isDone} className={`p-2 rounded-lg border transition ${isDone ? 'opacity-40 cursor-not-allowed bg-zinc-950 border-zinc-900 text-zinc-700' : isRunning ? 'bg-blue-500 text-zinc-950 border-blue-400' : 'bg-zinc-950 text-zinc-400 hover:text-zinc-100 border-zinc-800'}`} title="Iniciar Cronómetro">
-                              <Play className="w-4 h-4 fill-current" />
+                            <button onClick={() => startTimer(ticket)} className={`p-2 rounded-lg border transition ${isRunning ? 'bg-blue-500 text-zinc-950 border-blue-400' : 'bg-zinc-900 text-zinc-400 hover:text-zinc-100 border-zinc-800'}`} title="Iniciar Cronómetro">
+                              <Play className="w-3.5 h-3.5 fill-current" />
                             </button>
-                            <button onClick={() => openComments(ticket)} className="p-2 text-zinc-400 hover:text-zinc-100 bg-zinc-950 border border-zinc-800 rounded-lg transition" title="Comentários">
-                              <MessageSquare className="w-4 h-4" />
+                            <button onClick={() => openComments(ticket)} className="p-2 text-zinc-400 hover:text-zinc-100 bg-zinc-900 border border-zinc-800 rounded-lg transition" title="Comentários">
+                              <MessageSquare className="w-3.5 h-3.5" />
                             </button>
-                            <button onClick={() => handleOpenEditModal(ticket)} className="p-2 text-zinc-400 hover:text-zinc-100 bg-zinc-950 border border-zinc-800 rounded-lg transition" title="Editar">
-                              <Edit3 className="w-4 h-4" />
-                            </button>
-                            <button onClick={() => handleDeleteTicket(ticket.id)} className="p-2 text-red-400 hover:text-red-300 bg-zinc-950 border border-zinc-800 rounded-lg transition" title="Apagar">
-                              <Trash2 className="w-4 h-4" />
+                            <button onClick={() => handleOpenEditModal(ticket)} className="p-2 text-zinc-400 hover:text-zinc-100 bg-zinc-900 border border-zinc-800 rounded-lg transition" title="Editar">
+                              <Edit3 className="w-3.5 h-3.5" />
                             </button>
                           </div>
                         </div>
@@ -1228,206 +1128,75 @@ export default function App() {
                   </div>
                 )}
               </div>
-            )}
-          </div>
-        )}
-
-        {/* EQUIPAS */}
-        {activeTab === 'teams' && (
-          <div>
-            <div className="flex flex-col sm:flex-row gap-4 items-center justify-between mb-6 shrink-0">
-              <div className="relative w-full sm:w-80">
-                <Search className="w-4 h-4 text-zinc-500 absolute left-3.5 top-3" />
-                <input type="text" placeholder="Pesquisar equipas..." value={teamSearch} onChange={e => setTeamSearch(e.target.value)} className="w-full bg-zinc-900 border border-zinc-800 rounded-xl pl-10 pr-4 py-2 text-sm text-zinc-100 focus:outline-none" />
-              </div>
-              <button onClick={() => setShowTeamModal(true)} className="flex items-center gap-2 bg-zinc-100 text-zinc-950 font-medium text-sm px-4 py-2 rounded-xl hover:bg-white transition ml-auto sm:ml-0">
-                <Users className="w-4 h-4" /> Nova Equipa
-              </button>
             </div>
-            
-            {filteredTeams.length === 0 ? (
-              <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-12 text-center text-zinc-500 text-sm">
-                Nenhuma equipa encontrada.
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 gap-6">
-                {filteredTeams.map(team => {
-                  const teamProjects = projects.filter(p => p.team_id === team.id);
-                  const leaderName = getTeamLeaderName(team);
-                  return (
-                    <div key={team.id} className="bg-zinc-900 border border-zinc-800/80 rounded-2xl p-6 shadow-xl space-y-6">
-                      <div className="flex items-start justify-between">
-                        <div>
-                          <h2 className="text-lg font-bold text-zinc-100 tracking-tight">{team.name}</h2>
-                          <p className="text-xs text-zinc-400 mt-0.5">{team.description || 'Sem descrição'}</p>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <button onClick={() => openEditTeamModal(team)} className="p-2 bg-zinc-950 border border-zinc-800 text-zinc-400 hover:text-zinc-100 rounded-xl transition"><Edit3 className="w-4 h-4" /></button>
-                          <button onClick={() => handleDeleteTeam(team.id)} className="p-2 bg-zinc-950 border border-zinc-800 text-red-400 hover:text-red-300 rounded-xl transition"><Trash2 className="w-4 h-4" /></button>
-                        </div>
-                      </div>
+          )}
 
-                      <div className="flex flex-wrap items-center gap-6 text-xs text-zinc-300 border-y border-zinc-800/60 py-4">
-                        <div className="flex items-center gap-2"><Crown className="w-4 h-4 text-amber-400" /><span>Líder: <strong className="text-zinc-100">{leaderName}</strong></span></div>
-                        <div className="flex items-center gap-2 text-zinc-400"><Users className="w-4 h-4 text-zinc-400" /><span>{team.members ? team.members.length : 0} membro(s)</span></div>
-                        <div className="flex items-center gap-2 text-zinc-400"><Folder className="w-4 h-4 text-zinc-400" /><span>{teamProjects.length} projeto(s)</span></div>
-                      </div>
-
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                        <div className="space-y-3">
-                          <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-400">Membros</h3>
-                          <div className="space-y-2">
-                            {team.members && team.members.map(member => (
-                              <div key={member.id} className="bg-zinc-950 border border-zinc-800 p-3 rounded-xl flex items-center justify-between text-xs">
-                                <span className="font-medium text-zinc-200">{getUserDisplayName(member)}</span>
-                                {member.id === team.owner_id && <span className="text-[10px] text-amber-400 font-medium bg-amber-500/10 border border-amber-500/20 px-2 py-0.5 rounded-lg">Líder</span>}
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                        <div className="space-y-3">
-                          <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-400">Projetos</h3>
-                          <div className="space-y-2">
-                            {teamProjects.map(proj => (
-                              <div key={proj.id} className="bg-zinc-950 border border-zinc-800 p-3 rounded-xl text-xs text-zinc-200 font-medium">📁 {proj.name}</div>
-                            ))}
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* CALENDÁRIO */}
-        {activeTab === 'calendar' && (() => {
-          const year = currentDate.getFullYear();
-          const month = currentDate.getMonth();
-          
-          const monthNames = [
-            "janeiro", "fevereiro", "março", "abril", "maio", "junho", 
-            "julho", "agosto", "setembro", "outubro", "novembro", "dezembro"
-          ];
-
-          const userTeams = teams.filter(t => t.members?.some(m => m.id === currentUserInfo.id));
-          const availableTeams = (currentUserInfo.role === 'Admin' || currentUserInfo.role === 'Manager') ? teams : userTeams;
-
-          const calendarFilteredTickets = tickets.filter(t => {
-            if (!t.due_date) return false;
-            if (calendarTeamFilter === 'all') return true;
-            
-            const teamProjIds = projects.filter(p => p.team_id === Number(calendarTeamFilter)).map(p => p.id);
-            return teamProjIds.includes(t.project_id);
-          });
-
-          const firstDayIndex = new Date(year, month, 1).getDay();
-          const adjustedFirstDay = (firstDayIndex === 0) ? 6 : firstDayIndex - 1;
-          const daysInMonth = new Date(year, month + 1, 0).getDate();
-
-          const prevMonth = () => setCurrentDate(new Date(year, month - 1, 1));
-          const nextMonth = () => setCurrentDate(new Date(year, month + 1, 1));
-          const goToToday = () => setCurrentDate(new Date());
-
-          const todayString = getLocalDateString();
-
-          return (
-            <div className="flex flex-col h-[calc(100vh-100px)]">
-              <div className="flex items-center justify-between mb-6 shrink-0">
+          {/* ADMINISTRAÇÃO */}
+          {activeTab === 'admin' && isAdmin && (
+            <div className="max-w-6xl mx-auto py-4">
+              <div className="flex items-center justify-between mb-6">
                 <div>
-                  <h1 className="text-xl font-bold tracking-tight">Calendário</h1>
-                  <p className="text-xs text-zinc-400">Visualize prazos e marcos dos projetos</p>
+                  <h1 className="text-xl font-bold tracking-tight text-amber-400 flex items-center gap-2">
+                    <ShieldAlert className="w-5 h-5" /> Painel de Administração
+                  </h1>
+                  <p className="text-xs text-zinc-400 mt-1">Gestão global de utilizadores, acessos e relatórios do sistema</p>
                 </div>
-
                 <div className="flex items-center gap-3">
-                  <select 
-                    value={calendarTeamFilter} 
-                    onChange={e => setCalendarTeamFilter(e.target.value)}
-                    className="bg-zinc-900 border border-zinc-800 text-xs text-zinc-300 rounded-xl px-3 py-2 focus:outline-none"
-                  >
-                    <option value="all">Todas as equipas</option>
-                    {availableTeams.map(t => (
-                      <option key={t.id} value={t.id}>{t.name}</option>
-                    ))}
-                  </select>
-
+                  <button onClick={handleExportCSV} className="flex items-center gap-2 bg-zinc-900 hover:bg-zinc-850 border border-zinc-800 text-zinc-300 font-medium text-xs px-4 py-2 rounded-xl transition shadow-sm">
+                    <Download className="w-4 h-4 text-emerald-400" /> Exportar Relatório CSV
+                  </button>
                   <button onClick={() => fetchData()} className="p-2 bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-zinc-100 rounded-xl transition">
                     <RefreshCw className="w-4 h-4" />
+                  </button>
+                  <button onClick={handleOpenCreateUserModal} className="flex items-center gap-2 bg-amber-500/10 border border-amber-500/30 text-amber-400 font-medium text-xs px-4 py-2 rounded-xl hover:bg-amber-500/20 transition">
+                    <UserCheck className="w-4 h-4" /> Criar Utilizador
                   </button>
                 </div>
               </div>
 
-              <div className="bg-zinc-900/40 border border-zinc-800/80 rounded-2xl p-6 flex-1 flex flex-col shadow-xl">
-                <div className="flex items-center justify-between mb-6">
-                  <div className="flex items-center gap-2">
-                    <button onClick={prevMonth} className="p-2 bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-zinc-100 rounded-xl transition">
-                      <ChevronLeft className="w-4 h-4" />
-                    </button>
-                    <button onClick={nextMonth} className="p-2 bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-zinc-100 rounded-xl transition">
-                      <ChevronRight className="w-4 h-4" />
-                    </button>
-                    <button onClick={goToToday} className="px-3 py-2 bg-zinc-900 border border-zinc-800 text-zinc-300 hover:text-zinc-100 text-xs rounded-xl transition">
-                      Hoje
-                    </button>
-                  </div>
-                  <h2 className="text-sm font-semibold uppercase tracking-wider text-zinc-200">
-                    {monthNames[month]} de {year}
-                  </h2>
+              <div className="bg-zinc-900 border border-zinc-800 rounded-2xl overflow-hidden shadow-xl">
+                <div className="grid grid-cols-12 gap-4 px-6 py-4 border-b border-zinc-800/80 bg-zinc-900/50 text-xs font-semibold text-zinc-400 uppercase tracking-wider">
+                  <div className="col-span-1">ID</div>
+                  <div className="col-span-3">Nome</div>
+                  <div className="col-span-4">Email</div>
+                  <div className="col-span-2">Cargo</div>
+                  <div className="col-span-2 text-right">Ações</div>
                 </div>
 
-                <div className="grid grid-cols-7 gap-2 mb-2 text-center">
-                  {['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb', 'Dom'].map(d => (
-                    <span key={d} className="text-[11px] font-medium text-zinc-500 uppercase tracking-wider">{d}</span>
-                  ))}
-                </div>
-
-                <div className="grid grid-cols-7 gap-2 flex-1 auto-rows-fr">
-                  {Array.from({ length: adjustedFirstDay }).map((_, i) => (
-                    <div key={`empty-${i}`} className="bg-zinc-950/20 border border-zinc-900 rounded-xl opacity-20"></div>
-                  ))}
-
-                  {Array.from({ length: daysInMonth }).map((_, i) => {
-                    const dayNum = i + 1;
-                    const formattedDay = String(dayNum).padStart(2, '0');
-                    const formattedMonth = String(month + 1).padStart(2, '0');
-                    const dateStr = `${year}-${formattedMonth}-${formattedDay}`;
-                    
-                    const isToday = dateStr === todayString;
-                    const dayTasks = calendarFilteredTickets.filter(t => t.due_date && t.due_date.split('T')[0] === dateStr);
-
+                <div className="divide-y divide-zinc-800/60">
+                  {usersList.map(user => {
+                    const isMe = user.id === currentUserInfo.id;
                     return (
-                      <div 
-                        key={dateStr} 
-                        onClick={() => setSelectedCalendarDate(dateStr)}
-                        className={`bg-zinc-950/60 border rounded-xl p-2 flex flex-col overflow-hidden transition cursor-pointer hover:border-zinc-500 ${isToday ? 'border-zinc-500 shadow-sm' : 'border-zinc-850'}`}
-                      >
-                        <div className="flex items-center justify-between mb-1.5">
-                          <span className={`text-xs font-mono font-medium ${isToday ? 'bg-zinc-800 text-zinc-100 w-5 h-5 rounded-full flex items-center justify-center font-bold shadow-sm' : 'text-zinc-400'}`}>
-                            {dayNum}
-                          </span>
-                          {dayTasks.length > 0 && (
-                            <span className="text-[10px] font-mono text-zinc-500 bg-zinc-900 px-1.5 py-0.5 rounded">
-                              {dayTasks.length}
-                            </span>
-                          )}
+                      <div key={user.id} className="grid grid-cols-12 gap-4 px-6 py-4 items-center hover:bg-zinc-850/50 transition">
+                        <div className="col-span-1 text-xs font-mono text-zinc-500">#{user.id}</div>
+                        <div className="col-span-3 flex items-center gap-3">
+                          <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold ${user.role === 'Admin' ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20' : 'bg-zinc-800 text-zinc-300 border border-zinc-700'}`}>
+                            {user.name ? user.name.charAt(0).toUpperCase() : 'U'}
+                          </div>
+                          <span className="text-sm font-medium text-zinc-200 truncate">{user.name || 'Sem nome'}</span>
                         </div>
-
-                        <div className="flex-1 overflow-y-auto space-y-1 pr-0.5">
-                          {dayTasks.map(ticket => {
-                            const isDone = ticket.status && ['done', 'concluído', 'concluido'].includes(ticket.status.toLowerCase());
-                            return (
-                              <div 
-                                key={ticket.id} 
-                                onClick={(e) => { e.stopPropagation(); openComments(ticket); }}
-                                title={ticket.title}
-                                className={`text-[10px] px-2 py-1 rounded-lg border truncate transition ${getCalendarTicketStyle(ticket)}`}
-                              >
-                                {ticket.title}
-                              </div>
-                            );
-                          })}
+                        <div className="col-span-4 text-sm text-zinc-400 truncate">{user.email}</div>
+                        <div className="col-span-2">
+                          <select 
+                            value={user.role} 
+                            onChange={(e) => handleRoleChange(user.id, e.target.value)}
+                            disabled={isMe}
+                            className={`w-full bg-zinc-950 border text-xs rounded-xl px-3 py-1.5 focus:outline-none transition ${user.role === 'Admin' ? 'border-amber-500/30 text-amber-400' : 'border-zinc-800 text-zinc-300'} ${isMe ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:border-zinc-600'}`}
+                          >
+                            <option value="Member">Member</option>
+                            <option value="Manager">Manager</option>
+                            <option value="Admin">Admin</option>
+                          </select>
+                        </div>
+                        <div className="col-span-2 flex justify-end gap-2">
+                          <button 
+                            onClick={() => handleDeleteUser(user.id)}
+                            disabled={isMe}
+                            className={`p-2 rounded-xl border transition flex items-center justify-center ${isMe ? 'bg-zinc-950 border-zinc-900 text-zinc-700 cursor-not-allowed opacity-50' : 'bg-zinc-950 border-zinc-800 text-red-400 hover:text-red-300 hover:bg-red-500/10'}`}
+                            title={isMe ? "Não te podes apagar a ti próprio" : "Apagar utilizador"}
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
                         </div>
                       </div>
                     );
@@ -1435,155 +1204,857 @@ export default function App() {
                 </div>
               </div>
             </div>
-          );
-        })()}
+          )}
 
-        {/* DEFINIÇÕES */}
-        {activeTab === 'settings' && (
-          <div className="max-w-6xl mx-auto py-4">
-            <div className="mb-6">
-              <h1 className="text-xl font-bold tracking-tight">Definições</h1>
-              <p className="text-xs text-zinc-400">Gerencie a sua conta</p>
+          {/* PROJETOS */}
+          {activeTab === 'projects' && (
+            <div>
+              <div className="flex items-center justify-between mb-6">
+                <h1 className="text-xl font-bold tracking-tight">Projetos</h1>
+                <button onClick={handleOpenCreateProjectModal} className="flex items-center gap-2 bg-zinc-100 text-zinc-950 font-medium text-sm px-4 py-2 rounded-xl hover:bg-white transition">
+                  <FolderPlus className="w-4 h-4" /> Novo Projeto
+                </button>
+              </div>
+              
+              {availableProjects.length === 0 ? (
+                <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-12 text-center text-zinc-500 text-sm">
+                  Nenhum projeto associado.
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                  {availableProjects.map(proj => {
+                    const projTickets = availableTickets.filter(t => t.project_id === proj.id);
+                    const total = projTickets.length;
+                    const done = projTickets.filter(t => t.status && ['done', 'concluído', 'concluido'].includes(t.status.toLowerCase())).length;
+                    const percent = total === 0 ? 0 : Math.round((done / total) * 100);
+                    const team = availableTeams.find(t => t.id === proj.team_id);
+
+                    return (
+                      <div key={proj.id} className="bg-zinc-900 border border-zinc-800/80 rounded-2xl p-6 shadow-xl flex flex-col group hover:border-zinc-700 transition">
+                        <div className="flex items-start justify-between mb-2">
+                          <div className="flex-1 pr-4">
+                            <h2 className="font-semibold text-base text-zinc-100 truncate" title={proj.name}>{proj.name}</h2>
+                            <p className="text-xs text-zinc-400 mt-1 line-clamp-2 min-h-[32px]">{proj.description || 'Sem descrição'}</p>
+                          </div>
+                          <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition">
+                            <button onClick={() => openEditProjectModal(proj)} className="p-1.5 bg-zinc-950 border border-zinc-800 text-zinc-400 hover:text-zinc-100 rounded-lg transition" title="Editar Projeto"><Edit3 className="w-3.5 h-3.5" /></button>
+                            <button onClick={() => handleDeleteProject(proj.id)} className="p-1.5 bg-zinc-950 border border-zinc-800 text-red-400 hover:text-red-300 rounded-lg transition" title="Apagar Projeto"><Trash2 className="w-3.5 h-3.5" /></button>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2 mt-4 text-xs">
+                          <div className="flex items-center gap-1.5 bg-zinc-950 border border-zinc-800 px-2 py-1 rounded-md text-zinc-400">
+                            <Users className="w-3.5 h-3.5" />
+                            <span className="truncate max-w-[120px]">{team ? team.name : 'Equipa Geral'}</span>
+                          </div>
+                        </div>
+
+                        <div className="mt-6 mb-4">
+                          <div className="flex items-center justify-between text-xs mb-2">
+                            <span className="text-zinc-400 font-medium">Progresso</span>
+                            <span className="text-emerald-400 font-bold">{percent}%</span>
+                          </div>
+                          <div className="w-full bg-zinc-950 border border-zinc-800 rounded-full h-2.5 overflow-hidden">
+                            <div 
+                              className="bg-emerald-500 h-2.5 rounded-full transition-all duration-500 ease-out" 
+                              style={{ width: `${percent}%` }}
+                            ></div>
+                          </div>
+                          <p className="text-[10px] text-zinc-500 mt-2 text-right">
+                            {done} de {total} tarefas concluídas
+                          </p>
+                        </div>
+
+                        <button 
+                          onClick={() => goToProjectTasks(proj.id)}
+                          className="mt-auto w-full flex items-center justify-center gap-2 bg-zinc-950 hover:bg-zinc-800 border border-zinc-800 text-zinc-300 py-2 rounded-xl text-xs font-medium transition"
+                        >
+                          <ListFilter className="w-3.5 h-3.5" /> Ver Tarefas
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
+          )}
 
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              {/* PERFIL */}
-              <div className="bg-zinc-900/80 border border-zinc-800/80 rounded-2xl p-6 shadow-sm flex flex-col">
-                <h2 className="text-base font-semibold text-zinc-100">Perfil</h2>
-                <p className="text-xs text-zinc-400 mb-6">Atualize as suas informações pessoais</p>
+          {/* TAREFAS */}
+          {activeTab === 'tasks' && (
+            <div className="flex flex-col h-full min-h-[calc(100vh-160px)]">
+              <div className="flex flex-col sm:flex-row gap-4 items-center justify-between mb-6 shrink-0">
+                <div className="relative w-full sm:w-64">
+                  <Search className="w-4 h-4 text-zinc-500 absolute left-3.5 top-3" />
+                  <input type="text" placeholder="Pesquisar tarefas..." value={search} onChange={e => setSearch(e.target.value)} className="w-full bg-zinc-900 border border-zinc-800 rounded-xl pl-10 pr-4 py-2 text-sm text-zinc-100 focus:outline-none" />
+                </div>
 
-                <div className="flex items-center gap-4 mb-6">
-                  <div className="w-12 h-12 rounded-full bg-zinc-100 text-zinc-950 flex items-center justify-center text-lg font-bold shadow-inner">
-                    {currentUserInfo.name ? currentUserInfo.name.charAt(0).toUpperCase() : 'U'}
+                <div className="flex items-center gap-3 w-full sm:w-auto flex-wrap">
+                  <div className="bg-zinc-900 border border-zinc-800 p-1 rounded-xl flex items-center">
+                    <button onClick={() => setTaskViewMode('kanban')} className={`px-3 py-1.5 rounded-lg text-xs font-medium transition flex items-center gap-1.5 ${taskViewMode === 'kanban' ? 'bg-zinc-800 text-zinc-100 shadow-sm' : 'text-zinc-400 hover:text-zinc-200'}`}>
+                      <Kanban className="w-3.5 h-3.5" /> Kanban
+                    </button>
+                    <button onClick={() => setTaskViewMode('list')} className={`px-3 py-1.5 rounded-lg text-xs font-medium transition flex items-center gap-1.5 ${taskViewMode === 'list' ? 'bg-zinc-800 text-zinc-100 shadow-sm' : 'text-zinc-400 hover:text-zinc-200'}`}>
+                      <ListFilter className="w-3.5 h-3.5" /> Lista
+                    </button>
                   </div>
+
+                  <div className="flex items-center bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-sm text-zinc-300">
+                    <ArrowUpDown className="w-3.5 h-3.5 mr-2 text-zinc-500" />
+                    <select value={sortBy} onChange={e => setSortBy(e.target.value)} className="bg-transparent text-zinc-300 focus:outline-none text-xs">
+                      <option value="newest" className="bg-zinc-900">Ordem de criação</option>
+                      <option value="deadline" className="bg-zinc-900">Deadline (Prazo)</option>
+                      <option value="priority" className="bg-zinc-900">Prioridade</option>
+                    </select>
+                  </div>
+
+                  <select value={projectFilter} onChange={e => setProjectFilter(e.target.value)} className="bg-zinc-900 border border-zinc-800 text-zinc-300 text-sm rounded-xl px-3 py-2 focus:outline-none">
+                    <option value="">Todos os projetos</option>
+                    {availableProjects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                  </select>
+
+                  {taskViewMode === 'list' && (
+                    <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)} className="bg-zinc-900 border border-zinc-800 text-zinc-300 text-sm rounded-xl px-3 py-2 focus:outline-none">
+                      <option value="">Estados (Ativos)</option>
+                      <option value="To Do">A fazer</option>
+                      <option value="In Progress">Em progresso</option>
+                      <option value="In Review">Em revisão</option>
+                      <option value="Done">Concluído</option>
+                    </select>
+                  )}
+
+                  <button onClick={handleOpenCreateModal} className="flex items-center gap-2 bg-zinc-100 text-zinc-950 font-medium text-sm px-4 py-2 rounded-xl hover:bg-white transition ml-auto sm:ml-0">
+                    <Plus className="w-4 h-4" /> Nova Tarefa
+                  </button>
+                </div>
+              </div>
+
+              {taskViewMode === 'kanban' ? (
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-4 flex-1 overflow-x-auto pb-4 items-start">
+                  {kanbanColumns.map(col => {
+                    const columnTickets = sortedTickets.filter(t => t.status === col.id);
+                    return (
+                      <div 
+                        key={col.id} 
+                        onDragOver={handleDragOver}
+                        onDrop={(e) => handleDrop(e, col.id)}
+                        className="bg-zinc-900/60 border border-zinc-800/80 rounded-2xl p-4 flex flex-col h-full min-h-[400px]"
+                      >
+                        <div className="flex items-center justify-between mb-4 pb-3 border-b border-zinc-800">
+                          <div className="flex items-center gap-2.5">
+                            <span className={`w-2.5 h-2.5 rounded-full ${col.color}`}></span>
+                            <h3 className="font-semibold text-sm text-zinc-200">{col.title}</h3>
+                          </div>
+                          <span className="text-xs font-mono text-zinc-400 bg-zinc-800 px-2 py-0.5 rounded-full">{columnTickets.length}</span>
+                        </div>
+
+                        <div className="flex-1 overflow-y-auto space-y-3 pr-1">
+                          {columnTickets.length === 0 ? (
+                            <div className="h-32 border border-dashed border-zinc-800/80 rounded-xl flex items-center justify-center text-xs text-zinc-600">
+                              Arraste tarefas aqui
+                            </div>
+                          ) : (
+                            columnTickets.map(ticket => {
+                              const isRunning = activeTimerTask?.id === ticket.id;
+                              const assignee = getAssigneeName(ticket.assigned_to_id);
+                              return (
+                                <div 
+                                  key={ticket.id}
+                                  draggable
+                                  onDragStart={(e) => handleDragStart(e, ticket.id)}
+                                  className="bg-zinc-950 border border-zinc-800/90 hover:border-zinc-700 p-4 rounded-xl cursor-grab active:cursor-grabbing transition space-y-3 shadow-sm group"
+                                >
+                                  <div className="flex items-start justify-between gap-2">
+                                    <div className="flex items-center gap-2">
+                                      <span className="text-xs font-mono text-zinc-500">#{ticket.id}</span>
+                                      {ticket.priority && (
+                                        <span className={`text-[10px] px-2 py-0.5 rounded border font-medium ${getPriorityBadgeStyle(ticket.priority)}`}>
+                                          {ticket.priority}
+                                        </span>
+                                      )}
+                                    </div>
+                                    <div className="flex items-center gap-1 opacity-80 group-hover:opacity-100 transition">
+                                      <button onClick={() => startTimer(ticket)} title="Iniciar Cronómetro" className={`p-1.5 rounded-md border transition ${isRunning ? 'bg-blue-500 text-zinc-950 border-blue-400 animate-pulse' : 'bg-zinc-900 text-zinc-400 hover:text-zinc-100 border-zinc-800'}`}>
+                                        <Play className="w-3 h-3 fill-current" />
+                                      </button>
+                                      <button onClick={() => openComments(ticket)} title="Comentários" className="p-1.5 bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-zinc-100 rounded-md transition">
+                                        <MessageSquare className="w-3 h-3" />
+                                      </button>
+                                      <button onClick={() => handleOpenEditModal(ticket)} title="Editar" className="p-1.5 bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-zinc-100 rounded-md transition">
+                                        <Edit3 className="w-3 h-3" />
+                                      </button>
+                                      <button onClick={() => handleDeleteTicket(ticket.id)} title="Apagar" className="p-1.5 bg-zinc-900 border border-zinc-800 text-red-400 hover:text-red-300 rounded-md transition">
+                                        <Trash2 className="w-3 h-3" />
+                                      </button>
+                                    </div>
+                                  </div>
+
+                                  <div>
+                                    <h4 className="font-medium text-sm text-zinc-100 leading-snug">{ticket.title}</h4>
+                                    <p className="text-xs text-zinc-400 mt-1 line-clamp-2">{ticket.description || 'Sem descrição'}</p>
+                                  </div>
+
+                                  <div className="flex items-center justify-between text-[11px] pt-2 border-t border-zinc-900">
+                                    <span className="bg-zinc-900 text-zinc-400 px-2 py-0.5 rounded border border-zinc-800">📁 {getProjectName(ticket.project_id)}</span>
+                                    {assignee && <span className="text-emerald-400 font-medium">👤 {assignee}</span>}
+                                  </div>
+                                </div>
+                              );
+                            })
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="bg-zinc-900 border border-zinc-800 rounded-xl overflow-hidden flex-1 overflow-y-auto min-h-[400px]">
+                  {sortedTickets.length === 0 ? (
+                    <div className="p-12 text-center text-zinc-500 text-sm">Nenhuma tarefa encontrada.</div>
+                  ) : (
+                    <div className="divide-y divide-zinc-800">
+                      {sortedTickets.map(ticket => {
+                        const isRunning = activeTimerTask?.id === ticket.id;
+                        const isDone = ticket.status && ['done', 'concluído', 'concluido'].includes(ticket.status.toLowerCase());
+                        const assignee = getAssigneeName(ticket.assigned_to_id);
+                        return (
+                          <div key={ticket.id} className={`p-5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 transition ${isDone ? 'bg-zinc-900/30 opacity-60' : 'hover:bg-zinc-850/50'}`}>
+                            <div className="space-y-1">
+                              <div className="flex items-center gap-3">
+                                <span className="text-xs text-zinc-500 font-mono">#{ticket.id}</span>
+                                <h2 className={`font-medium text-sm ${isDone ? 'line-through text-zinc-400' : 'text-zinc-100'}`}>{ticket.title}</h2>
+                                <span className="text-[10px] bg-zinc-950 border border-zinc-800 px-2 py-0.5 rounded text-zinc-400">📁 {getProjectName(ticket.project_id)}</span>
+                                {ticket.priority && (
+                                  <span className={`text-[10px] px-2 py-0.5 rounded border font-medium ${getPriorityBadgeStyle(ticket.priority)}`}>
+                                    {ticket.priority}
+                                  </span>
+                                )}
+                                {isDone && <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">CONCLUÍDO</span>}
+                                {isRunning && <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-400 border border-blue-500/30 animate-pulse">ATIVO</span>}
+                              </div>
+                              <p className="text-xs text-zinc-400 pl-7">{ticket.description || 'Sem descrição'}</p>
+                              <div className="text-[11px] text-zinc-500 pl-7 flex items-center gap-3">
+                                <span>⏱️ <strong>{ticket.tracked_hours || 0}h</strong> / 🎯 <strong>{ticket.estimated_hours || 0}h</strong></span>
+                                {ticket.due_date && <span>📅 <strong>{ticket.due_date.split('T')[0]}</strong></span>}
+                                {assignee && <span className="text-emerald-400">👤 {assignee}</span>}
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-3">
+                              <select 
+                                value={ticket.status} 
+                                onChange={e => handleStatusChange(ticket.id, e.target.value)}
+                                className="bg-zinc-950 border border-zinc-800 text-xs text-zinc-300 rounded-lg px-2.5 py-1.5 focus:outline-none"
+                              >
+                                <option value="To Do">A fazer</option>
+                                <option value="In Progress">Em progresso</option>
+                                <option value="In Review">Em revisão</option>
+                                <option value="Done">Concluído</option>
+                              </select>
+                              <button onClick={() => startTimer(ticket)} disabled={isDone} className={`p-2 rounded-lg border transition ${isDone ? 'opacity-40 cursor-not-allowed bg-zinc-950 border-zinc-900 text-zinc-700' : isRunning ? 'bg-blue-500 text-zinc-950 border-blue-400' : 'bg-zinc-950 text-zinc-400 hover:text-zinc-100 border-zinc-800'}`} title="Iniciar Cronómetro">
+                                <Play className="w-4 h-4 fill-current" />
+                              </button>
+                              <button onClick={() => openComments(ticket)} className="p-2 text-zinc-400 hover:text-zinc-100 bg-zinc-950 border border-zinc-800 rounded-lg transition" title="Comentários">
+                                <MessageSquare className="w-4 h-4" />
+                              </button>
+                              <button onClick={() => handleOpenEditModal(ticket)} className="p-2 text-zinc-400 hover:text-zinc-100 bg-zinc-950 border border-zinc-800 rounded-lg transition" title="Editar">
+                                <Edit3 className="w-4 h-4" />
+                              </button>
+                              <button onClick={() => handleDeleteTicket(ticket.id)} className="p-2 text-red-400 hover:text-red-300 bg-zinc-950 border border-zinc-800 rounded-lg transition" title="Apagar">
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* EQUIPAS */}
+          {activeTab === 'teams' && (
+            <div>
+              <div className="flex flex-col sm:flex-row gap-4 items-center justify-between mb-6 shrink-0">
+                <div className="relative w-full sm:w-80">
+                  <Search className="w-4 h-4 text-zinc-500 absolute left-3.5 top-3" />
+                  <input type="text" placeholder="Pesquisar equipas..." value={teamSearch} onChange={e => setTeamSearch(e.target.value)} className="w-full bg-zinc-900 border border-zinc-800 rounded-xl pl-10 pr-4 py-2 text-sm text-zinc-100 focus:outline-none" />
+                </div>
+                <button onClick={() => setShowTeamModal(true)} className="flex items-center gap-2 bg-zinc-100 text-zinc-950 font-medium text-sm px-4 py-2 rounded-xl hover:bg-white transition ml-auto sm:ml-0">
+                  <Users className="w-4 h-4" /> Nova Equipa
+                </button>
+              </div>
+              
+              {filteredTeams.length === 0 ? (
+                <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-12 text-center text-zinc-500 text-sm">
+                  Nenhuma equipa associada.
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 gap-6">
+                  {filteredTeams.map(team => {
+                    const teamProjects = availableProjects.filter(p => p.team_id === team.id);
+                    const leaderName = getTeamLeaderName(team);
+                    return (
+                      <div key={team.id} className="bg-zinc-900 border border-zinc-800/80 rounded-2xl p-6 shadow-xl space-y-6">
+                        <div className="flex items-start justify-between">
+                          <div>
+                            <h2 className="text-lg font-bold text-zinc-100 tracking-tight">{team.name}</h2>
+                            <p className="text-xs text-zinc-400 mt-0.5">{team.description || 'Sem descrição'}</p>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <button onClick={() => openEditTeamModal(team)} className="p-2 bg-zinc-950 border border-zinc-800 text-zinc-400 hover:text-zinc-100 rounded-xl transition"><Edit3 className="w-4 h-4" /></button>
+                            <button onClick={() => handleDeleteTeam(team.id)} className="p-2 bg-zinc-950 border border-zinc-800 text-red-400 hover:text-red-300 rounded-xl transition"><Trash2 className="w-4 h-4" /></button>
+                          </div>
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-6 text-xs text-zinc-300 border-y border-zinc-800/60 py-4">
+                          <div className="flex items-center gap-2"><Crown className="w-4 h-4 text-amber-400" /><span>Líder: <strong className="text-zinc-100">{leaderName}</strong></span></div>
+                          <div className="flex items-center gap-2 text-zinc-400"><Users className="w-4 h-4 text-zinc-400" /><span>{team.members ? team.members.length : 0} membro(s)</span></div>
+                          <div className="flex items-center gap-2 text-zinc-400"><Folder className="w-4 h-4 text-zinc-400" /><span>{teamProjects.length} projeto(s)</span></div>
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                          <div className="space-y-3">
+                            <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-400">Membros</h3>
+                            <div className="space-y-2">
+                              {team.members && team.members.map(member => (
+                                <div key={member.id} className="bg-zinc-950 border border-zinc-800 p-3 rounded-xl flex items-center justify-between text-xs">
+                                  <span className="font-medium text-zinc-200">{getUserDisplayName(member)}</span>
+                                  {member.id === team.owner_id && <span className="text-[10px] text-amber-400 font-medium bg-amber-500/10 border border-amber-500/20 px-2 py-0.5 rounded-lg">Líder</span>}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                          <div className="space-y-3">
+                            <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-400">Projetos</h3>
+                            <div className="space-y-2">
+                              {teamProjects.map(proj => (
+                                <div key={proj.id} className="bg-zinc-950 border border-zinc-800 p-3 rounded-xl text-xs text-zinc-200 font-medium">📁 {proj.name}</div>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* CALENDÁRIO */}
+          {activeTab === 'calendar' && (() => {
+            const year = currentDate.getFullYear();
+            const month = currentDate.getMonth();
+            
+            const monthNames = [
+              "janeiro", "fevereiro", "março", "abril", "maio", "junho", 
+              "julho", "agosto", "setembro", "outubro", "novembro", "dezembro"
+            ];
+
+            const calendarFilteredTickets = availableTickets.filter(t => {
+              if (!t.due_date) return false;
+              if (calendarTeamFilter === 'all') return true;
+              
+              const teamProjIds = availableProjects.filter(p => p.team_id === Number(calendarTeamFilter)).map(p => p.id);
+              return teamProjIds.includes(t.project_id);
+            });
+
+            const firstDayIndex = new Date(year, month, 1).getDay();
+            const adjustedFirstDay = (firstDayIndex === 0) ? 6 : firstDayIndex - 1;
+            const daysInMonth = new Date(year, month + 1, 0).getDate();
+
+            const prevMonth = () => setCurrentDate(new Date(year, month - 1, 1));
+            const nextMonth = () => setCurrentDate(new Date(year, month + 1, 1));
+            const goToToday = () => setCurrentDate(new Date());
+
+            const todayString = getLocalDateString(new Date());
+
+            return (
+              <div className="flex flex-col h-[calc(100vh-100px)]">
+                <div className="flex items-center justify-between mb-6 shrink-0">
                   <div>
-                    <p className="text-sm font-semibold text-zinc-100">{currentUserInfo.name || 'Utilizador'}</p>
-                    <p className="text-xs text-zinc-400">{currentUserInfo.email}</p>
+                    <h1 className="text-xl font-bold tracking-tight">Calendário</h1>
+                    <p className="text-xs text-zinc-400">Visualize prazos e marcos dos projetos</p>
+                  </div>
+
+                  <div className="flex items-center gap-3">
+                    <select 
+                      value={calendarTeamFilter} 
+                      onChange={e => setCalendarTeamFilter(e.target.value)}
+                      className="bg-zinc-900 border border-zinc-800 text-xs text-zinc-300 rounded-xl px-3 py-2 focus:outline-none"
+                    >
+                      <option value="all">Todas as equipas</option>
+                      {availableTeams.map(t => (
+                        <option key={t.id} value={t.id}>{t.name}</option>
+                      ))}
+                    </select>
+
+                    <button onClick={() => fetchData()} className="p-2 bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-zinc-100 rounded-xl transition">
+                      <RefreshCw className="w-4 h-4" />
+                    </button>
                   </div>
                 </div>
 
-                <form onSubmit={handleUpdateProfile} className="space-y-4 flex-1 flex flex-col">
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-[11px] font-medium text-zinc-400 mb-1.5 uppercase tracking-wider">Nome</label>
-                      <input 
-                        type="text" 
-                        value={settingsName} 
-                        onChange={e => setSettingsName(e.target.value)} 
-                        className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-sm text-zinc-100 focus:outline-none focus:border-zinc-700 transition" 
-                        placeholder="O teu nome" 
-                      />
+                <div className="bg-zinc-900/40 border border-zinc-800/80 rounded-2xl p-6 flex-1 flex flex-col shadow-xl min-h-[500px]">
+                  <div className="flex items-center justify-between mb-6">
+                    <div className="flex items-center gap-2">
+                      <button onClick={prevMonth} className="p-2 bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-zinc-100 rounded-xl transition">
+                        <ChevronLeft className="w-4 h-4" />
+                      </button>
+                      <button onClick={nextMonth} className="p-2 bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-zinc-100 rounded-xl transition">
+                        <ChevronRight className="w-4 h-4" />
+                      </button>
+                      <button onClick={goToToday} className="px-3 py-2 bg-zinc-900 border border-zinc-800 text-zinc-300 hover:text-zinc-100 text-xs rounded-xl transition">
+                        Hoje
+                      </button>
                     </div>
-                    <div>
-                      <label className="block text-[11px] font-medium text-zinc-400 mb-1.5 uppercase tracking-wider">Email</label>
-                      <input 
-                        type="email" 
-                        value={settingsEmail} 
-                        onChange={e => setSettingsEmail(e.target.value)} 
-                        required 
-                        className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-sm text-zinc-100 focus:outline-none focus:border-zinc-700 transition" 
-                        placeholder="teu.email@empresa.com" 
-                      />
-                    </div>
+                    <h2 className="text-sm font-semibold uppercase tracking-wider text-zinc-200">
+                      {monthNames[month]} de {year}
+                    </h2>
                   </div>
 
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-[11px] font-medium text-zinc-400 mb-1.5 uppercase tracking-wider">Cargo</label>
-                      <input 
-                        type="text" 
-                        value={currentUserInfo.role} 
-                        disabled 
-                        className="w-full bg-zinc-950/50 border border-zinc-800/50 rounded-xl px-3.5 py-2.5 text-sm text-zinc-500 cursor-not-allowed" 
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-[11px] font-medium text-zinc-400 mb-1.5 uppercase tracking-wider">ID de Colaborador</label>
-                      <input 
-                        type="text" 
-                        value={`#${currentUserInfo.id}`} 
-                        disabled 
-                        className="w-full bg-zinc-950/50 border border-zinc-800/50 rounded-xl px-3.5 py-2.5 text-sm text-zinc-500 cursor-not-allowed" 
-                      />
-                    </div>
+                  <div className="grid grid-cols-7 gap-2 mb-2 text-center">
+                    {['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb', 'Dom'].map(d => (
+                      <span key={d} className="text-[11px] font-medium text-zinc-500 uppercase tracking-wider">{d}</span>
+                    ))}
                   </div>
 
-                  {profileMessage && (
-                    <p className={`text-xs mt-2 ${profileMessage.includes('sucesso') ? 'text-emerald-400' : 'text-red-400'}`}>
-                      {profileMessage}
-                    </p>
-                  )}
+                  <div className="grid grid-cols-7 gap-2 flex-1 auto-rows-fr">
+                    {Array.from({ length: adjustedFirstDay }).map((_, i) => (
+                      <div key={`empty-${i}`} className="bg-zinc-950/20 border border-zinc-900 rounded-xl opacity-20"></div>
+                    ))}
 
-                  <div className="mt-auto pt-6 flex justify-end">
-                    <button type="submit" className="bg-zinc-100 text-zinc-950 font-medium text-xs px-4 py-2 rounded-xl hover:bg-white transition shadow-sm">
-                      Guardar alterações
-                    </button>
+                    {Array.from({ length: daysInMonth }).map((_, i) => {
+                      const dayNum = i + 1;
+                      const formattedDay = String(dayNum).padStart(2, '0');
+                      const formattedMonth = String(month + 1).padStart(2, '0');
+                      const dateStr = `${year}-${formattedMonth}-${formattedDay}`;
+                      
+                      const isToday = dateStr === todayString;
+                      const dayTasks = calendarFilteredTickets.filter(t => t.due_date && t.due_date.split('T')[0] === dateStr);
+
+                      return (
+                        <div 
+                          key={dateStr} 
+                          onClick={() => setSelectedCalendarDate(dateStr)}
+                          className={`bg-zinc-950/60 border rounded-xl p-2 flex flex-col overflow-hidden transition cursor-pointer hover:border-zinc-500 ${isToday ? 'border-zinc-500 shadow-sm' : 'border-zinc-850'}`}
+                        >
+                          <div className="flex items-center justify-between mb-1.5">
+                            <span className={`text-xs font-mono font-medium ${isToday ? 'bg-zinc-800 text-zinc-100 w-5 h-5 rounded-full flex items-center justify-center font-bold shadow-sm' : 'text-zinc-400'}`}>
+                              {dayNum}
+                            </span>
+                            {dayTasks.length > 0 && (
+                              <span className="text-[10px] font-mono text-zinc-500 bg-zinc-900 px-1.5 py-0.5 rounded">
+                                {dayTasks.length}
+                              </span>
+                            )}
+                          </div>
+
+                          <div className="flex-1 overflow-y-auto space-y-1 pr-0.5">
+                            {dayTasks.map(ticket => {
+                              const isDone = ticket.status && ['done', 'concluído', 'concluido'].includes(ticket.status.toLowerCase());
+                              return (
+                                <div 
+                                  key={ticket.id} 
+                                  onClick={(e) => { e.stopPropagation(); openComments(ticket); }}
+                                  title={ticket.title}
+                                  className={`text-[10px] px-2 py-1 rounded-lg border truncate transition ${getCalendarTicketStyle(ticket)}`}
+                                >
+                                  {ticket.title}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
-                </form>
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* DEFINIÇÕES */}
+          {activeTab === 'settings' && (
+            <div className="max-w-6xl mx-auto py-4">
+              <div className="mb-6">
+                <h1 className="text-xl font-bold tracking-tight">Definições</h1>
+                <p className="text-xs text-zinc-400">Gerencie a sua conta</p>
               </div>
 
-              {/* SEGURANÇA */}
-              <div className="bg-zinc-900/80 border border-zinc-800/80 rounded-2xl p-6 shadow-sm flex flex-col">
-                <h2 className="text-base font-semibold text-zinc-100">Segurança</h2>
-                <p className="text-xs text-zinc-400 mb-6">Altere a sua senha de acesso</p>
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                {/* PERFIL */}
+                <div className="bg-zinc-900/80 border border-zinc-800/80 rounded-2xl p-6 shadow-sm flex flex-col">
+                  <h2 className="text-base font-semibold text-zinc-100">Perfil</h2>
+                  <p className="text-xs text-zinc-400 mb-6">Atualize as suas informações pessoais</p>
 
-                <form onSubmit={handleUpdatePassword} className="space-y-4 flex-1 flex flex-col">
-                  <div>
-                    <label className="block text-[11px] font-medium text-zinc-400 mb-1.5 uppercase tracking-wider">Senha atual</label>
-                    <input 
-                      type="password" 
-                      value={settingsCurrentPassword} 
-                      onChange={e => setSettingsCurrentPassword(e.target.value)} 
-                      className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-sm text-zinc-100 focus:outline-none focus:border-zinc-700 transition" 
-                      placeholder="Para confirmar a sua identidade" 
-                    />
-                  </div>
-                  
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-[11px] font-medium text-zinc-400 mb-1.5 uppercase tracking-wider">Nova senha</label>
-                      <input 
-                        type="password" 
-                        value={settingsNewPassword} 
-                        onChange={e => setSettingsNewPassword(e.target.value)} 
-                        required 
-                        className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-sm text-zinc-100 focus:outline-none focus:border-zinc-700 transition" 
-                        placeholder="Mínimo de 6 caracteres" 
-                      />
+                  <div className="flex items-center gap-4 mb-6">
+                    <div className="w-12 h-12 rounded-full bg-zinc-100 text-zinc-950 flex items-center justify-center text-lg font-bold shadow-inner">
+                      {currentUserInfo.name ? currentUserInfo.name.charAt(0).toUpperCase() : 'U'}
                     </div>
                     <div>
-                      <label className="block text-[11px] font-medium text-zinc-400 mb-1.5 uppercase tracking-wider">Confirmar senha</label>
-                      <input 
-                        type="password" 
-                        value={settingsConfirmPassword} 
-                        onChange={e => setSettingsConfirmPassword(e.target.value)} 
-                        required 
-                        className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-sm text-zinc-100 focus:outline-none focus:border-zinc-700 transition" 
-                        placeholder="Repita a nova senha" 
-                      />
+                      <p className="text-sm font-semibold text-zinc-100">{currentUserInfo.name || 'Utilizador'}</p>
+                      <p className="text-xs text-zinc-400">{currentUserInfo.email}</p>
                     </div>
                   </div>
 
-                  {securityMessage && (
-                    <p className={`text-xs mt-2 ${securityMessage.includes('sucesso') ? 'text-emerald-400' : 'text-red-400'}`}>
-                      {securityMessage}
-                    </p>
-                  )}
+                  <form onSubmit={handleUpdateProfile} className="space-y-4 flex-1 flex flex-col">
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-[11px] font-medium text-zinc-400 mb-1.5 uppercase tracking-wider">Nome</label>
+                        <input 
+                          type="text" 
+                          value={settingsName} 
+                          onChange={e => setSettingsName(e.target.value)} 
+                          className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-sm text-zinc-100 focus:outline-none focus:border-zinc-700 transition" 
+                          placeholder="O teu nome" 
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-medium text-zinc-400 mb-1.5 uppercase tracking-wider">Email</label>
+                        <input 
+                          type="email" 
+                          value={settingsEmail} 
+                          onChange={e => setSettingsEmail(e.target.value)} 
+                          required 
+                          className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-sm text-zinc-100 focus:outline-none focus:border-zinc-700 transition" 
+                          placeholder="teu.email@empresa.com" 
+                        />
+                      </div>
+                    </div>
 
-                  <div className="mt-auto pt-6 flex justify-end">
-                    <button type="submit" className="bg-zinc-100 text-zinc-950 font-medium text-xs px-4 py-2 rounded-xl hover:bg-white transition shadow-sm">
-                      Alterar senha
-                    </button>
-                  </div>
-                </form>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-[11px] font-medium text-zinc-400 mb-1.5 uppercase tracking-wider">Cargo</label>
+                        <input 
+                          type="text" 
+                          value={currentUserInfo.role} 
+                          disabled 
+                          className="w-full bg-zinc-950/50 border border-zinc-800/50 rounded-xl px-3.5 py-2.5 text-sm text-zinc-500 cursor-not-allowed" 
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-medium text-zinc-400 mb-1.5 uppercase tracking-wider">ID de Colaborador</label>
+                        <input 
+                          type="text" 
+                          value={`#${currentUserInfo.id}`} 
+                          disabled 
+                          className="w-full bg-zinc-950/50 border border-zinc-800/50 rounded-xl px-3.5 py-2.5 text-sm text-zinc-500 cursor-not-allowed" 
+                        />
+                      </div>
+                    </div>
+
+                    {profileMessage && (
+                      <p className={`text-xs mt-2 ${profileMessage.includes('sucesso') ? 'text-emerald-400' : 'text-red-400'}`}>
+                        {profileMessage}
+                      </p>
+                    )}
+
+                    <div className="mt-auto pt-6 flex justify-end">
+                      <button type="submit" className="bg-zinc-100 text-zinc-950 font-medium text-xs px-4 py-2 rounded-xl hover:bg-white transition shadow-sm">
+                        Guardar alterações
+                      </button>
+                    </div>
+                  </form>
+                </div>
+
+                {/* SEGURANÇA */}
+                <div className="bg-zinc-900/80 border border-zinc-800/80 rounded-2xl p-6 shadow-sm flex flex-col">
+                  <h2 className="text-base font-semibold text-zinc-100">Segurança</h2>
+                  <p className="text-xs text-zinc-400 mb-6">Altere a sua senha de acesso</p>
+
+                  <form onSubmit={handleUpdatePassword} className="space-y-4 flex-1 flex flex-col">
+                    <div>
+                      <label className="block text-[11px] font-medium text-zinc-400 mb-1.5 uppercase tracking-wider">Senha atual</label>
+                      <input 
+                        type="password" 
+                        value={settingsCurrentPassword} 
+                        onChange={e => setSettingsCurrentPassword(e.target.value)} 
+                        className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-sm text-zinc-100 focus:outline-none focus:border-zinc-700 transition" 
+                        placeholder="Para confirmar a sua identidade" 
+                      />
+                    </div>
+                    
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-[11px] font-medium text-zinc-400 mb-1.5 uppercase tracking-wider">Nova senha</label>
+                        <input 
+                          type="password" 
+                          value={settingsNewPassword} 
+                          onChange={e => setSettingsNewPassword(e.target.value)} 
+                          required 
+                          className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-sm text-zinc-100 focus:outline-none focus:border-zinc-700 transition" 
+                          placeholder="Mínimo de 6 caracteres" 
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-medium text-zinc-400 mb-1.5 uppercase tracking-wider">Confirmar senha</label>
+                        <input 
+                          type="password" 
+                          value={settingsConfirmPassword} 
+                          onChange={e => setSettingsConfirmPassword(e.target.value)} 
+                          required 
+                          className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-sm text-zinc-100 focus:outline-none focus:border-zinc-700 transition" 
+                          placeholder="Repita a nova senha" 
+                        />
+                      </div>
+                    </div>
+
+                    {securityMessage && (
+                      <p className={`text-xs mt-2 ${securityMessage.includes('sucesso') ? 'text-emerald-400' : 'text-red-400'}`}>
+                        {securityMessage}
+                      </p>
+                    )}
+
+                    <div className="mt-auto pt-6 flex justify-end">
+                      <button type="submit" className="bg-zinc-100 text-zinc-950 font-medium text-xs px-4 py-2 rounded-xl hover:bg-white transition shadow-sm">
+                        Alterar senha
+                      </button>
+                    </div>
+                  </form>
+                </div>
               </div>
             </div>
-          </div>
-        )}
+          )}
 
+          {/* ESTATÍSTICAS */}
+          {activeTab === 'statistics' && (
+            <div className="max-w-7xl mx-auto py-4">
+              <div className="flex items-center justify-between mb-6">
+                <div>
+                  <h1 className="text-xl font-bold tracking-tight">Estatísticas</h1>
+                  <p className="text-xs text-zinc-400">Análise de produtividade e desempenho</p>
+                </div>
+                <div className="flex items-center gap-3">
+                  <select 
+                    value={statsPeriod} 
+                    onChange={e => setStatsPeriod(e.target.value)}
+                    className="bg-zinc-900 border border-zinc-800 text-xs text-zinc-300 rounded-xl px-3 py-2 focus:outline-none cursor-pointer hover:bg-zinc-850 transition"
+                  >
+                    <option value="7">Última semana</option>
+                    <option value="30">Último mês</option>
+                    <option value="180">Últimos 6 meses</option>
+                  </select>
+                  <button onClick={() => fetchData()} className="p-2 bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-zinc-100 rounded-xl transition">
+                    <RefreshCw className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+
+              {/* CARDS TOPO */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
+                <div className="bg-zinc-900/80 border border-zinc-800/80 rounded-2xl p-6 shadow-sm flex items-center justify-between group hover:border-zinc-700 transition">
+                  <div>
+                    <h3 className="text-xs font-semibold text-zinc-400 mb-1 uppercase tracking-wider group-hover:text-zinc-300 transition">Tarefas Concluídas</h3>
+                    <p className="text-3xl font-bold text-zinc-100">{totalTasksPeriod}</p>
+                    <p className="text-[10px] text-zinc-500 mt-1">{periodLabels[statsPeriod]}</p>
+                  </div>
+                  <div className="p-3 bg-zinc-800/50 rounded-xl text-zinc-400 border border-zinc-700/50"><CheckCircle2 className="w-6 h-6" /></div>
+                </div>
+
+                <div className="bg-zinc-900/80 border border-zinc-800/80 rounded-2xl p-6 shadow-sm flex items-center justify-between group hover:border-zinc-700 transition">
+                  <div>
+                    <h3 className="text-xs font-semibold text-zinc-400 mb-1 uppercase tracking-wider group-hover:text-zinc-300 transition">Horas Registadas</h3>
+                    <p className="text-3xl font-bold text-zinc-100">{Number(totalHoursPeriod).toFixed(2)}h</p>
+                    <p className="text-[10px] text-zinc-500 mt-1">{periodLabels[statsPeriod]}</p>
+                  </div>
+                  <div className="p-3 bg-zinc-800/50 rounded-xl text-zinc-400 border border-zinc-700/50"><Clock className="w-6 h-6" /></div>
+                </div>
+              </div>
+
+              {/* CHARTS COMPACTOS E ALINHADOS */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                {/* Tarefas Concluídas por Dia (BAR CHART) */}
+                <div className="bg-zinc-900/80 border border-zinc-800/80 rounded-2xl p-6 shadow-sm flex flex-col h-48">
+                  <h3 className="text-sm font-semibold text-zinc-100">Tarefas Concluídas</h3>
+                  <p className="text-[10px] text-zinc-400 mb-4">Evolução da produtividade ({periodLabels[statsPeriod]})</p>
+                  
+                  <div className="flex-1 flex flex-col relative w-full h-full">
+                    {/* Chart Area */}
+                    <div className="flex-1 relative w-full flex items-end gap-1 z-10">
+                      {/* Grid lines background */}
+                      <div className="absolute inset-0 flex flex-col justify-between pointer-events-none opacity-20 z-0">
+                        <div className="border-t border-dashed border-zinc-500 w-full h-0"></div>
+                        <div className="border-t border-dashed border-zinc-500 w-full h-0"></div>
+                        <div className="border-t border-solid border-zinc-500 w-full h-0"></div>
+                      </div>
+                      
+                      {tasksPerPeriod.map((count, i) => {
+                        const safeCount = Number(count) || 0;
+                        const height = maxTasks > 0 ? (safeCount / maxTasks) * 100 : 0;
+                        return (
+                          <div key={i} className="flex-1 flex flex-col items-center justify-end z-10 group h-full relative">
+                            {safeCount > 0 && <span className="text-[10px] font-mono text-zinc-400 absolute -top-5 opacity-0 group-hover:opacity-100 transition">{safeCount}</span>}
+                            <div 
+                              className="w-full max-w-[12px] bg-blue-500 rounded-t-sm hover:bg-blue-400 transition-all duration-300" 
+                              style={{ height: `${height}%`, minHeight: safeCount > 0 ? '2px' : '0' }}
+                            ></div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    
+                    {/* Labels Area */}
+                    <div className="w-full flex items-end gap-1 mt-2">
+                      {chartLabels.map((lbl, i) => {
+                        const showLabel = statsPeriod !== '30' || i % 5 === 0 || i === chartLabels.length - 1;
+                        return (
+                          <div key={i} className="flex-1 flex justify-center">
+                            <span className="text-[8px] text-zinc-600 truncate text-center w-full">
+                              {showLabel ? lbl : ''}
+                            </span>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Horas Registadas por Dia (LINE CHART) */}
+                <div className="bg-zinc-900/80 border border-zinc-800/80 rounded-2xl p-6 shadow-sm flex flex-col h-48">
+                  <h3 className="text-sm font-semibold text-zinc-100">Horas Registadas</h3>
+                  <p className="text-[10px] text-zinc-400 mb-4">Tempo de trabalho ({periodLabels[statsPeriod]})</p>
+
+                  <div className="flex-1 flex flex-col relative w-full h-full">
+                    {/* Chart Area */}
+                    <div className="flex-1 relative w-full z-10">
+                      {/* Grid lines background */}
+                      <div className="absolute inset-0 flex flex-col justify-between pointer-events-none opacity-20 z-0">
+                        <div className="border-t border-dashed border-zinc-500 w-full h-0"></div>
+                        <div className="border-t border-dashed border-zinc-500 w-full h-0"></div>
+                        <div className="border-t border-solid border-zinc-500 w-full h-0"></div>
+                      </div>
+
+                      <svg viewBox="0 0 100 100" className="absolute inset-0 w-full h-full overflow-visible z-10" preserveAspectRatio="none">
+                        <polyline
+                          fill="none"
+                          stroke="#10b981"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          points={hoursPerPeriod.map((h, i) => {
+                            const len = hoursPerPeriod.length || 1;
+                            const x = ((i + 0.5) / len) * 100;
+                            const safeH = Number(h) || 0;
+                            const y = maxHours > 0 ? 100 - (safeH / maxHours) * 100 : 100;
+                            return `${x},${y}`;
+                          }).join(' ')}
+                        />
+                      </svg>
+                    </div>
+
+                    {/* Labels Area */}
+                    <div className="w-full flex items-end gap-1 mt-2">
+                      {chartLabels.map((lbl, i) => {
+                        const showLabel = statsPeriod !== '30' || i % 5 === 0 || i === chartLabels.length - 1;
+                        return (
+                          <div key={i} className="flex-1 flex justify-center">
+                            <span className="text-[8px] text-zinc-600 truncate text-center w-full">
+                              {showLabel ? lbl : ''}
+                            </span>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+            </div>
+          )}
+
+        </div>
       </main>
 
-      {/* POP-UP / MODAL DO DIA SELECIONADO NO CALENDÁRIO */}
+      {/* POP-UP / MODAL NOTIFICAÇÕES */}
+      {showNotificationsModal && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl max-w-lg w-full p-6 shadow-2xl flex flex-col max-h-[80vh]">
+            <div className="flex items-center justify-between mb-4 pb-3 border-b border-zinc-800">
+              <div>
+                <h2 className="text-lg font-semibold text-zinc-100">Notificações</h2>
+                <p className="text-xs text-zinc-400 mt-0.5">O que se passa nos teus projetos</p>
+              </div>
+              <div className="flex items-center gap-2">
+                {unreadCount > 0 && (
+                  <button onClick={markAllNotifsAsRead} className="p-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg transition" title="Marcar todas como lidas">
+                    <Check className="w-4 h-4" />
+                  </button>
+                )}
+                <button onClick={() => setShowNotificationsModal(false)} className="text-xs bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-3 py-2 rounded-xl transition">Fechar</button>
+              </div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto space-y-2.5 pr-1">
+              {notifications.length === 0 ? (
+                <div className="py-12 text-center text-xs text-zinc-500 border border-dashed border-zinc-800 rounded-xl flex flex-col items-center">
+                  <Bell className="w-6 h-6 mb-2 opacity-50" />
+                  Tudo limpo! Nenhuma notificação.
+                </div>
+              ) : (
+                notifications.map(n => (
+                  <div key={n.id} className={`p-4 rounded-xl flex items-start gap-3.5 transition ${n.is_read ? 'bg-zinc-900/50 opacity-70' : 'bg-zinc-950 border border-zinc-800/80 shadow-sm'}`}>
+                    <div className={`mt-1.5 w-2.5 h-2.5 rounded-full shrink-0 ${n.is_read ? 'bg-zinc-700' : 'bg-red-500'}`}></div>
+                    <div className="flex-1 min-w-0">
+                      <p className={`text-sm ${n.is_read ? 'text-zinc-400 font-normal' : 'text-zinc-100 font-medium'}`}>{n.message}</p>
+                      <p className="text-[10px] text-zinc-500 mt-1 uppercase tracking-wider font-mono">
+                        {new Date(n.created_at).toLocaleString('pt-PT')}
+                      </p>
+                    </div>
+                    {!n.is_read && (
+                      <button 
+                        onClick={() => markNotifAsRead(n.id)}
+                        className="px-2.5 py-1.5 bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-zinc-300 text-[10px] font-medium rounded-lg transition shrink-0"
+                      >
+                        Ler
+                      </button>
+                    )}
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL CRIAÇÃO DE UTILIZADOR (ADMIN) */}
+      {showUserModal && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl max-w-md w-full p-6 shadow-2xl">
+            <h2 className="text-lg font-semibold mb-4">Novo Utilizador</h2>
+            <form onSubmit={handleCreateUser} className="space-y-4">
+              <div>
+                <label className="block text-xs font-medium text-zinc-400 mb-1">Nome Completo</label>
+                <input type="text" value={newUserName} onChange={e => setNewUserName(e.target.value)} required className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2 text-sm text-zinc-100 focus:outline-none" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-zinc-400 mb-1">Email</label>
+                <input type="email" value={newUserEmail} onChange={e => setNewUserEmail(e.target.value)} required className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2 text-sm text-zinc-100 focus:outline-none" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-zinc-400 mb-1">Password</label>
+                <input type="password" value={newUserPassword} onChange={e => setNewUserPassword(e.target.value)} required className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2 text-sm text-zinc-100 focus:outline-none" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-zinc-400 mb-1">Cargo</label>
+                <select value={newUserRole} onChange={e => setNewUserRole(e.target.value)} className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2 text-sm text-zinc-100 focus:outline-none">
+                  <option value="Member">Member (Acesso Base)</option>
+                  <option value="Manager">Manager (Gestor de Equipas)</option>
+                  <option value="Admin">Admin (Acesso Total)</option>
+                </select>
+              </div>
+              
+              <div className="flex justify-end gap-3 mt-6">
+                <button type="button" onClick={() => setShowUserModal(false)} className="px-4 py-2 text-sm text-zinc-400 hover:text-zinc-100 transition">Cancelar</button>
+                <button type="submit" className="bg-amber-500 text-amber-950 font-bold text-sm px-4 py-2 rounded-xl hover:bg-amber-400 transition">Registar Utilizador</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* OUTROS MODAIS DA APP */}
       {selectedCalendarDate && (
         <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 z-50">
           <div className="bg-zinc-900 border border-zinc-800 rounded-2xl max-w-lg w-full p-6 shadow-2xl flex flex-col max-h-[80vh]">
@@ -1596,12 +2067,12 @@ export default function App() {
             </div>
 
             <div className="flex-1 overflow-y-auto space-y-3 pr-1">
-              {tickets.filter(t => t.due_date && t.due_date.split('T')[0] === selectedCalendarDate).length === 0 ? (
+              {availableTickets.filter(t => t.due_date && t.due_date.split('T')[0] === selectedCalendarDate).length === 0 ? (
                 <div className="py-12 text-center text-xs text-zinc-500 border border-dashed border-zinc-800 rounded-xl">
                   Nenhuma tarefa agendada para este dia.
                 </div>
               ) : (
-                tickets
+                availableTickets
                   .filter(t => t.due_date && t.due_date.split('T')[0] === selectedCalendarDate)
                   .map(ticket => {
                     const isDone = ticket.status && ['done', 'concluído', 'concluido'].includes(ticket.status.toLowerCase());
@@ -1676,13 +2147,13 @@ export default function App() {
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block text-xs font-medium text-zinc-400 mb-1">Projeto</label>
-                  <select value={newProjectId} onChange={e => setNewProjectId(e.target.value)} className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-sm text-zinc-100 focus:outline-none" required>
-                    {projects.map(proj => <option key={proj.id} value={proj.id}>{proj.name}</option>)}
+                  <select value={newProjectId} onChange={e => setNewProjectId(e.target.value)} className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2 text-sm text-zinc-100 focus:outline-none" required>
+                    {availableProjects.map(proj => <option key={proj.id} value={proj.id}>{proj.name}</option>)}
                   </select>
                 </div>
                 <div>
                   <label className="block text-xs font-medium text-zinc-400 mb-1">Atribuir a</label>
-                  <select value={newAssignedTo} onChange={e => setNewAssignedTo(e.target.value)} className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-sm text-zinc-100 focus:outline-none">
+                  <select value={newAssignedTo} onChange={e => setNewAssignedTo(e.target.value)} className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2 text-sm text-zinc-100 focus:outline-none">
                     <option value="">Não atribuído</option>
                     {usersList.map(u => <option key={u.id} value={u.id}>{getUserDisplayName(u)}</option>)}
                   </select>
@@ -1725,16 +2196,16 @@ export default function App() {
                 <label className="block text-xs font-medium text-zinc-400 mb-1">Equipa Responsável</label>
                 <select value={projectTeamId} onChange={e => setProjectTeamId(e.target.value)} className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2 text-sm text-zinc-100 focus:outline-none">
                   <option value="">Nenhuma (Projeto Geral)</option>
-                  {teams.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                  {availableTeams.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
                 </select>
               </div>
               <div>
                 <label className="block text-xs font-medium text-zinc-400 mb-1.5 uppercase tracking-wider">Tarefas Associadas</label>
                 <div className="bg-zinc-950 border border-zinc-800 rounded-xl p-3 space-y-2 max-h-40 overflow-y-auto">
-                  {tickets.length === 0 ? (
-                    <p className="text-xs text-zinc-500 text-center">Nenhuma tarefa criada.</p>
+                  {availableTickets.length === 0 ? (
+                    <p className="text-xs text-zinc-500 text-center">Nenhuma tarefa disponível para associar.</p>
                   ) : (
-                    tickets.map(ticket => {
+                    availableTickets.map(ticket => {
                       const isSelected = projectTicketIds.includes(ticket.id);
                       return (
                         <div key={ticket.id} onClick={() => toggleProjectTicketSelection(ticket.id)} className={`p-2.5 rounded-lg flex items-center justify-between text-xs cursor-pointer transition ${isSelected ? 'bg-zinc-800 border border-zinc-700 text-zinc-100' : 'bg-zinc-900/50 text-zinc-400 hover:bg-zinc-900'}`}>
@@ -1842,7 +2313,7 @@ export default function App() {
               <div>
                 <label className="block text-xs font-medium text-zinc-400 mb-1.5 uppercase tracking-wider">Projetos Associados</label>
                 <div className="bg-zinc-950 border border-zinc-800 rounded-xl p-3 space-y-2 max-h-40 overflow-y-auto">
-                  {projects.map(proj => {
+                  {availableProjects.map(proj => {
                     const isSelected = selectedProjectIds.includes(proj.id);
                     return (
                       <div key={proj.id} onClick={() => toggleProjectSelection(proj.id)} className={`p-2.5 rounded-lg flex items-center justify-between text-xs cursor-pointer transition ${isSelected ? 'bg-zinc-800 border border-zinc-700 text-zinc-100' : 'bg-zinc-900/50 text-zinc-400 hover:bg-zinc-900'}`}>
