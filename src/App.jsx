@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { 
   CheckCircle2, Clock, AlertCircle, Plus, Search, 
-  LogOut, ShieldAlert, LayoutDashboard, Ticket as TicketIcon, Trash2, Edit3, Play, Square, MessageSquare, FolderPlus, RefreshCw, Calendar, Users, Crown, Folder, UserCheck, Kanban, ListFilter, ArrowUpDown, ChevronLeft, ChevronRight, Settings, BarChart3, Bell, Check, Download, Building2, Phone, Mail, BarChart, X 
+  LogOut, ShieldAlert, LayoutDashboard, Ticket as TicketIcon, Trash2, Edit3, Play, Square, MessageSquare, FolderPlus, RefreshCw, Calendar, Users, Crown, Folder, UserCheck, Kanban, ListFilter, ArrowUpDown, ChevronLeft, ChevronRight, Settings, BarChart3, Bell, Check, Download, Building2, Phone, Mail, BarChart, X, Upload 
 } from 'lucide-react';
 
 const API_URL = 'http://127.0.0.1:8000'; 
@@ -19,6 +19,13 @@ export default function App() {
   // Estados para o Modal de Tarefas do Projeto
   const [showProjectTasksModal, setShowProjectTasksModal] = useState(false);
   const [activeProjectForTasks, setActiveProjectForTasks] = useState(null);
+
+  // Estados para o Modal de Conclusão de Tarefa
+  const [showCompleteModal, setShowCompleteModal] = useState(false);
+  const [ticketToComplete, setTicketToComplete] = useState(null);
+  const [finalDesc, setFinalDesc] = useState('');
+  const [extraTime, setExtraTime] = useState('');
+  const [completionFile, setCompletionFile] = useState(null);
 
   const [tickets, setTickets] = useState([]);
   const [projects, setProjects] = useState([]);
@@ -151,6 +158,7 @@ export default function App() {
         setShowQuickSearch(false);
         setShowGanttModal(false);
         setShowProjectTasksModal(false);
+        setShowCompleteModal(false);
       }
     };
     window.addEventListener('keydown', handleKeyDown);
@@ -498,6 +506,15 @@ export default function App() {
     setShowProjectTasksModal(true);
   };
 
+  const openCompleteModal = (ticket) => {
+    if (ticket.status === 'Done') return;
+    setTicketToComplete(ticket);
+    setFinalDesc('');
+    setExtraTime(ticket.tracked_hours > 0 ? ticket.tracked_hours : (ticket.estimated_hours || ''));
+    setCompletionFile(null);
+    setShowCompleteModal(true);
+  };
+
   const toggleProjectTicketSelection = (ticketId) => {
     if (projectTicketIds.includes(ticketId)) {
       setProjectTicketIds(projectTicketIds.filter(id => id !== ticketId));
@@ -765,16 +782,20 @@ export default function App() {
   };
 
   const handleStatusChange = async (ticketId, newStat) => {
+    const isTargetDone = newStat === 'Done' || newStat === 'Concluído' || newStat === 'Concluido';
+    const ticket = tickets.find(t => t.id === ticketId);
+
+    if (isTargetDone) {
+      if (ticket && ticket.status === 'Done') return;
+      if (ticket) {
+        openCompleteModal(ticket);
+        return;
+      }
+    }
+
     try {
       const headers = { Authorization: `Bearer ${token}` };
       let updatePayload = { status: newStat };
-      if (newStat === 'Done' || newStat === 'Concluído' || newStat === 'Concluido') {
-        updatePayload.is_running = false;
-        if (activeTimerTask && activeTimerTask.id === ticketId) {
-            setActiveTimerTask(null);
-            setSecondsElapsed(0);
-        }
-      }
       await axios.put(`${API_URL}/tickets/${ticketId}`, updatePayload, { headers });
       fetchData();
       fetchActiveWorkers();
@@ -805,9 +826,18 @@ export default function App() {
 
   const handleDrop = (e, targetStatus) => {
     e.preventDefault();
-    const ticketId = e.dataTransfer.getData('text/plain');
+    const ticketId = Number(e.dataTransfer.getData('text/plain'));
+    const ticket = tickets.find(t => t.id === ticketId);
+    const isTargetDone = targetStatus === 'Done';
+
+    if (ticket && isTargetDone) {
+      if (ticket.status === 'Done') return;
+      openCompleteModal(ticket);
+      return;
+    }
+
     if (ticketId) {
-      handleStatusChange(Number(ticketId), targetStatus);
+      handleStatusChange(ticketId, targetStatus);
     }
   };
 
@@ -841,7 +871,6 @@ export default function App() {
   const availableProjectIds = availableProjects.map(p => p.id);
   const availableTickets = isAdmin ? tickets : tickets.filter(t => t.assigned_to_id === currentUserInfo.id || availableProjectIds.includes(t.project_id));
 
-  // Gerador de dias para o mês atual no Gantt
   const now = new Date();
   const year = now.getFullYear();
   const month = now.getMonth();
@@ -976,7 +1005,6 @@ export default function App() {
 
   const visibleWorkers = getVisibleWorkers();
 
-  // Estatísticas
   const periodLabels = { '7': 'na última semana', '30': 'no último mês', '180': 'nos últimos 6 meses' };
   let chartLabels = [];
   let tasksPerPeriod = [];
@@ -1237,6 +1265,7 @@ export default function App() {
                   <div className="space-y-2.5">
                     {activeTasksList.map(ticket => {
                       const isRunning = activeTimerTask?.id === ticket.id;
+                      const isDone = ticket.status === 'Done';
                       const assignee = getAssigneeName(ticket.assigned_to_id);
                       const clientNameStr = getClientName(ticket.client_id);
                       return (
@@ -1262,16 +1291,11 @@ export default function App() {
                             </div>
                           </div>
                           <div className="flex items-center gap-2">
-                            <select 
-                              value={ticket.status} 
-                              onChange={e => handleStatusChange(ticket.id, e.target.value)}
-                              className="bg-zinc-900 border border-zinc-800 text-xs text-zinc-300 rounded-lg px-2.5 py-1.5 focus:outline-none"
-                            >
-                              <option value="To Do">A fazer</option>
-                              <option value="In Progress">Em progresso</option>
-                              <option value="In Review">Em revisão</option>
-                              <option value="Done">Concluído</option>
-                            </select>
+                            {!isDone && (
+                              <button onClick={() => openCompleteModal(ticket)} className="p-2 text-emerald-400 hover:text-emerald-300 bg-zinc-900 border border-zinc-800 rounded-lg transition" title="Concluir com Relatório">
+                                <Check className="w-3.5 h-3.5" />
+                              </button>
+                            )}
                             <button onClick={() => startTimer(ticket)} className={`p-2 rounded-lg border transition ${isRunning ? 'bg-blue-500 text-zinc-950 border-blue-400' : 'bg-zinc-900 text-zinc-400 hover:text-zinc-100 border-zinc-800'}`} title="Iniciar Cronómetro">
                               <Play className="w-3.5 h-3.5 fill-current" />
                             </button>
@@ -1637,6 +1661,7 @@ export default function App() {
                           ) : (
                             columnTickets.map(ticket => {
                               const isRunning = activeTimerTask?.id === ticket.id;
+                              const isDone = ticket.status === 'Done';
                               const assignee = getAssigneeName(ticket.assigned_to_id);
                               const clientNameStr = getClientName(ticket.client_id);
                               return (
@@ -1656,6 +1681,11 @@ export default function App() {
                                       )}
                                     </div>
                                     <div className="flex items-center gap-1 opacity-80 group-hover:opacity-100 transition">
+                                      {!isDone && (
+                                        <button onClick={() => openCompleteModal(ticket)} title="Concluir com Relatório" className="p-1.5 bg-zinc-900 border border-zinc-800 text-emerald-400 hover:text-emerald-300 rounded-md transition">
+                                          <Check className="w-3.5 h-3.5" />
+                                        </button>
+                                      )}
                                       <button onClick={() => startTimer(ticket)} title="Iniciar Cronómetro" className={`p-1.5 rounded-md border transition ${isRunning ? 'bg-blue-500 text-zinc-950 border-blue-400 animate-pulse' : 'bg-zinc-900 text-zinc-400 hover:text-zinc-100 border-zinc-800'}`}>
                                         <Play className="w-3 h-3 fill-current" />
                                       </button>
@@ -1735,6 +1765,11 @@ export default function App() {
                                 <option value="In Review">Em revisão</option>
                                 <option value="Done">Concluído</option>
                               </select>
+                              {!isDone && (
+                                <button onClick={() => openCompleteModal(ticket)} className="p-2 text-emerald-400 hover:text-emerald-300 bg-zinc-950 border border-zinc-800 rounded-lg transition" title="Concluir com Relatório">
+                                  <Check className="w-4 h-4" />
+                                </button>
+                              )}
                               <button onClick={() => startTimer(ticket)} disabled={isDone} className={`p-2 rounded-lg border transition ${isDone ? 'opacity-40 cursor-not-allowed bg-zinc-950 border-zinc-900 text-zinc-700' : isRunning ? 'bg-blue-500 text-zinc-950 border-blue-400' : 'bg-zinc-950 text-zinc-400 hover:text-zinc-100 border-zinc-800'}`} title="Iniciar Cronómetro">
                                 <Play className="w-4 h-4 fill-current" />
                               </button>
@@ -2243,7 +2278,148 @@ export default function App() {
         </div>
       )}
 
-      {/* MODAL GANTT (MATRIZ DE DIAS DO MÊS COM BARRAS DE DURAÇÃO CONTÍNUAS) */}
+      {/* MODAL DE CONCLUSÃO DE TAREFA */}
+      {showCompleteModal && ticketToComplete && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fadeIn" onClick={() => setShowCompleteModal(false)}>
+          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl max-w-lg w-full p-6 shadow-2xl flex flex-col" onClick={e => e.stopPropagation()}>
+            
+            <div className="flex items-center justify-between mb-4 pb-3 border-b border-zinc-800">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 rounded-xl">
+                  <CheckCircle2 className="w-5 h-5" />
+                </div>
+                <div>
+                  <h2 className="text-base font-semibold text-zinc-100">Concluir Tarefa</h2>
+                  <p className="text-xs text-zinc-400 truncate max-w-[300px]">{ticketToComplete.title}</p>
+                </div>
+              </div>
+              <button onClick={() => setShowCompleteModal(false)} className="p-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-xl transition">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={async (e) => {
+              e.preventDefault();
+              if (finalDesc.length < 10) {
+                alert('A descrição final deve ter pelo menos 10 caracteres.');
+                return;
+              }
+              try {
+                const formData = new FormData();
+                formData.append('final_description', finalDesc);
+                formData.append('tracked_hours', extraTime ? Number(extraTime) : 0);
+                if (completionFile) {
+                  formData.append('file', completionFile);
+                }
+
+                const headers = { 
+                  Authorization: `Bearer ${token}`,
+                  'Content-Type': 'multipart/form-data'
+                };
+
+                await axios.put(`${API_URL}/tickets/${ticketToComplete.id}/complete`, formData, { headers });
+                setShowCompleteModal(false);
+                setFinalDesc('');
+                setExtraTime('');
+                setCompletionFile(null);
+                fetchData();
+              } catch (err) {
+                alert('Erro ao concluir tarefa.');
+              }
+            }} className="space-y-4">
+              
+              <div>
+                <label className="block text-xs font-medium text-zinc-300 mb-1.5">
+                  Descrição Final <span className="text-red-400">*</span>
+                </label>
+                <textarea 
+                  value={finalDesc}
+                  onChange={e => setFinalDesc(e.target.value)}
+                  rows="4"
+                  maxLength="500"
+                  required
+                  placeholder="Descreva: ferramentas utilizadas, dificuldades encontradas, método de resolução..."
+                  className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-sm text-zinc-100 focus:outline-none focus:border-zinc-700 resize-none"
+                />
+                <div className="flex justify-between items-center mt-1 text-[11px] text-zinc-500">
+                  <span>{finalDesc.length}/500 caracteres (mínimo 10)</span>
+                  {finalDesc.length < 10 && <span className="text-amber-400">Mínimo não atingido</span>}
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-zinc-300 mb-1.5">Tempo Gasto Total</label>
+                <div className="relative flex items-center">
+                  <Clock className="w-4 h-4 text-zinc-500 absolute left-3.5" />
+                  <input 
+                    type="number"
+                    step="0.25"
+                    value={extraTime}
+                    onChange={e => setExtraTime(e.target.value)}
+                    placeholder="Ex: 16"
+                    className="w-full bg-zinc-950 border border-zinc-800 rounded-xl pl-10 pr-16 py-2.5 text-sm text-zinc-100 focus:outline-none focus:border-zinc-700"
+                  />
+                  <span className="absolute right-3.5 text-xs text-zinc-500 font-medium">horas</span>
+                </div>
+                {ticketToComplete?.estimated_hours > 0 && (
+                  <p className="text-[10px] text-zinc-500 mt-1">
+                    Estimativa inicial: <strong className="text-zinc-400">{ticketToComplete.estimated_hours}h</strong>
+                  </p>
+                )}
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-zinc-300 mb-1.5">Estado</label>
+                <select disabled className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-sm text-emerald-400 font-medium cursor-not-allowed">
+                  <option>Concluído</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-zinc-300 mb-1.5">Anexos / Fotografias</label>
+                <label className="border-2 border-dashed border-zinc-800 hover:border-zinc-700 bg-zinc-950/50 rounded-xl p-4 flex flex-col items-center justify-center cursor-pointer transition group">
+                  <div className="p-2.5 bg-zinc-900 border border-zinc-800 text-zinc-400 group-hover:text-zinc-200 rounded-xl mb-2 transition">
+                    <Upload className="w-5 h-5" />
+                  </div>
+                  <span className="text-xs font-medium text-zinc-300">
+                    {completionFile ? completionFile.name : 'Arrastar ficheiro ou clicar para selecionar'}
+                  </span>
+                  <span className="text-[10px] text-zinc-500 mt-0.5">Suporta imagens, documentos e relatórios</span>
+                  <input 
+                    type="file" 
+                    className="hidden" 
+                    onChange={e => {
+                      if (e.target.files && e.target.files[0]) {
+                        setCompletionFile(e.target.files[0]);
+                      }
+                    }} 
+                  />
+                </label>
+              </div>
+
+              <div className="flex justify-end gap-3 pt-4 border-t border-zinc-800">
+                <button 
+                  type="button" 
+                  onClick={() => setShowCompleteModal(false)} 
+                  className="px-4 py-2.5 text-sm font-medium text-zinc-400 hover:text-zinc-100 bg-zinc-800/50 hover:bg-zinc-800 rounded-xl transition"
+                >
+                  Cancelar
+                </button>
+                <button 
+                  type="submit" 
+                  className="bg-zinc-100 text-zinc-950 font-medium text-sm px-5 py-2.5 rounded-xl hover:bg-white transition shadow-sm"
+                >
+                  Concluir Tarefa
+                </button>
+              </div>
+
+            </form>
+
+          </div>
+        </div>
+      )}
+
+      {/* MODAL GANTT */}
       {showGanttModal && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-6 z-50 animate-fadeIn" onClick={() => setShowGanttModal(false)}>
           <div className="bg-zinc-900 border border-zinc-800 rounded-2xl max-w-6xl w-full p-6 shadow-2xl flex flex-col max-h-[85vh]" onClick={e => e.stopPropagation()}>
@@ -2265,7 +2441,6 @@ export default function App() {
                 <div className="py-16 text-center text-xs text-zinc-500">Nenhuma tarefa encontrada para exibir no cronograma.</div>
               ) : (
                 <div className="min-w-[1200px]">
-                  {/* HEADER DIAS DO MÊS */}
                   <div className="flex pb-2.5 border-b border-zinc-800 bg-zinc-950/60 rounded-xl px-3 mb-3 items-center">
                     <div className="w-64 shrink-0 text-xs font-semibold text-zinc-400 uppercase tracking-wider">Tarefa</div>
                     <div className="flex flex-1 gap-1">
@@ -2280,7 +2455,6 @@ export default function App() {
                     </div>
                   </div>
 
-                  {/* LINHAS DE TAREFAS COM BARRAS DE DURAÇÃO CONTÍNUAS */}
                   <div className="space-y-2">
                     {sortedTickets.map(ticket => {
                       const isDone = ticket.status && ['done', 'concluído', 'concluido'].includes(ticket.status.toLowerCase());
