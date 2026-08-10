@@ -27,6 +27,10 @@ export default function App() {
   const [extraTime, setExtraTime] = useState('');
   const [completionFile, setCompletionFile] = useState(null);
 
+  // Estados para a Recomendação de IA (Foco Inteligente)
+  const [aiRecommendation, setAiRecommendation] = useState('');
+  const [loadingAiRec, setLoadingAiRec] = useState(false);
+
   const [tickets, setTickets] = useState([]);
   const [projects, setProjects] = useState([]);
   const [teams, setTeams] = useState([]);
@@ -513,6 +517,32 @@ export default function App() {
     setExtraTime(ticket.tracked_hours > 0 ? ticket.tracked_hours : (ticket.estimated_hours || ''));
     setCompletionFile(null);
     setShowCompleteModal(true);
+  };
+
+  // Função para gerar relatório automaticamente com o Gemini
+  const handleGenerateAI = async () => {
+    if (!ticketToComplete) return;
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      const res = await axios.post(`${API_URL}/tickets/${ticketToComplete.id}/generate-ai-report`, {}, { headers });
+      setFinalDesc(res.data.generated_report);
+    } catch (err) {
+      alert('Erro ao gerar relatório automático com o Gemini.');
+    }
+  };
+
+  // Função para buscar recomendação de foco inteligente da IA
+  const fetchAiRecommendation = async () => {
+    setLoadingAiRec(true);
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      const res = await axios.get(`${API_URL}/tickets/ai-focus-recommendation`, { headers });
+      setAiRecommendation(res.data.recommendation);
+    } catch (err) {
+      setAiRecommendation('Não foi possível carregar a recomendação da IA neste momento.');
+    } finally {
+      setLoadingAiRec(false);
+    }
   };
 
   const toggleProjectTicketSelection = (ticketId) => {
@@ -1156,6 +1186,33 @@ export default function App() {
                 <button onClick={() => {fetchData(); fetchActiveWorkers();}} className="flex items-center gap-2 bg-zinc-900 border border-zinc-800 hover:bg-zinc-850 text-zinc-300 px-4 py-2 rounded-xl text-sm transition">
                   <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} /> Atualizar
                 </button>
+              </div>
+
+              {/* CARTÃO DE RECOMENDAÇÃO INTELIGENTE DA IA */}
+              <div className="bg-gradient-to-r from-purple-950/40 via-zinc-900 to-zinc-900 border border-purple-500/30 rounded-2xl p-6 mb-6 shadow-xl">
+                <div className="flex items-center justify-between mb-3">
+                  <div className="flex items-center gap-2.5">
+                    <div className="p-2 bg-purple-500/20 text-purple-400 rounded-xl">✨</div>
+                    <h2 className="text-base font-semibold text-zinc-100">Foco Inteligente (Assistente IA)</h2>
+                  </div>
+                  <button
+                    onClick={fetchAiRecommendation}
+                    disabled={loadingAiRec}
+                    className="flex items-center gap-1.5 text-xs font-medium bg-purple-500/10 hover:bg-purple-500/20 text-purple-300 border border-purple-500/30 px-3 py-1.5 rounded-xl transition"
+                  >
+                    {loadingAiRec ? 'A analisar...' : '🧠 Onde devo focar-me hoje?'}
+                  </button>
+                </div>
+                
+                {aiRecommendation ? (
+                  <div className="text-sm text-zinc-300 whitespace-pre-line bg-zinc-950/60 border border-zinc-800/80 rounded-xl p-4 mt-3 leading-relaxed">
+                    {aiRecommendation}
+                  </div>
+                ) : (
+                  <p className="text-xs text-zinc-400">
+                    Clica no botão acima para pedir ao Gemini para analisar as tuas prioridades e prazos atuais.
+                  </p>
+                )}
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4 mb-6">
@@ -2329,16 +2386,25 @@ export default function App() {
             }} className="space-y-4">
               
               <div>
-                <label className="block text-xs font-medium text-zinc-300 mb-1.5">
-                  Descrição Final <span className="text-red-400">*</span>
-                </label>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-xs font-medium text-zinc-300">
+                    Descrição Final <span className="text-red-400">*</span>
+                  </label>
+                  <button
+                    type="button"
+                    onClick={handleGenerateAI}
+                    className="flex items-center gap-1.5 text-[11px] font-medium bg-purple-500/10 hover:bg-purple-500/20 text-purple-400 border border-purple-500/30 px-2.5 py-1 rounded-lg transition"
+                  >
+                    ✨ Gerar com IA
+                  </button>
+                </div>
                 <textarea 
                   value={finalDesc}
                   onChange={e => setFinalDesc(e.target.value)}
                   rows="4"
                   maxLength="500"
                   required
-                  placeholder="Descreva: ferramentas utilizadas, dificuldades encontradas, método de resolução..."
+                  placeholder="Clica em 'Gerar com IA' ou descreve o trabalho realizado..."
                   className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-sm text-zinc-100 focus:outline-none focus:border-zinc-700 resize-none"
                 />
                 <div className="flex justify-between items-center mt-1 text-[11px] text-zinc-500">
