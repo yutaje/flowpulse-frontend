@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { 
   CheckCircle2, Clock, AlertCircle, Plus, Search, 
-  LogOut, ShieldAlert, LayoutDashboard, Ticket as TicketIcon, Trash2, Edit3, Play, Square, MessageSquare, FolderPlus, RefreshCw, Calendar, Users, Crown, Folder, UserCheck, Kanban, ListFilter, ArrowUpDown, ChevronLeft, ChevronRight, Settings, BarChart3, Bell, Check, Download 
+  LogOut, ShieldAlert, LayoutDashboard, Ticket as TicketIcon, Trash2, Edit3, Play, Square, MessageSquare, FolderPlus, RefreshCw, Calendar, Users, Crown, Folder, UserCheck, Kanban, ListFilter, ArrowUpDown, ChevronLeft, ChevronRight, Settings, BarChart3, Bell, Check, Download, Building2, Phone, Mail, BarChart, X 
 } from 'lucide-react';
 
 const API_URL = 'http://127.0.0.1:8000'; 
@@ -13,15 +13,25 @@ export default function App() {
   const [password, setPassword] = useState('');
   
   const [activeTab, setActiveTab] = useState(localStorage.getItem('activeTab') || 'dashboard');
-  const [taskViewMode, setTaskViewMode] = useState('kanban');
+  const [taskViewMode, setTaskViewMode] = useState('kanban'); // 'kanban', 'list'
+  const [showGanttModal, setShowGanttModal] = useState(false);
+
+  // Estados para o Modal de Tarefas do Projeto
+  const [showProjectTasksModal, setShowProjectTasksModal] = useState(false);
+  const [activeProjectForTasks, setActiveProjectForTasks] = useState(null);
 
   const [tickets, setTickets] = useState([]);
   const [projects, setProjects] = useState([]);
   const [teams, setTeams] = useState([]);
   const [usersList, setUsersList] = useState([]);
+  const [clients, setClients] = useState([]); 
   const [stats, setStats] = useState({ total_tickets: 0, to_do: 0, in_progress: 0, done: 0 });
   const [notifications, setNotifications] = useState([]); 
   const [showNotificationsModal, setShowNotificationsModal] = useState(false); 
+
+  // Estados da Barra de Pesquisa Rápida (Spotlight / Cmd+K)
+  const [showQuickSearch, setShowQuickSearch] = useState(false);
+  const [quickSearchQuery, setQuickSearchQuery] = useState('');
   
   const [activeWorkers, setActiveWorkers] = useState([]);
   const [currentUserInfo, setCurrentUserInfo] = useState({ id: null, role: 'Member', name: '', email: '' });
@@ -60,10 +70,12 @@ export default function App() {
   const [newDesc, setNewDesc] = useState('');
   const [newPriority, setNewPriority] = useState('Média');
   const [newStatus, setNewStatus] = useState('To Do');
-  const [newProjectId, setNewProjectId] = useState(1);
+  const [newProjectId, setNewProjectId] = useState('');
+  const [newClientId, setNewClientId] = useState(''); 
   const [newAssignedTo, setNewAssignedTo] = useState('');
   const [newEstimatedHours, setNewEstimatedHours] = useState(0);
   const [newDueDate, setNewDueDate] = useState('');
+  const [newStartDate, setNewStartDate] = useState('');
 
   // Estados dos Projetos
   const [showProjectModal, setShowProjectModal] = useState(false);
@@ -72,7 +84,23 @@ export default function App() {
   const [projectName, setProjectName] = useState('');
   const [projectDesc, setProjectDesc] = useState('');
   const [projectTeamId, setProjectTeamId] = useState('');
+  const [projectClientId, setProjectClientId] = useState(''); 
   const [projectTicketIds, setProjectTicketIds] = useState([]); 
+
+  // Estados dos Clientes
+  const [showClientModal, setShowClientModal] = useState(false);
+  const [clientName, setClientName] = useState('');
+  const [clientEmail, setClientEmail] = useState('');
+  const [clientCompany, setClientCompany] = useState('');
+  const [clientPhone, setClientPhone] = useState('');
+
+  // Estados para Editar Cliente
+  const [showEditClientModal, setShowEditClientModal] = useState(false);
+  const [currentClientId, setCurrentClientId] = useState(null);
+  const [editClientName, setEditClientName] = useState('');
+  const [editClientEmail, setEditClientEmail] = useState('');
+  const [editClientCompany, setEditClientCompany] = useState('');
+  const [editClientPhone, setEditClientPhone] = useState('');
 
   // Estados das Equipas
   const [showTeamModal, setShowTeamModal] = useState(false);
@@ -104,6 +132,30 @@ export default function App() {
   const [currentDate, setCurrentDate] = useState(new Date());
   const [calendarTeamFilter, setCalendarTeamFilter] = useState('all');
   const [selectedCalendarDate, setSelectedCalendarDate] = useState(null);
+
+  const getLocalDateString = (d) => {
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    return `${yyyy}-${mm}-${dd}`;
+  };
+
+  // Atalho de Teclado global (Cmd+K / Ctrl+K)
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setShowQuickSearch(prev => !prev);
+      }
+      if (e.key === 'Escape') {
+        setShowQuickSearch(false);
+        setShowGanttModal(false);
+        setShowProjectTasksModal(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
 
   useEffect(() => {
     if (token) fetchData();
@@ -278,6 +330,11 @@ export default function App() {
         setTeams(teamsRes.data);
       } catch (e) { console.error(e); }
 
+      try {
+        const clientsRes = await axios.get(`${API_URL}/clients/`, { headers });
+        setClients(clientsRes.data);
+      } catch (e) { console.error(e); }
+
       fetchNotifications();
     } catch (err) {
       if (err.response?.status === 401) handleLogout();
@@ -286,7 +343,6 @@ export default function App() {
     }
   };
 
-  // Função para exportar relatório CSV de horas
   const handleExportCSV = async () => {
     try {
       const headers = { Authorization: `Bearer ${token}` };
@@ -297,7 +353,7 @@ export default function App() {
       const url = window.URL.createObjectURL(new Blob([response.data]));
       const link = document.createElement('a');
       link.href = url;
-      link.setAttribute('download', 'relatorio_horas_flowpulse.csv');
+      link.setAttribute('download', 'relatorio_total_horas_utilizador.csv');
       document.body.appendChild(link);
       link.click();
       link.remove();
@@ -306,7 +362,6 @@ export default function App() {
     }
   };
 
-  // Funções de Administração de Utilizadores
   const handleOpenCreateUserModal = () => {
     setNewUserName('');
     setNewUserEmail('');
@@ -409,6 +464,7 @@ export default function App() {
     setProjectName('');
     setProjectDesc('');
     setProjectTeamId('');
+    setProjectClientId('');
     setProjectTicketIds([]);
     setShowProjectModal(true);
   };
@@ -419,12 +475,11 @@ export default function App() {
     setProjectName(proj.name);
     setProjectDesc(proj.description || '');
     setProjectTeamId(proj.team_id || '');
+    setProjectClientId(proj.client_id || '');
     setShowProjectModal(true);
 
     const projTasks = tickets.filter(t => t.project_id === proj.id).map(t => t.id);
     setProjectTicketIds(projTasks); 
-
-    setShowProjectModal(true);
   };
 
   const handleDeleteProject = async (id) => {
@@ -438,9 +493,9 @@ export default function App() {
     }
   };
 
-  const goToProjectTasks = (projectId) => {
-    setProjectFilter(projectId.toString());
-    changeTab('tasks');
+  const openProjectTasksModal = (proj) => {
+    setActiveProjectForTasks(proj);
+    setShowProjectTasksModal(true);
   };
 
   const toggleProjectTicketSelection = (ticketId) => {
@@ -459,6 +514,7 @@ export default function App() {
         name: projectName,
         description: projectDesc,
         team_id: projectTeamId ? Number(projectTeamId) : null,
+        client_id: projectClientId ? Number(projectClientId) : null,
         ticket_ids: projectTicketIds
       };
 
@@ -471,10 +527,69 @@ export default function App() {
       setProjectName('');
       setProjectDesc('');
       setProjectTeamId('');
+      setProjectClientId('');
       setProjectTicketIds([]);
       fetchData();
     } catch (err) {
       alert('Erro ao guardar projeto.');
+    }
+  };
+
+  const handleSaveClient = async (e) => {
+    e.preventDefault();
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      await axios.post(`${API_URL}/clients/`, {
+        name: clientName,
+        email: clientEmail || null,
+        company: clientCompany || null,
+        phone: clientPhone || null
+      }, { headers });
+      setShowClientModal(false);
+      setClientName('');
+      setClientEmail('');
+      setClientCompany('');
+      setClientPhone('');
+      fetchData();
+    } catch (err) {
+      alert(err.response?.data?.detail || 'Erro ao criar cliente.');
+    }
+  };
+
+  const openEditClientModal = (client) => {
+    setCurrentClientId(client.id);
+    setEditClientName(client.name);
+    setEditClientEmail(client.email || '');
+    setEditClientCompany(client.company || '');
+    setEditClientPhone(client.phone || '');
+    setShowEditClientModal(true);
+  };
+
+  const handleUpdateClient = async (e) => {
+    e.preventDefault();
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      await axios.put(`${API_URL}/clients/${currentClientId}`, {
+        name: editClientName,
+        email: editClientEmail || null,
+        company: editClientCompany || null,
+        phone: editClientPhone || null
+      }, { headers });
+      setShowEditClientModal(false);
+      fetchData();
+    } catch (err) {
+      alert('Erro ao atualizar cliente.');
+    }
+  };
+
+  const handleDeleteClient = async (clientId) => {
+    if (!window.confirm("Tens a certeza que pretendes apagar este cliente?")) return;
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      await axios.delete(`${API_URL}/clients/${clientId}`, { headers });
+      fetchData();
+    } catch (err) {
+      alert('Erro ao apagar cliente.');
     }
   };
 
@@ -599,7 +714,9 @@ export default function App() {
     setNewAssignedTo('');
     setNewEstimatedHours(0);
     setNewDueDate('');
-    setNewProjectId(availableProjects.length > 0 ? availableProjects[0].id : 1);
+    setNewStartDate('');
+    setNewClientId('');
+    setNewProjectId('');
     setShowModal(true);
   };
 
@@ -613,7 +730,9 @@ export default function App() {
     setNewAssignedTo(ticket.assigned_to_id || '');
     setNewEstimatedHours(ticket.estimated_hours || 0);
     setNewDueDate(ticket.due_date ? ticket.due_date.split('T')[0] : '');
-    setNewProjectId(ticket.project_id);
+    setNewStartDate(ticket.start_date ? ticket.start_date.split('T')[0] : '');
+    setNewProjectId(ticket.project_id || '');
+    setNewClientId(ticket.client_id || '');
     setShowModal(true);
   };
 
@@ -626,10 +745,12 @@ export default function App() {
         description: newDesc, 
         priority: newPriority,
         status: newStatus, 
-        project_id: Number(newProjectId),
+        project_id: newProjectId ? Number(newProjectId) : null,
+        client_id: newClientId ? Number(newClientId) : null,
         assigned_to_id: newAssignedTo ? Number(newAssignedTo) : null,
         estimated_hours: Number(newEstimatedHours),
-        due_date: newDueDate ? newDueDate : null
+        due_date: newDueDate ? newDueDate : null,
+        start_date: newStartDate ? newStartDate : null
       };
       if (editMode) {
         await axios.put(`${API_URL}/tickets/${currentTicketId}`, payload, { headers });
@@ -712,11 +833,40 @@ export default function App() {
   };
 
   const isAdmin = currentUserInfo.role === 'Admin';
+  const isManagerOrAdmin = isAdmin || currentUserInfo.role === 'Manager';
+
   const availableTeams = isAdmin ? teams : teams.filter(t => t.members?.some(m => m.id === currentUserInfo.id) || t.owner_id === currentUserInfo.id);
   const availableTeamIds = availableTeams.map(t => t.id);
   const availableProjects = isAdmin ? projects : projects.filter(p => !p.team_id || availableTeamIds.includes(p.team_id));
   const availableProjectIds = availableProjects.map(p => p.id);
   const availableTickets = isAdmin ? tickets : tickets.filter(t => t.assigned_to_id === currentUserInfo.id || availableProjectIds.includes(t.project_id));
+
+  // Gerador de dias para o mês atual no Gantt
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = now.getMonth();
+  const daysInCurrentMonth = new Date(year, month + 1, 0).getDate();
+  const ganttMonthDays = Array.from({ length: daysInCurrentMonth }).map((_, i) => {
+    const dayNum = i + 1;
+    const mm = String(month + 1).padStart(2, '0');
+    const dd = String(dayNum).padStart(2, '0');
+    return {
+      dateStr: `${year}-${mm}-${dd}`,
+      dayNum: dayNum
+    };
+  });
+
+  const todayStr = getLocalDateString(new Date());
+
+  const quickFilteredProjects = quickSearchQuery.trim() === '' ? [] : availableProjects.filter(p => 
+    p.name.toLowerCase().includes(quickSearchQuery.toLowerCase()) || 
+    (p.description && p.description.toLowerCase().includes(quickSearchQuery.toLowerCase()))
+  ).slice(0, 4);
+
+  const quickFilteredTickets = quickSearchQuery.trim() === '' ? [] : availableTickets.filter(t => 
+    t.title.toLowerCase().includes(quickSearchQuery.toLowerCase()) || 
+    (t.description && t.description.toLowerCase().includes(quickSearchQuery.toLowerCase()))
+  ).slice(0, 5);
 
   if (!token) {
     return (
@@ -748,15 +898,6 @@ export default function App() {
     );
   }
 
-  const getLocalDateString = (d) => {
-    const yyyy = d.getFullYear();
-    const mm = String(d.getMonth() + 1).padStart(2, '0');
-    const dd = String(d.getDate()).padStart(2, '0');
-    return `${yyyy}-${mm}-${dd}`;
-  };
-
-  const todayStr = getLocalDateString(new Date());
-  
   const activeTasksList = availableTickets.filter(t => t.status && !['done', 'concluído', 'concluido'].includes(t.status.toLowerCase()));
   const doneTickets = availableTickets.filter(t => t.status && ['done', 'concluído', 'concluido'].includes(t.status.toLowerCase()));
   const overdueTickets = availableTickets.filter(t => t.due_date && t.due_date.split('T')[0] < todayStr && t.status && !['done', 'concluído', 'concluido'].includes(t.status.toLowerCase()));
@@ -807,8 +948,15 @@ export default function App() {
   };
 
   const getProjectName = (projectId) => {
+    if (!projectId) return 'Projeto Geral';
     const p = availableProjects.find(proj => proj.id === projectId);
     return p ? p.name : 'Projeto Geral';
+  };
+
+  const getClientName = (clientId) => {
+    if (!clientId) return null;
+    const c = clients.find(client => client.id === clientId);
+    return c ? c.name : null;
   };
 
   const kanbanColumns = [
@@ -828,7 +976,7 @@ export default function App() {
 
   const visibleWorkers = getVisibleWorkers();
 
-  // ----- LÓGICA ESTATÍSTICAS -----
+  // Estatísticas
   const periodLabels = { '7': 'na última semana', '30': 'no último mês', '180': 'nos últimos 6 meses' };
   let chartLabels = [];
   let tasksPerPeriod = [];
@@ -881,6 +1029,12 @@ export default function App() {
             <FolderPlus className="w-4 h-4" /> Projetos
           </button>
 
+          {isManagerOrAdmin && (
+            <button onClick={() => changeTab('clients')} className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition ${activeTab === 'clients' ? 'bg-zinc-800 text-zinc-100 shadow-sm' : 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-850'}`}>
+              <Building2 className="w-4 h-4" /> Clientes
+            </button>
+          )}
+
           <button onClick={() => changeTab('tasks')} className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition ${activeTab === 'tasks' ? 'bg-zinc-800 text-zinc-100 shadow-sm' : 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-850'}`}>
             <CheckCircle2 className="w-4 h-4" /> Tarefas
           </button>
@@ -897,7 +1051,6 @@ export default function App() {
             <BarChart3 className="w-4 h-4" /> Estatísticas
           </button>
 
-          {/* RENDER CONDICIONAL DO TAB DE ADMINISTRAÇÃO */}
           {isAdmin && (
             <button onClick={() => changeTab('admin')} className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition mt-4 border ${activeTab === 'admin' ? 'bg-amber-500/10 text-amber-400 border-amber-500/30 shadow-sm' : 'border-transparent text-amber-500/70 hover:text-amber-400 hover:bg-amber-500/10'}`}>
               <ShieldAlert className="w-4 h-4" /> Administração
@@ -921,27 +1074,35 @@ export default function App() {
       {/* MAIN CONTENT AREA */}
       <main className="flex-1 flex flex-col h-screen overflow-hidden relative">
         
-        {/* GLOBAL HEADER WITH NOTIFICATIONS */}
-        <header className="shrink-0 h-16 border-b border-zinc-800/80 bg-zinc-950/80 backdrop-blur-md px-8 flex items-center justify-end z-10 sticky top-0">
-          <button 
-            onClick={() => setShowNotificationsModal(true)}
-            className="relative p-2 text-zinc-400 hover:text-zinc-100 bg-zinc-900 border border-zinc-800 rounded-xl transition"
-            title="Notificações"
+        <header className="shrink-0 h-16 border-b border-zinc-800/80 bg-zinc-950/80 backdrop-blur-md px-8 flex items-center justify-between z-10 sticky top-0">
+          <button
+            onClick={() => setShowQuickSearch(true)}
+            className="flex items-center gap-3 bg-zinc-900 border border-zinc-800/80 hover:border-zinc-700 text-zinc-400 hover:text-zinc-200 px-4 py-2 rounded-xl text-xs transition shadow-sm group w-72"
           >
-            <Bell className="w-4 h-4" />
-            {unreadCount > 0 && (
-              <span className="absolute -top-1 -right-1 flex h-3 w-3">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
-                <span className="relative inline-flex rounded-full h-3 w-3 bg-red-500"></span>
-              </span>
-            )}
+            <Search className="w-3.5 h-3.5 text-zinc-500 group-hover:text-zinc-300 transition" />
+            <span className="flex-1 text-left truncate">Pesquisar tarefas ou projetos...</span>
+            <kbd className="bg-zinc-950 border border-zinc-800 text-zinc-500 px-1.5 py-0.5 rounded text-[10px] font-mono">⌘K</kbd>
           </button>
+
+          <div className="flex items-center gap-3">
+            <button 
+              onClick={() => setShowNotificationsModal(true)}
+              className="relative p-2 text-zinc-400 hover:text-zinc-100 bg-zinc-900 border border-zinc-800 rounded-xl transition"
+              title="Notificações"
+            >
+              <Bell className="w-4 h-4" />
+              {unreadCount > 0 && (
+                <span className="absolute -top-1 -right-1 flex h-3 w-3">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-3 w-3 bg-red-500"></span>
+                </span>
+              )}
+            </button>
+          </div>
         </header>
 
-        {/* SCROLLABLE VIEW CONTENT */}
         <div className="flex-1 overflow-y-auto p-8 pb-16 relative">
           
-          {/* CRONÓMETRO ATIVO */}
           {activeTimerTask && (
             <div className="mb-6 bg-gradient-to-r from-blue-900/40 to-zinc-900 border border-blue-500/30 p-4 rounded-2xl flex items-center justify-between shadow-lg">
               <div className="flex items-center gap-3">
@@ -960,7 +1121,6 @@ export default function App() {
             </div>
           )}
 
-          {/* DASHBOARD */}
           {activeTab === 'dashboard' && (
             <div>
               <div className="flex items-center justify-between mb-6">
@@ -1026,9 +1186,7 @@ export default function App() {
                       A trabalhar agora
                     </h2>
                     <p className="text-xs text-zinc-400">
-                      {isAdmin 
-                        ? 'Visão global da empresa' 
-                        : 'Colegas das tuas equipas'}
+                      {isAdmin ? 'Visão global da empresa' : 'Colegas das tuas equipas'}
                     </p>
                   </div>
                   <div className="text-xs font-mono text-zinc-500 bg-zinc-950 border border-zinc-800 px-2.5 py-1 rounded-lg">
@@ -1080,6 +1238,7 @@ export default function App() {
                     {activeTasksList.map(ticket => {
                       const isRunning = activeTimerTask?.id === ticket.id;
                       const assignee = getAssigneeName(ticket.assigned_to_id);
+                      const clientNameStr = getClientName(ticket.client_id);
                       return (
                         <div key={ticket.id} className="bg-zinc-950 border border-zinc-800/80 p-4 rounded-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
                           <div className="space-y-1">
@@ -1087,6 +1246,7 @@ export default function App() {
                               <span className="text-xs text-zinc-500 font-mono">#{ticket.id}</span>
                               <h3 className="font-medium text-sm text-zinc-100">{ticket.title}</h3>
                               <span className="text-[10px] bg-zinc-900 border border-zinc-800 px-2 py-0.5 rounded text-zinc-400">📁 {getProjectName(ticket.project_id)}</span>
+                              {clientNameStr && <span className="text-[10px] bg-blue-950/40 border border-blue-500/30 px-2 py-0.5 rounded text-blue-300">🏢 {clientNameStr}</span>}
                               {ticket.priority && (
                                 <span className={`text-[10px] px-2 py-0.5 rounded border font-medium ${getPriorityBadgeStyle(ticket.priority)}`}>
                                   {ticket.priority}
@@ -1133,8 +1293,8 @@ export default function App() {
 
           {/* ADMINISTRAÇÃO */}
           {activeTab === 'admin' && isAdmin && (
-            <div className="max-w-6xl mx-auto py-4">
-              <div className="flex items-center justify-between mb-6">
+            <div className="max-w-6xl mx-auto py-4 space-y-8">
+              <div className="flex items-center justify-between">
                 <div>
                   <h1 className="text-xl font-bold tracking-tight text-amber-400 flex items-center gap-2">
                     <ShieldAlert className="w-5 h-5" /> Painel de Administração
@@ -1155,7 +1315,10 @@ export default function App() {
               </div>
 
               <div className="bg-zinc-900 border border-zinc-800 rounded-2xl overflow-hidden shadow-xl">
-                <div className="grid grid-cols-12 gap-4 px-6 py-4 border-b border-zinc-800/80 bg-zinc-900/50 text-xs font-semibold text-zinc-400 uppercase tracking-wider">
+                <div className="px-6 py-4 border-b border-zinc-800/80 bg-zinc-900/50">
+                  <h2 className="text-sm font-semibold text-zinc-200">Utilizadores do Sistema</h2>
+                </div>
+                <div className="grid grid-cols-12 gap-4 px-6 py-3 border-b border-zinc-800/60 bg-zinc-950/40 text-xs font-semibold text-zinc-400 uppercase tracking-wider">
                   <div className="col-span-1">ID</div>
                   <div className="col-span-3">Nome</div>
                   <div className="col-span-4">Email</div>
@@ -1206,6 +1369,119 @@ export default function App() {
             </div>
           )}
 
+          {/* CLIENTES */}
+          {activeTab === 'clients' && isManagerOrAdmin && (
+            <div>
+              <div className="flex items-center justify-between mb-6">
+                <div>
+                  <h1 className="text-xl font-bold tracking-tight">Gestão de Clientes</h1>
+                  <p className="text-xs text-zinc-400 mt-0.5">Consulte projetos, tarefas e informações de contacto dos clientes</p>
+                </div>
+                <button 
+                  onClick={() => {
+                    setClientName('');
+                    setClientEmail('');
+                    setClientCompany('');
+                    setClientPhone('');
+                    setShowClientModal(true);
+                  }} 
+                  className="flex items-center gap-2 bg-zinc-100 text-zinc-950 font-medium text-sm px-4 py-2 rounded-xl hover:bg-white transition"
+                >
+                  <Plus className="w-4 h-4" /> Novo Cliente
+                </button>
+              </div>
+
+              {clients.length === 0 ? (
+                <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-12 text-center text-zinc-500 text-sm">
+                  Nenhum cliente registado no sistema.
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                  {clients.map(client => {
+                    const clientProjects = availableProjects.filter(p => p.client_id === client.id);
+                    const clientTickets = availableTickets.filter(t => t.client_id === client.id);
+                    return (
+                      <div key={client.id} className="bg-zinc-900 border border-zinc-800/80 rounded-2xl p-6 shadow-xl flex flex-col justify-between group hover:border-zinc-700 transition space-y-4">
+                        <div>
+                          <div className="flex items-start justify-between mb-3">
+                            <div className="flex items-center gap-3">
+                              <div className="p-2.5 bg-blue-500/10 text-blue-400 border border-blue-500/20 rounded-xl">
+                                <Building2 className="w-5 h-5" />
+                              </div>
+                              <div>
+                                <h2 className="font-semibold text-base text-zinc-100">{client.name}</h2>
+                                {client.company && <p className="text-xs text-zinc-400">{client.company}</p>}
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <button onClick={() => openEditClientModal(client)} className="p-1.5 bg-zinc-950 border border-zinc-800 text-zinc-400 hover:text-zinc-100 rounded-lg transition" title="Editar Cliente">
+                                <Edit3 className="w-3.5 h-3.5" />
+                              </button>
+                              <button onClick={() => handleDeleteClient(client.id)} className="p-1.5 bg-zinc-950 border border-zinc-800 text-red-400 hover:text-red-300 rounded-lg transition" title="Apagar Cliente">
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          </div>
+
+                          <div className="space-y-1.5 py-3 border-y border-zinc-800/60 text-xs text-zinc-400">
+                            {client.email && (
+                              <div className="flex items-center gap-2">
+                                <Mail className="w-3.5 h-3.5 text-zinc-500" />
+                                <span className="truncate">{client.email}</span>
+                              </div>
+                            )}
+                            {client.phone && (
+                              <div className="flex items-center gap-2">
+                                <Phone className="w-3.5 h-3.5 text-zinc-500" />
+                                <span>{client.phone}</span>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* LISTAGEM DE PROJETOS E TAREFAS ASSOCIADOS */}
+                        <div className="space-y-3 pt-2">
+                          <div>
+                            <p className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500 mb-1.5">Projetos ({clientProjects.length})</p>
+                            <div className="space-y-1 max-h-28 overflow-y-auto pr-1">
+                              {clientProjects.length === 0 ? (
+                                <p className="text-[11px] text-zinc-600 italic">Sem projetos associados.</p>
+                              ) : (
+                                clientProjects.map(p => (
+                                  <div key={p.id} className="text-xs bg-zinc-950 border border-zinc-800/80 px-2.5 py-1.5 rounded-lg flex items-center justify-between text-zinc-300">
+                                    <span className="truncate">📁 {p.name}</span>
+                                    <button onClick={() => openProjectTasksModal(p)} className="text-[10px] text-blue-400 hover:underline shrink-0">Ver</button>
+                                  </div>
+                                ))
+                              )}
+                            </div>
+                          </div>
+
+                          <div>
+                            <p className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500 mb-1.5">Tarefas ({clientTickets.length})</p>
+                            <div className="space-y-1 max-h-28 overflow-y-auto pr-1">
+                              {clientTickets.length === 0 ? (
+                                <p className="text-[11px] text-zinc-600 italic">Sem tarefas associadas.</p>
+                              ) : (
+                                clientTickets.map(t => (
+                                  <div key={t.id} className="text-xs bg-zinc-950 border border-zinc-800/80 px-2.5 py-1.5 rounded-lg flex items-center justify-between text-zinc-300">
+                                    <span className="truncate">✓ #{t.id} - {t.title}</span>
+                                    <span className="text-[10px] text-zinc-500 shrink-0">{t.status}</span>
+                                  </div>
+                                ))
+                              )}
+                            </div>
+                          </div>
+                        </div>
+
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+
           {/* PROJETOS */}
           {activeTab === 'projects' && (
             <div>
@@ -1228,6 +1504,7 @@ export default function App() {
                     const done = projTickets.filter(t => t.status && ['done', 'concluído', 'concluido'].includes(t.status.toLowerCase())).length;
                     const percent = total === 0 ? 0 : Math.round((done / total) * 100);
                     const team = availableTeams.find(t => t.id === proj.team_id);
+                    const clientNameStr = getClientName(proj.client_id);
 
                     return (
                       <div key={proj.id} className="bg-zinc-900 border border-zinc-800/80 rounded-2xl p-6 shadow-xl flex flex-col group hover:border-zinc-700 transition">
@@ -1242,11 +1519,17 @@ export default function App() {
                           </div>
                         </div>
 
-                        <div className="flex items-center gap-2 mt-4 text-xs">
-                          <div className="flex items-center gap-1.5 bg-zinc-950 border border-zinc-800 px-2 py-1 rounded-md text-zinc-400">
+                        <div className="flex flex-wrap items-center gap-2 mt-4 text-xs">
+                          <div className="flex items-center gap-1.5 bg-zinc-950 border border-zinc-800 px-2.5 py-1 rounded-md text-zinc-400">
                             <Users className="w-3.5 h-3.5" />
                             <span className="truncate max-w-[120px]">{team ? team.name : 'Equipa Geral'}</span>
                           </div>
+                          {clientNameStr && (
+                            <div className="flex items-center gap-1.5 bg-blue-950/40 border border-blue-500/30 px-2.5 py-1 rounded-md text-blue-300">
+                              <Building2 className="w-3.5 h-3.5" />
+                              <span className="truncate max-w-[120px]">{clientNameStr}</span>
+                            </div>
+                          )}
                         </div>
 
                         <div className="mt-6 mb-4">
@@ -1255,10 +1538,7 @@ export default function App() {
                             <span className="text-emerald-400 font-bold">{percent}%</span>
                           </div>
                           <div className="w-full bg-zinc-950 border border-zinc-800 rounded-full h-2.5 overflow-hidden">
-                            <div 
-                              className="bg-emerald-500 h-2.5 rounded-full transition-all duration-500 ease-out" 
-                              style={{ width: `${percent}%` }}
-                            ></div>
+                            <div className="bg-emerald-500 h-2.5 rounded-full transition-all duration-500 ease-out" style={{ width: `${percent}%` }}></div>
                           </div>
                           <p className="text-[10px] text-zinc-500 mt-2 text-right">
                             {done} de {total} tarefas concluídas
@@ -1266,7 +1546,7 @@ export default function App() {
                         </div>
 
                         <button 
-                          onClick={() => goToProjectTasks(proj.id)}
+                          onClick={() => openProjectTasksModal(proj)}
                           className="mt-auto w-full flex items-center justify-center gap-2 bg-zinc-950 hover:bg-zinc-800 border border-zinc-800 text-zinc-300 py-2 rounded-xl text-xs font-medium transition"
                         >
                           <ListFilter className="w-3.5 h-3.5" /> Ver Tarefas
@@ -1282,12 +1562,7 @@ export default function App() {
           {/* TAREFAS */}
           {activeTab === 'tasks' && (
             <div className="flex flex-col h-full min-h-[calc(100vh-160px)]">
-              <div className="flex flex-col sm:flex-row gap-4 items-center justify-between mb-6 shrink-0">
-                <div className="relative w-full sm:w-64">
-                  <Search className="w-4 h-4 text-zinc-500 absolute left-3.5 top-3" />
-                  <input type="text" placeholder="Pesquisar tarefas..." value={search} onChange={e => setSearch(e.target.value)} className="w-full bg-zinc-900 border border-zinc-800 rounded-xl pl-10 pr-4 py-2 text-sm text-zinc-100 focus:outline-none" />
-                </div>
-
+              <div className="flex flex-col sm:flex-row gap-4 items-center justify-end mb-6 shrink-0">
                 <div className="flex items-center gap-3 w-full sm:w-auto flex-wrap">
                   <div className="bg-zinc-900 border border-zinc-800 p-1 rounded-xl flex items-center">
                     <button onClick={() => setTaskViewMode('kanban')} className={`px-3 py-1.5 rounded-lg text-xs font-medium transition flex items-center gap-1.5 ${taskViewMode === 'kanban' ? 'bg-zinc-800 text-zinc-100 shadow-sm' : 'text-zinc-400 hover:text-zinc-200'}`}>
@@ -1297,6 +1572,13 @@ export default function App() {
                       <ListFilter className="w-3.5 h-3.5" /> Lista
                     </button>
                   </div>
+
+                  <button 
+                    onClick={() => setShowGanttModal(true)} 
+                    className="flex items-center gap-1.5 bg-zinc-900 border border-zinc-800 text-zinc-300 hover:text-zinc-100 hover:bg-zinc-850 px-3.5 py-2 rounded-xl text-xs font-medium transition shadow-sm"
+                  >
+                    <BarChart className="w-3.5 h-3.5 text-blue-400" /> Cronograma (Gantt)
+                  </button>
 
                   <div className="flex items-center bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-sm text-zinc-300">
                     <ArrowUpDown className="w-3.5 h-3.5 mr-2 text-zinc-500" />
@@ -1356,6 +1638,7 @@ export default function App() {
                             columnTickets.map(ticket => {
                               const isRunning = activeTimerTask?.id === ticket.id;
                               const assignee = getAssigneeName(ticket.assigned_to_id);
+                              const clientNameStr = getClientName(ticket.client_id);
                               return (
                                 <div 
                                   key={ticket.id}
@@ -1393,8 +1676,9 @@ export default function App() {
                                     <p className="text-xs text-zinc-400 mt-1 line-clamp-2">{ticket.description || 'Sem descrição'}</p>
                                   </div>
 
-                                  <div className="flex items-center justify-between text-[11px] pt-2 border-t border-zinc-900">
+                                  <div className="flex flex-wrap items-center justify-between text-[11px] pt-2 border-t border-zinc-900 gap-1">
                                     <span className="bg-zinc-900 text-zinc-400 px-2 py-0.5 rounded border border-zinc-800">📁 {getProjectName(ticket.project_id)}</span>
+                                    {clientNameStr && <span className="bg-blue-950/40 text-blue-300 px-2 py-0.5 rounded border border-blue-500/30">🏢 {clientNameStr}</span>}
                                     {assignee && <span className="text-emerald-400 font-medium">👤 {assignee}</span>}
                                   </div>
                                 </div>
@@ -1416,6 +1700,7 @@ export default function App() {
                         const isRunning = activeTimerTask?.id === ticket.id;
                         const isDone = ticket.status && ['done', 'concluído', 'concluido'].includes(ticket.status.toLowerCase());
                         const assignee = getAssigneeName(ticket.assigned_to_id);
+                        const clientNameStr = getClientName(ticket.client_id);
                         return (
                           <div key={ticket.id} className={`p-5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 transition ${isDone ? 'bg-zinc-900/30 opacity-60' : 'hover:bg-zinc-850/50'}`}>
                             <div className="space-y-1">
@@ -1423,6 +1708,7 @@ export default function App() {
                                 <span className="text-xs text-zinc-500 font-mono">#{ticket.id}</span>
                                 <h2 className={`font-medium text-sm ${isDone ? 'line-through text-zinc-400' : 'text-zinc-100'}`}>{ticket.title}</h2>
                                 <span className="text-[10px] bg-zinc-950 border border-zinc-800 px-2 py-0.5 rounded text-zinc-400">📁 {getProjectName(ticket.project_id)}</span>
+                                {clientNameStr && <span className="text-[10px] bg-blue-950/40 border border-blue-500/30 px-2 py-0.5 rounded text-blue-300">🏢 {clientNameStr}</span>}
                                 {ticket.priority && (
                                   <span className={`text-[10px] px-2 py-0.5 rounded border font-medium ${getPriorityBadgeStyle(ticket.priority)}`}>
                                     {ticket.priority}
@@ -1684,7 +1970,6 @@ export default function App() {
               </div>
 
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                {/* PERFIL */}
                 <div className="bg-zinc-900/80 border border-zinc-800/80 rounded-2xl p-6 shadow-sm flex flex-col">
                   <h2 className="text-base font-semibold text-zinc-100">Perfil</h2>
                   <p className="text-xs text-zinc-400 mb-6">Atualize as suas informações pessoais</p>
@@ -1703,45 +1988,22 @@ export default function App() {
                     <div className="grid grid-cols-2 gap-4">
                       <div>
                         <label className="block text-[11px] font-medium text-zinc-400 mb-1.5 uppercase tracking-wider">Nome</label>
-                        <input 
-                          type="text" 
-                          value={settingsName} 
-                          onChange={e => setSettingsName(e.target.value)} 
-                          className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-sm text-zinc-100 focus:outline-none focus:border-zinc-700 transition" 
-                          placeholder="O teu nome" 
-                        />
+                        <input type="text" value={settingsName} onChange={e => setSettingsName(e.target.value)} className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-sm text-zinc-100 focus:outline-none focus:border-zinc-700 transition" placeholder="O teu nome" />
                       </div>
                       <div>
                         <label className="block text-[11px] font-medium text-zinc-400 mb-1.5 uppercase tracking-wider">Email</label>
-                        <input 
-                          type="email" 
-                          value={settingsEmail} 
-                          onChange={e => setSettingsEmail(e.target.value)} 
-                          required 
-                          className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-sm text-zinc-100 focus:outline-none focus:border-zinc-700 transition" 
-                          placeholder="teu.email@empresa.com" 
-                        />
+                        <input type="email" value={settingsEmail} onChange={e => setSettingsEmail(e.target.value)} required className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-sm text-zinc-100 focus:outline-none focus:border-zinc-700 transition" placeholder="teu.email@empresa.com" />
                       </div>
                     </div>
 
                     <div className="grid grid-cols-2 gap-4">
                       <div>
                         <label className="block text-[11px] font-medium text-zinc-400 mb-1.5 uppercase tracking-wider">Cargo</label>
-                        <input 
-                          type="text" 
-                          value={currentUserInfo.role} 
-                          disabled 
-                          className="w-full bg-zinc-950/50 border border-zinc-800/50 rounded-xl px-3.5 py-2.5 text-sm text-zinc-500 cursor-not-allowed" 
-                        />
+                        <input type="text" value={currentUserInfo.role} disabled className="w-full bg-zinc-950/50 border border-zinc-800/50 rounded-xl px-3.5 py-2.5 text-sm text-zinc-500 cursor-not-allowed" />
                       </div>
                       <div>
                         <label className="block text-[11px] font-medium text-zinc-400 mb-1.5 uppercase tracking-wider">ID de Colaborador</label>
-                        <input 
-                          type="text" 
-                          value={`#${currentUserInfo.id}`} 
-                          disabled 
-                          className="w-full bg-zinc-950/50 border border-zinc-800/50 rounded-xl px-3.5 py-2.5 text-sm text-zinc-500 cursor-not-allowed" 
-                        />
+                        <input type="text" value={`#${currentUserInfo.id}`} disabled className="w-full bg-zinc-950/50 border border-zinc-800/50 rounded-xl px-3.5 py-2.5 text-sm text-zinc-500 cursor-not-allowed" />
                       </div>
                     </div>
 
@@ -1759,7 +2021,6 @@ export default function App() {
                   </form>
                 </div>
 
-                {/* SEGURANÇA */}
                 <div className="bg-zinc-900/80 border border-zinc-800/80 rounded-2xl p-6 shadow-sm flex flex-col">
                   <h2 className="text-base font-semibold text-zinc-100">Segurança</h2>
                   <p className="text-xs text-zinc-400 mb-6">Altere a sua senha de acesso</p>
@@ -1767,37 +2028,17 @@ export default function App() {
                   <form onSubmit={handleUpdatePassword} className="space-y-4 flex-1 flex flex-col">
                     <div>
                       <label className="block text-[11px] font-medium text-zinc-400 mb-1.5 uppercase tracking-wider">Senha atual</label>
-                      <input 
-                        type="password" 
-                        value={settingsCurrentPassword} 
-                        onChange={e => setSettingsCurrentPassword(e.target.value)} 
-                        className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-sm text-zinc-100 focus:outline-none focus:border-zinc-700 transition" 
-                        placeholder="Para confirmar a sua identidade" 
-                      />
+                      <input type="password" value={settingsCurrentPassword} onChange={e => setSettingsCurrentPassword(e.target.value)} className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-sm text-zinc-100 focus:outline-none focus:border-zinc-700 transition" placeholder="Para confirmar a sua identidade" />
                     </div>
                     
                     <div className="grid grid-cols-2 gap-4">
                       <div>
                         <label className="block text-[11px] font-medium text-zinc-400 mb-1.5 uppercase tracking-wider">Nova senha</label>
-                        <input 
-                          type="password" 
-                          value={settingsNewPassword} 
-                          onChange={e => setSettingsNewPassword(e.target.value)} 
-                          required 
-                          className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-sm text-zinc-100 focus:outline-none focus:border-zinc-700 transition" 
-                          placeholder="Mínimo de 6 caracteres" 
-                        />
+                        <input type="password" value={settingsNewPassword} onChange={e => setNewPassword(e.target.value)} required className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-sm text-zinc-100 focus:outline-none focus:border-zinc-700 transition" placeholder="Mínimo de 6 caracteres" />
                       </div>
                       <div>
                         <label className="block text-[11px] font-medium text-zinc-400 mb-1.5 uppercase tracking-wider">Confirmar senha</label>
-                        <input 
-                          type="password" 
-                          value={settingsConfirmPassword} 
-                          onChange={e => setSettingsConfirmPassword(e.target.value)} 
-                          required 
-                          className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-sm text-zinc-100 focus:outline-none focus:border-zinc-700 transition" 
-                          placeholder="Repita a nova senha" 
-                        />
+                        <input type="password" value={settingsConfirmPassword} onChange={e => setSettingsConfirmPassword(e.target.value)} required className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-sm text-zinc-100 focus:outline-none focus:border-zinc-700 transition" placeholder="Repita a nova senha" />
                       </div>
                     </div>
 
@@ -1818,7 +2059,6 @@ export default function App() {
             </div>
           )}
 
-          {/* ESTATÍSTICAS */}
           {activeTab === 'statistics' && (
             <div className="max-w-7xl mx-auto py-4">
               <div className="flex items-center justify-between mb-6">
@@ -1842,7 +2082,6 @@ export default function App() {
                 </div>
               </div>
 
-              {/* CARDS TOPO */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
                 <div className="bg-zinc-900/80 border border-zinc-800/80 rounded-2xl p-6 shadow-sm flex items-center justify-between group hover:border-zinc-700 transition">
                   <div>
@@ -1863,17 +2102,13 @@ export default function App() {
                 </div>
               </div>
 
-              {/* CHARTS COMPACTOS E ALINHADOS */}
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                {/* Tarefas Concluídas por Dia (BAR CHART) */}
                 <div className="bg-zinc-900/80 border border-zinc-800/80 rounded-2xl p-6 shadow-sm flex flex-col h-48">
                   <h3 className="text-sm font-semibold text-zinc-100">Tarefas Concluídas</h3>
                   <p className="text-[10px] text-zinc-400 mb-4">Evolução da produtividade ({periodLabels[statsPeriod]})</p>
                   
                   <div className="flex-1 flex flex-col relative w-full h-full">
-                    {/* Chart Area */}
                     <div className="flex-1 relative w-full flex items-end gap-1 z-10">
-                      {/* Grid lines background */}
                       <div className="absolute inset-0 flex flex-col justify-between pointer-events-none opacity-20 z-0">
                         <div className="border-t border-dashed border-zinc-500 w-full h-0"></div>
                         <div className="border-t border-dashed border-zinc-500 w-full h-0"></div>
@@ -1886,24 +2121,18 @@ export default function App() {
                         return (
                           <div key={i} className="flex-1 flex flex-col items-center justify-end z-10 group h-full relative">
                             {safeCount > 0 && <span className="text-[10px] font-mono text-zinc-400 absolute -top-5 opacity-0 group-hover:opacity-100 transition">{safeCount}</span>}
-                            <div 
-                              className="w-full max-w-[12px] bg-blue-500 rounded-t-sm hover:bg-blue-400 transition-all duration-300" 
-                              style={{ height: `${height}%`, minHeight: safeCount > 0 ? '2px' : '0' }}
-                            ></div>
+                            <div className="w-full max-w-[12px] bg-blue-500 rounded-t-sm hover:bg-blue-400 transition-all duration-300" style={{ height: `${height}%`, minHeight: safeCount > 0 ? '2px' : '0' }}></div>
                           </div>
                         );
                       })}
                     </div>
                     
-                    {/* Labels Area */}
                     <div className="w-full flex items-end gap-1 mt-2">
                       {chartLabels.map((lbl, i) => {
                         const showLabel = statsPeriod !== '30' || i % 5 === 0 || i === chartLabels.length - 1;
                         return (
                           <div key={i} className="flex-1 flex justify-center">
-                            <span className="text-[8px] text-zinc-600 truncate text-center w-full">
-                              {showLabel ? lbl : ''}
-                            </span>
+                            <span className="text-[8px] text-zinc-600 truncate text-center w-full">{showLabel ? lbl : ''}</span>
                           </div>
                         )
                       })}
@@ -1911,15 +2140,12 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Horas Registadas por Dia (LINE CHART) */}
                 <div className="bg-zinc-900/80 border border-zinc-800/80 rounded-2xl p-6 shadow-sm flex flex-col h-48">
                   <h3 className="text-sm font-semibold text-zinc-100">Horas Registadas</h3>
                   <p className="text-[10px] text-zinc-400 mb-4">Tempo de trabalho ({periodLabels[statsPeriod]})</p>
 
                   <div className="flex-1 flex flex-col relative w-full h-full">
-                    {/* Chart Area */}
                     <div className="flex-1 relative w-full z-10">
-                      {/* Grid lines background */}
                       <div className="absolute inset-0 flex flex-col justify-between pointer-events-none opacity-20 z-0">
                         <div className="border-t border-dashed border-zinc-500 w-full h-0"></div>
                         <div className="border-t border-dashed border-zinc-500 w-full h-0"></div>
@@ -1944,15 +2170,12 @@ export default function App() {
                       </svg>
                     </div>
 
-                    {/* Labels Area */}
                     <div className="w-full flex items-end gap-1 mt-2">
                       {chartLabels.map((lbl, i) => {
                         const showLabel = statsPeriod !== '30' || i % 5 === 0 || i === chartLabels.length - 1;
                         return (
                           <div key={i} className="flex-1 flex justify-center">
-                            <span className="text-[8px] text-zinc-600 truncate text-center w-full">
-                              {showLabel ? lbl : ''}
-                            </span>
+                            <span className="text-[8px] text-zinc-600 truncate text-center w-full">{showLabel ? lbl : ''}</span>
                           </div>
                         )
                       })}
@@ -1966,6 +2189,243 @@ export default function App() {
 
         </div>
       </main>
+
+      {/* MODAL DE TAREFAS DO PROJETO */}
+      {showProjectTasksModal && activeProjectForTasks && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fadeIn" onClick={() => setShowProjectTasksModal(false)}>
+          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl max-w-xl w-full p-6 shadow-2xl flex flex-col max-h-[80vh]" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4 pb-3 border-b border-zinc-800">
+              <div>
+                <h2 className="text-base font-semibold text-zinc-100">Tarefas do Projeto: {activeProjectForTasks.name}</h2>
+                <p className="text-xs text-zinc-400 mt-0.5">Visão geral de todas as tarefas (ativas e concluídas)</p>
+              </div>
+              <button onClick={() => setShowProjectTasksModal(false)} className="p-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-xl transition">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto space-y-2.5 pr-1">
+              {availableTickets.filter(t => t.project_id === activeProjectForTasks.id).length === 0 ? (
+                <div className="py-12 text-center text-xs text-zinc-500 border border-dashed border-zinc-800 rounded-xl">
+                  Nenhuma tarefa associada a este projeto.
+                </div>
+              ) : (
+                availableTickets
+                  .filter(t => t.project_id === activeProjectForTasks.id)
+                  .map(ticket => {
+                    const isDone = ticket.status && ['done', 'concluído', 'concluido'].includes(ticket.status.toLowerCase());
+                    const assignee = getAssigneeName(ticket.assigned_to_id);
+                    return (
+                      <div key={ticket.id} className={`p-4 rounded-xl border flex items-center justify-between gap-3 text-xs transition ${isDone ? 'bg-zinc-950/40 border-zinc-900 opacity-60' : 'bg-zinc-950 border-zinc-800/80 shadow-sm'}`}>
+                        <div className="space-y-1 min-w-0 flex-1">
+                          <div className="flex items-center gap-2">
+                            <span className="text-zinc-500 font-mono">#{ticket.id}</span>
+                            <span className={`font-medium truncate ${isDone ? 'line-through text-zinc-400' : 'text-zinc-100'}`}>{ticket.title}</span>
+                            {ticket.priority && (
+                              <span className={`text-[10px] px-2 py-0.5 rounded border font-medium ${getPriorityBadgeStyle(ticket.priority)}`}>
+                                {ticket.priority}
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-zinc-400 truncate pl-6">{ticket.description || 'Sem descrição'}</p>
+                          <div className="flex items-center gap-4 text-[11px] text-zinc-500 pl-6 pt-1">
+                            <span>Estado: <strong className={isDone ? 'text-emerald-400' : 'text-blue-400'}>{ticket.status}</strong></span>
+                            {assignee && <span>👤 {assignee}</span>}
+                            {ticket.due_date && <span>📅 {ticket.due_date.split('T')[0]}</span>}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL GANTT (MATRIZ DE DIAS DO MÊS COM BARRAS DE DURAÇÃO CONTÍNUAS) */}
+      {showGanttModal && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-6 z-50 animate-fadeIn" onClick={() => setShowGanttModal(false)}>
+          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl max-w-6xl w-full p-6 shadow-2xl flex flex-col max-h-[85vh]" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4 pb-3 border-b border-zinc-800">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-blue-500/10 text-blue-400 border border-blue-500/20 rounded-xl"><BarChart className="w-4 h-4" /></div>
+                <div>
+                  <h2 className="text-base font-semibold text-zinc-100">Cronograma do Mês (Gantt View)</h2>
+                  <p className="text-xs text-zinc-400">Distribuição temporal e duração das tarefas</p>
+                </div>
+              </div>
+              <button onClick={() => setShowGanttModal(false)} className="p-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-xl transition">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-x-auto overflow-y-auto pr-1">
+              {sortedTickets.length === 0 ? (
+                <div className="py-16 text-center text-xs text-zinc-500">Nenhuma tarefa encontrada para exibir no cronograma.</div>
+              ) : (
+                <div className="min-w-[1200px]">
+                  {/* HEADER DIAS DO MÊS */}
+                  <div className="flex pb-2.5 border-b border-zinc-800 bg-zinc-950/60 rounded-xl px-3 mb-3 items-center">
+                    <div className="w-64 shrink-0 text-xs font-semibold text-zinc-400 uppercase tracking-wider">Tarefa</div>
+                    <div className="flex flex-1 gap-1">
+                      {ganttMonthDays.map((dayObj, i) => {
+                        const isToday = dayObj.dateStr === todayStr;
+                        return (
+                          <div key={i} className={`w-8 shrink-0 text-center text-[10px] font-mono py-1 rounded-lg ${isToday ? 'bg-blue-500/20 text-blue-400 font-bold border border-blue-500/30' : 'text-zinc-500'}`}>
+                            {dayObj.dayNum}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* LINHAS DE TAREFAS COM BARRAS DE DURAÇÃO CONTÍNUAS */}
+                  <div className="space-y-2">
+                    {sortedTickets.map(ticket => {
+                      const isDone = ticket.status && ['done', 'concluído', 'concluido'].includes(ticket.status.toLowerCase());
+                      const startDate = ticket.start_date ? ticket.start_date.split('T')[0] : (ticket.due_date ? ticket.due_date.split('T')[0] : null);
+                      const dueDate = ticket.due_date ? ticket.due_date.split('T')[0] : startDate;
+
+                      return (
+                        <div key={ticket.id} className="flex items-center bg-zinc-950/70 border border-zinc-850 hover:border-zinc-700 p-2.5 rounded-xl transition">
+                          <div className="w-64 shrink-0 pr-3 min-w-0">
+                            <p className="text-xs font-medium text-zinc-200 truncate" title={ticket.title}>#{ticket.id} - {ticket.title}</p>
+                            <p className="text-[10px] text-zinc-500 truncate">📁 {getProjectName(ticket.project_id)}</p>
+                          </div>
+
+                          <div className="flex flex-1 gap-1 items-center relative">
+                            {ganttMonthDays.map((dayObj, i) => {
+                              const inRange = startDate && dueDate && dayObj.dateStr >= startDate && dayObj.dateStr <= dueDate;
+                              const isStart = dayObj.dateStr === startDate;
+                              const isEnd = dayObj.dateStr === dueDate;
+
+                              return (
+                                <div key={i} className="w-8 shrink-0 h-8 border-r border-zinc-900/40 flex items-center justify-center relative">
+                                  {inRange && (
+                                    <div 
+                                      title={`De ${startDate} até ${dueDate}: ${ticket.title}`}
+                                      className={`absolute inset-y-1 h-5 rounded-md flex items-center justify-center text-[9px] font-bold px-1 truncate shadow-sm z-10 ${
+                                        isDone ? 'bg-emerald-500/30 text-emerald-300 border border-emerald-500/50' : 'bg-blue-500/30 text-blue-300 border border-blue-500/50'
+                                      } ${isStart ? 'left-0 rounded-l-md' : '-left-1'} ${isEnd ? 'right-0 rounded-r-md' : '-right-1'}`}
+                                    >
+                                      {isStart && `#${ticket.id}`}
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL / OVERLAY DA PESQUISA RÁPIDA (SPOTLIGHT / CMD+K) */}
+      {showQuickSearch && (
+        <div className="fixed inset-0 bg-black/75 backdrop-blur-sm flex items-start justify-center pt-28 px-4 z-50 animate-fadeIn" onClick={() => setShowQuickSearch(false)}>
+          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl max-w-xl w-full shadow-2xl overflow-hidden flex flex-col" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center px-4 py-3.5 border-b border-zinc-800 gap-3 bg-zinc-950/50">
+              <Search className="w-4 h-4 text-zinc-400 shrink-0" />
+              <input
+                type="text"
+                autoFocus
+                placeholder="Procurar projetos ou tarefas..."
+                value={quickSearchQuery}
+                onChange={e => setQuickSearchQuery(e.target.value)}
+                className="w-full bg-transparent text-sm text-zinc-100 focus:outline-none placeholder-zinc-500"
+              />
+              <span className="text-[10px] font-mono bg-zinc-800 text-zinc-400 px-2 py-0.5 rounded shrink-0">ESC para fechar</span>
+            </div>
+
+            <div className="max-h-96 overflow-y-auto p-3 space-y-4">
+              {quickSearchQuery.trim() === '' ? (
+                <div className="py-10 text-center text-xs text-zinc-500">
+                  Começa a escrever para pesquisar nas tuas tarefas e projetos atribuídos...
+                </div>
+              ) : quickFilteredProjects.length === 0 && quickFilteredTickets.length === 0 ? (
+                <div className="py-10 text-center text-xs text-zinc-500">
+                  Nenhum resultado encontrado para "{quickSearchQuery}".
+                </div>
+              ) : (
+                <>
+                  {quickFilteredProjects.length > 0 && (
+                    <div>
+                      <p className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500 px-3 mb-1.5">Projetos</p>
+                      <div className="space-y-1">
+                        {quickFilteredProjects.map(proj => (
+                          <div
+                            key={proj.id}
+                            onClick={() => {
+                              setShowQuickSearch(false);
+                              goToProjectTasks(proj.id);
+                            }}
+                            className="flex items-center justify-between p-3 rounded-xl hover:bg-zinc-800/80 cursor-pointer transition group"
+                          >
+                            <div className="flex items-center gap-3 min-w-0">
+                              <div className="p-2 bg-blue-500/10 text-blue-400 border border-blue-500/20 rounded-lg group-hover:bg-blue-500/20 transition">
+                                <Folder className="w-4 h-4" />
+                              </div>
+                              <div className="min-w-0">
+                                <p className="text-sm font-medium text-zinc-200 truncate">{proj.name}</p>
+                                <p className="text-xs text-zinc-500 truncate">{proj.description || 'Sem descrição'}</p>
+                              </div>
+                            </div>
+                            <span className="text-[10px] font-medium bg-zinc-950 border border-zinc-800 text-zinc-400 px-2.5 py-1 rounded-lg shrink-0">Ver tarefas</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {quickFilteredTickets.length > 0 && (
+                    <div>
+                      <p className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500 px-3 mb-1.5 mt-3">Tarefas</p>
+                      <div className="space-y-1">
+                        {quickFilteredTickets.map(ticket => (
+                          <div
+                            key={ticket.id}
+                            onClick={() => {
+                              setShowQuickSearch(false);
+                              openComments(ticket);
+                            }}
+                            className="flex items-center justify-between p-3 rounded-xl hover:bg-zinc-800/80 cursor-pointer transition group"
+                          >
+                            <div className="flex items-center gap-3 min-w-0">
+                              <div className="p-2 bg-zinc-800 text-zinc-300 border border-zinc-700/50 rounded-lg group-hover:bg-zinc-750 transition">
+                                <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                              </div>
+                              <div className="min-w-0">
+                                <div className="flex items-center gap-2">
+                                  <span className="text-xs font-mono text-zinc-500">#{ticket.id}</span>
+                                  <p className="text-sm font-medium text-zinc-200 truncate">{ticket.title}</p>
+                                </div>
+                                <p className="text-xs text-zinc-500 truncate">📁 {getProjectName(ticket.project_id)} • {ticket.status}</p>
+                              </div>
+                            </div>
+                            <span className="text-[10px] font-medium bg-zinc-950 border border-zinc-800 text-zinc-400 px-2.5 py-1 rounded-lg shrink-0">Detalhes</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+
+            <div className="px-4 py-2.5 border-t border-zinc-800 bg-zinc-950/40 flex items-center justify-between text-[11px] text-zinc-500">
+              <span>Navegação rápida segura por função</span>
+              <span className="font-mono">FlowPulse Spotlight</span>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* POP-UP / MODAL NOTIFICAÇÕES */}
       {showNotificationsModal && (
@@ -2003,10 +2463,7 @@ export default function App() {
                       </p>
                     </div>
                     {!n.is_read && (
-                      <button 
-                        onClick={() => markNotifAsRead(n.id)}
-                        className="px-2.5 py-1.5 bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-zinc-300 text-[10px] font-medium rounded-lg transition shrink-0"
-                      >
+                      <button onClick={() => markNotifAsRead(n.id)} className="px-2.5 py-1.5 bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-zinc-300 text-[10px] font-medium rounded-lg transition shrink-0">
                         Ler
                       </button>
                     )}
@@ -2018,7 +2475,7 @@ export default function App() {
         </div>
       )}
 
-      {/* MODAL CRIAÇÃO DE UTILIZADOR (ADMIN) */}
+      {/* MODAL CRIAÇÃO DE UTILIZADOR */}
       {showUserModal && (
         <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 z-50">
           <div className="bg-zinc-900 border border-zinc-800 rounded-2xl max-w-md w-full p-6 shadow-2xl">
@@ -2054,7 +2511,69 @@ export default function App() {
         </div>
       )}
 
-      {/* OUTROS MODAIS DA APP */}
+      {/* MODAL CRIAÇÃO DE CLIENTE */}
+      {showClientModal && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl max-w-md w-full p-6 shadow-2xl">
+            <h2 className="text-lg font-semibold mb-4">Novo Cliente</h2>
+            <form onSubmit={handleSaveClient} className="space-y-4">
+              <div>
+                <label className="block text-xs font-medium text-zinc-400 mb-1">Nome / Designação</label>
+                <input type="text" value={clientName} onChange={e => setClientName(e.target.value)} required className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2 text-sm text-zinc-100 focus:outline-none" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-zinc-400 mb-1">Empresa</label>
+                <input type="text" value={clientCompany} onChange={e => setClientCompany(e.target.value)} className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2 text-sm text-zinc-100 focus:outline-none" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-zinc-400 mb-1">Email</label>
+                <input type="email" value={clientEmail} onChange={e => setClientEmail(e.target.value)} className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2 text-sm text-zinc-100 focus:outline-none" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-zinc-400 mb-1">Telefone</label>
+                <input type="text" value={clientPhone} onChange={e => setClientPhone(e.target.value)} className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2 text-sm text-zinc-100 focus:outline-none" />
+              </div>
+              <div className="flex justify-end gap-3 mt-6">
+                <button type="button" onClick={() => setShowClientModal(false)} className="px-4 py-2 text-sm text-zinc-400 hover:text-zinc-100 transition">Cancelar</button>
+                <button type="submit" className="bg-zinc-100 text-zinc-950 font-medium text-sm px-4 py-2 rounded-xl hover:bg-white transition">Guardar Cliente</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL EDITAR CLIENTE */}
+      {showEditClientModal && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl max-w-md w-full p-6 shadow-2xl">
+            <h2 className="text-lg font-semibold mb-4">Editar Cliente</h2>
+            <form onSubmit={handleUpdateClient} className="space-y-4">
+              <div>
+                <label className="block text-xs font-medium text-zinc-400 mb-1">Nome / Designação</label>
+                <input type="text" value={editClientName} onChange={e => setEditClientName(e.target.value)} required className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2 text-sm text-zinc-100 focus:outline-none" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-zinc-400 mb-1">Empresa</label>
+                <input type="text" value={editClientCompany} onChange={e => setEditClientCompany(e.target.value)} className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2 text-sm text-zinc-100 focus:outline-none" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-zinc-400 mb-1">Email</label>
+                <input type="email" value={editClientEmail} onChange={e => setEditClientEmail(e.target.value)} className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2 text-sm text-zinc-100 focus:outline-none" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-zinc-400 mb-1">Telefone</label>
+                <input type="text" value={editClientPhone} onChange={e => setEditClientPhone(e.target.value)} className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2 text-sm text-zinc-100 focus:outline-none" />
+              </div>
+              <div className="flex justify-end gap-3 mt-6">
+                <button type="button" onClick={() => setShowEditClientModal(false)} className="px-4 py-2 text-sm text-zinc-400 hover:text-zinc-100 transition">Cancelar</button>
+                <button type="submit" className="bg-zinc-100 text-zinc-950 font-medium text-sm px-4 py-2 rounded-xl hover:bg-white transition">Guardar Alterações</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* OUTROS MODAIS */}
       {selectedCalendarDate && (
         <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 z-50">
           <div className="bg-zinc-900 border border-zinc-800 rounded-2xl max-w-lg w-full p-6 shadow-2xl flex flex-col max-h-[80vh]">
@@ -2097,10 +2616,7 @@ export default function App() {
                         <div className="flex items-center justify-between text-[11px] text-zinc-500 pt-2 border-t border-zinc-900">
                           <span>📁 {getProjectName(ticket.project_id)}</span>
                           {assignee && <span className="text-emerald-400">👤 {assignee}</span>}
-                          <button 
-                            onClick={() => { setSelectedCalendarDate(null); openComments(ticket); }} 
-                            className="text-xs font-medium text-blue-400 hover:underline"
-                          >
+                          <button onClick={() => { setSelectedCalendarDate(null); openComments(ticket); }} className="text-xs font-medium text-blue-400 hover:underline">
                             Ver detalhes / comentários
                           </button>
                         </div>
@@ -2113,7 +2629,6 @@ export default function App() {
         </div>
       )}
 
-      {/* MODAL DE TAREFA */}
       {showModal && (
         <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 z-50">
           <div className="bg-zinc-900 border border-zinc-800 rounded-2xl max-w-md w-full p-6 shadow-2xl">
@@ -2147,26 +2662,40 @@ export default function App() {
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block text-xs font-medium text-zinc-400 mb-1">Projeto</label>
-                  <select value={newProjectId} onChange={e => setNewProjectId(e.target.value)} className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2 text-sm text-zinc-100 focus:outline-none" required>
+                  <select value={newProjectId} onChange={e => setNewProjectId(e.target.value)} className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-sm text-zinc-100 focus:outline-none">
+                    <option value="">Nenhum (Projeto Geral)</option>
                     {availableProjects.map(proj => <option key={proj.id} value={proj.id}>{proj.name}</option>)}
                   </select>
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-zinc-400 mb-1">Atribuir a</label>
-                  <select value={newAssignedTo} onChange={e => setNewAssignedTo(e.target.value)} className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2 text-sm text-zinc-100 focus:outline-none">
-                    <option value="">Não atribuído</option>
-                    {usersList.map(u => <option key={u.id} value={u.id}>{getUserDisplayName(u)}</option>)}
+                  <label className="block text-xs font-medium text-zinc-400 mb-1">Cliente</label>
+                  <select value={newClientId} onChange={e => setNewClientId(e.target.value)} className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-sm text-zinc-100 focus:outline-none">
+                    <option value="">Nenhum</option>
+                    {clients.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
                   </select>
                 </div>
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div>
+                  <label className="block text-xs font-medium text-zinc-400 mb-1">Atribuir a</label>
+                  <select value={newAssignedTo} onChange={e => setNewAssignedTo(e.target.value)} className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-sm text-zinc-100 focus:outline-none">
+                    <option value="">Não atribuído</option>
+                    {usersList.map(u => <option key={u.id} value={u.id}>{getUserDisplayName(u)}</option>)}
+                  </select>
+                </div>
+                <div>
                   <label className="block text-xs font-medium text-zinc-400 mb-1">Horas Estimadas</label>
                   <input type="number" step="0.5" value={newEstimatedHours} onChange={e => setNewEstimatedHours(e.target.value)} className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2 text-sm text-zinc-100 focus:outline-none" />
                 </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-zinc-400 mb-1">Data de Início</label>
+                  <input type="date" value={newStartDate} onChange={e => setNewStartDate(e.target.value)} className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2 text-sm text-zinc-100 focus:outline-none [color-scheme:dark]" />
+                </div>
                 <div>
                   <label className="block text-xs font-medium text-zinc-400 mb-1">Data Limite</label>
-                  <input type="date" value={newDueDate} onChange={e => setNewDueDate(e.target.value)} className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2 text-sm text-zinc-100 focus:outline-none" />
+                  <input type="date" value={newDueDate} onChange={e => setNewDueDate(e.target.value)} className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2 text-sm text-zinc-100 focus:outline-none [color-scheme:dark]" />
                 </div>
               </div>
               <div className="flex justify-end gap-3 mt-6">
@@ -2178,7 +2707,6 @@ export default function App() {
         </div>
       )}
 
-      {/* MODAL DE PROJETOS (CRIAR E EDITAR) */}
       {showProjectModal && (
         <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 z-50">
           <div className="bg-zinc-900 border border-zinc-800 rounded-2xl max-w-md w-full p-6 shadow-2xl">
@@ -2192,12 +2720,21 @@ export default function App() {
                 <label className="block text-xs font-medium text-zinc-400 mb-1">Descrição</label>
                 <textarea value={projectDesc} onChange={e => setProjectDesc(e.target.value)} rows="2" className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2 text-sm text-zinc-100 focus:outline-none resize-none" />
               </div>
-              <div>
-                <label className="block text-xs font-medium text-zinc-400 mb-1">Equipa Responsável</label>
-                <select value={projectTeamId} onChange={e => setProjectTeamId(e.target.value)} className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2 text-sm text-zinc-100 focus:outline-none">
-                  <option value="">Nenhuma (Projeto Geral)</option>
-                  {availableTeams.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-                </select>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-zinc-400 mb-1">Equipa Responsável</label>
+                  <select value={projectTeamId} onChange={e => setProjectTeamId(e.target.value)} className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-sm text-zinc-100 focus:outline-none">
+                    <option value="">Nenhuma (Geral)</option>
+                    {availableTeams.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-zinc-400 mb-1">Cliente</label>
+                  <select value={projectClientId} onChange={e => setProjectClientId(e.target.value)} className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-sm text-zinc-100 focus:outline-none">
+                    <option value="">Nenhum</option>
+                    {clients.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                  </select>
+                </div>
               </div>
               <div>
                 <label className="block text-xs font-medium text-zinc-400 mb-1.5 uppercase tracking-wider">Tarefas Associadas</label>
@@ -2233,7 +2770,6 @@ export default function App() {
         </div>
       )}
 
-      {/* MODAL EQUIPA (CRIAR E EDITAR) */}
       {showTeamModal && (
         <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 z-50">
           <div className="bg-zinc-900 border border-zinc-800 rounded-2xl max-w-lg w-full p-6 shadow-2xl max-h-[90vh] overflow-y-auto">
@@ -2333,7 +2869,6 @@ export default function App() {
         </div>
       )}
 
-      {/* COMENTÁRIOS */}
       {showCommentsModal && (
         <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 z-50">
           <div className="bg-zinc-900 border border-zinc-800 rounded-2xl max-w-lg w-full p-6 shadow-2xl flex flex-col max-h-[80vh]">
