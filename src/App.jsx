@@ -34,6 +34,16 @@ export default function App() {
     }
   };
 
+  const fetchAdminUsersReports = async () => {
+  try {
+    const headers = { Authorization: `Bearer ${token}` };
+    const res = await axios.get(`${API_URL}/admin/users-reports`, { headers }); // Sem o /tickets pelo meio
+    setAdminUsersReports(res.data);
+  } catch (err) {
+    console.error("Erro ao carregar relatórios:", err);
+  }
+};
+
   const fetchAuditLogs = async () => {
     try {
       const headers = { Authorization: `Bearer ${token}` };
@@ -83,11 +93,14 @@ const fetchWeekStatus = async () => {
         summary: dailyReport.summary,
         detailed_report: dailyReport.detailed_report,
         kilometers: Number(dailyReport.kilometers || 0),
-        overtime_hours: Number(dailyReport.overtime_hours || 0)
+        overtime_hours: Number(dailyReport.overtime_hours || 0),
+        pending_work: dailyReport.pending_work || '',
+        observations: dailyReport.observations || '',
+        materials_used: dailyReport.materials_used || ''
       }, { headers });
       
       alert("Relatório Diário Submetido com Sucesso! Excelente trabalho hoje.");
-      fetchDailyReport(); // Recarrega para veres o crachá verde de 'SUBMETIDO'
+      fetchDailyReport(); 
     } catch (err) {
       alert("Erro ao submeter relatório.");
     }
@@ -116,6 +129,7 @@ const fetchWeekStatus = async () => {
     }
     if (activeTab === 'admin' && token) {
       fetchAuditLogs();
+      fetchAdminUsersReports();
     }
   }, [activeTab, token]);
 
@@ -148,6 +162,9 @@ const fetchWeekStatus = async () => {
   const [showQuickSearch, setShowQuickSearch] = useState(false);
   const [quickSearchQuery, setQuickSearchQuery] = useState('');
   
+  const [adminUsersReports, setAdminUsersReports] = useState([]);
+  const [selectedAdminUser, setSelectedAdminUser] = useState(null);
+
   const [activeWorkers, setActiveWorkers] = useState([]);
   const [currentUserInfo, setCurrentUserInfo] = useState({ id: null, role: 'Member', name: '', email: '' });
 
@@ -1587,6 +1604,120 @@ const fetchWeekStatus = async () => {
                 </div>
               </div>
 
+              <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-6 shadow-xl mt-6">
+                <div className="flex items-center justify-between mb-4 border-b border-zinc-800 pb-3">
+                  <div>
+                    <h2 className="text-sm font-semibold text-zinc-100 flex items-center gap-2">
+                      📋 Auditoria de Relatórios Diários por Colaborador
+                    </h2>
+                    <p className="text-xs text-zinc-400 mt-0.5">Clica num colaborador para inspecionar o histórico de relatórios submetidos</p>
+                  </div>
+                  <button 
+                    onClick={fetchAdminUsersReports}
+                    className="text-xs bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-3 py-1.5 rounded-lg transition"
+                  >
+                    🔄 Atualizar
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                  
+                  {/* COLUNA DA ESQUERDA: LISTA DE UTILIZADORES */}
+                  <div className="space-y-2 max-h-[500px] overflow-y-auto pr-2 bg-zinc-950/50 p-3 rounded-xl border border-zinc-800/80">
+                    {adminUsersReports.length === 0 ? (
+                      <p className="text-xs text-zinc-500 text-center py-8">Sem utilizadores ou a carregar...</p>
+                    ) : (
+                      adminUsersReports.map(item => (
+                        <div 
+                          key={item.user_id}
+                          onClick={() => setSelectedAdminUser(item)}
+                          className={`p-3.5 rounded-xl border cursor-pointer transition flex items-center justify-between ${selectedAdminUser?.user_id === item.user_id ? 'bg-blue-600/10 border-blue-500/40 text-blue-300' : 'bg-zinc-950 border-zinc-800 text-zinc-300 hover:border-zinc-700'}`}
+                        >
+                          <div className="flex items-center gap-3 min-w-0">
+                            <div className="w-8 h-8 rounded-full bg-zinc-800 flex items-center justify-center text-xs font-bold text-zinc-200 shrink-0">
+                              {item.name.charAt(0).toUpperCase()}
+                            </div>
+                            <div className="min-w-0">
+                              <p className="text-sm font-medium truncate">{item.name}</p>
+                              <p className="text-[11px] text-zinc-500 truncate">{item.reports.length} relatório(s)</p>
+                            </div>
+                          </div>
+                          <span className="text-xs text-zinc-500 shrink-0">➔</span>
+                        </div>
+                      ))
+                    )}
+                  </div>
+
+                  {/* COLUNA DA DIREITA: DETALHES DOS RELATÓRIOS */}
+                  <div className="lg:col-span-2 bg-zinc-950 border border-zinc-800 rounded-xl p-4 max-h-[500px] overflow-y-auto space-y-4">
+                    {!selectedAdminUser ? (
+                      <div className="h-full flex items-center justify-center py-16 text-center text-xs text-zinc-500">
+                        Seleciona um colaborador à esquerda para ver os relatórios diários.
+                      </div>
+                    ) : selectedAdminUser.reports.length === 0 ? (
+                      <div className="h-full flex items-center justify-center py-16 text-center text-xs text-zinc-500">
+                        Este colaborador ainda não tem relatórios submetidos.
+                      </div>
+                    ) : (
+                      <div className="space-y-4">
+                        <div className="pb-3 border-b border-zinc-800 flex items-center justify-between">
+                          <h3 className="text-sm font-bold text-zinc-100">Relatórios de: {selectedAdminUser.name}</h3>
+                          <span className="text-xs font-mono text-zinc-500">{selectedAdminUser.email}</span>
+                        </div>
+
+                        {selectedAdminUser.reports.map(rep => (
+                          <div key={rep.id} className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 space-y-3">
+                            <div className="flex items-center justify-between">
+                              <span className="text-xs font-mono font-bold text-blue-400">📅 Data: {rep.date}</span>
+                              <span className={`text-[10px] px-2 py-0.5 rounded font-bold border ${rep.status === 'Submetido' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' : 'bg-amber-500/10 text-amber-400 border-amber-500/30'}`}>
+                                {rep.status.toUpperCase()}
+                              </span>
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-2 text-xs text-zinc-400 bg-zinc-950 p-2.5 rounded-lg border border-zinc-800/80">
+                              <div>🚗 Quilómetros: <strong className="text-zinc-200">{rep.kilometers || 0} km</strong></div>
+                              <div>⏱️ Horas Extra: <strong className="text-zinc-200">{rep.overtime_hours || 0} h</strong></div>
+                            </div>
+
+                            {rep.summary && (
+                              <div>
+                                <p className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider mb-1">Resumo Curto</p>
+                                <p className="text-xs text-zinc-300 bg-zinc-950 p-2.5 rounded-lg border border-zinc-800">{rep.summary}</p>
+                              </div>
+                            )}
+
+                            {rep.detailed_report && (
+                              <div>
+                                <p className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider mb-1">Relatório Detalhado</p>
+                                <p className="text-xs text-zinc-300 bg-zinc-950 p-2.5 rounded-lg border border-zinc-800 whitespace-pre-wrap">{rep.detailed_report}</p>
+                              </div>
+                            )}
+
+                            {(rep.pending_work || rep.observations || rep.materials_used) && (
+                              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-2 text-xs text-zinc-400">
+                                <div className="bg-zinc-950 p-2.5 rounded-lg border border-zinc-800">
+                                  <strong className="text-zinc-300 block mb-1">Pendentes:</strong>
+                                  {rep.pending_work || 'Nenhum'}
+                                </div>
+                                <div className="bg-zinc-950 p-2.5 rounded-lg border border-zinc-800">
+                                  <strong className="text-zinc-300 block mb-1">Incidentes:</strong>
+                                  {rep.observations || 'Nenhum'}
+                                </div>
+                                <div className="bg-zinc-950 p-2.5 rounded-lg border border-zinc-800">
+                                  <strong className="text-zinc-300 block mb-1">Materiais:</strong>
+                                  {rep.materials_used || 'Nenhum'}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                </div>
+              </div>
+
               {/* TABELA DE UTILIZADORES (A que já tinhas) */}
               <div className="bg-zinc-900 border border-zinc-800 rounded-2xl overflow-hidden shadow-xl">
                 <div className="px-6 py-4 border-b border-zinc-800/80 bg-zinc-900/50">
@@ -2847,6 +2978,45 @@ const fetchWeekStatus = async () => {
                           placeholder="Descrição de todas as intervenções e estado atual..." 
                         />
                       </div>
+                    </div>
+                  </div>
+
+                  {/* 👈 NOVOS CAMPOS ADICIONADOS AQUI */}
+                  <div className="space-y-4 pt-4 border-t border-zinc-800">
+                    <div>
+                      <label className="block text-xs font-medium text-zinc-400 mb-1.5">Trabalhos Pendentes</label>
+                      <textarea 
+                        value={dailyReport.pending_work || ''} 
+                        onChange={e => setDailyReport({...dailyReport, pending_work: e.target.value})}
+                        disabled={dailyReport.status === 'Submetido'}
+                        rows="2" 
+                        className={`w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-sm text-zinc-100 focus:outline-none resize-none transition ${dailyReport.status === 'Submetido' ? 'opacity-50 cursor-not-allowed' : 'focus:border-zinc-700'}`} 
+                        placeholder="Indica se ficou algum trabalho por terminar para amanhã..." 
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-medium text-zinc-400 mb-1.5">Incidentes / Observações</label>
+                      <textarea 
+                        value={dailyReport.observations || ''} 
+                        onChange={e => setDailyReport({...dailyReport, observations: e.target.value})}
+                        disabled={dailyReport.status === 'Submetido'}
+                        rows="2" 
+                        className={`w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-sm text-zinc-100 focus:outline-none resize-none transition ${dailyReport.status === 'Submetido' ? 'opacity-50 cursor-not-allowed' : 'focus:border-zinc-700'}`} 
+                        placeholder="Regista incidentes ocorridos ou observações relevantes..." 
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-medium text-zinc-400 mb-1.5">Material Utilizado</label>
+                      <textarea 
+                        value={dailyReport.materials_used || ''} 
+                        onChange={e => setDailyReport({...dailyReport, materials_used: e.target.value})}
+                        disabled={dailyReport.status === 'Submetido'}
+                        rows="2" 
+                        className={`w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-sm text-zinc-100 focus:outline-none resize-none transition ${dailyReport.status === 'Submetido' ? 'opacity-50 cursor-not-allowed' : 'focus:border-zinc-700'}`} 
+                        placeholder="Lista o material aplicado nas intervenções de hoje..." 
+                      />
                     </div>
                   </div>
 
