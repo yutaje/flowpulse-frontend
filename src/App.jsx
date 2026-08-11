@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { 
   CheckCircle2, Clock, AlertCircle, Plus, Search, 
-  LogOut, ShieldAlert, LayoutDashboard, Ticket as TicketIcon, Trash2, Edit3, Play, Square, MessageSquare, FolderPlus, RefreshCw, Calendar, Users, Crown, Folder, UserCheck, Kanban, ListFilter, ArrowUpDown, ChevronLeft, ChevronRight, Settings, BarChart3, Bell, Check, Download, Building2, Phone, Mail, BarChart, X, Upload 
+  LogOut, ShieldAlert, LayoutDashboard, Ticket as TicketIcon, Trash2, Edit3, Play, Square, MessageSquare, FolderPlus, RefreshCw, Calendar, Users, Crown, Folder, UserCheck, Kanban, ListFilter, ArrowUpDown, ChevronLeft, ChevronRight, Settings, BarChart3, Bell, Check, Download, Building2, Phone, Mail, BarChart, X, Upload, Paperclip 
 } from 'lucide-react';
 
 const API_URL = 'http://127.0.0.1:8000'; 
@@ -184,6 +184,8 @@ const fetchWeekStatus = async () => {
   const [newTitle, setNewTitle] = useState('');
   const [newDesc, setNewDesc] = useState('');
   const [newPriority, setNewPriority] = useState('Média');
+  const [newTaskType, setNewTaskType] = useState('Geral');
+  const [typeFilter, setTypeFilter] = useState('');
   const [newStatus, setNewStatus] = useState('To Do');
   const [newProjectId, setNewProjectId] = useState('');
   const [newClientId, setNewClientId] = useState(''); 
@@ -875,6 +877,7 @@ const fetchWeekStatus = async () => {
     setNewTitle('');
     setNewDesc('');
     setNewPriority('Média');
+    setNewTaskType('Geral');
     setNewStatus('To Do');
     setNewAssignedTo('');
     setNewEstimatedHours(0);
@@ -891,6 +894,7 @@ const fetchWeekStatus = async () => {
     setNewTitle(ticket.title);
     setNewDesc(ticket.description || '');
     setNewPriority(ticket.priority);
+    setNewTaskType(ticket.task_type || 'Geral');
     setNewStatus(ticket.status);
     setNewAssignedTo(ticket.assigned_to_id || '');
     setNewEstimatedHours(ticket.estimated_hours || 0);
@@ -909,6 +913,7 @@ const fetchWeekStatus = async () => {
         title: newTitle, 
         description: newDesc, 
         priority: newPriority,
+        task_type: newTaskType,
         status: newStatus, 
         project_id: newProjectId ? Number(newProjectId) : null,
         client_id: newClientId ? Number(newClientId) : null,
@@ -996,6 +1001,15 @@ const fetchWeekStatus = async () => {
       case 'Média': return 'bg-amber-950/80 text-amber-400 border-amber-500/40';
       case 'Baixa': return 'bg-zinc-900 text-zinc-400 border-zinc-800';
       default: return 'bg-zinc-900 text-zinc-400 border-zinc-800';
+    }
+  };
+
+  const getTaskTypeBadgeStyle = (type) => {
+    switch (type) {
+      case 'Software': return 'bg-purple-500/10 text-purple-400 border-purple-500/30';
+      case 'Hardware': return 'bg-orange-500/10 text-orange-400 border-orange-500/30';
+      case 'Redes': return 'bg-cyan-500/10 text-cyan-400 border-cyan-500/30';
+      case 'Geral': default: return 'bg-zinc-800 text-zinc-400 border-zinc-700';
     }
   };
 
@@ -1089,6 +1103,7 @@ const fetchWeekStatus = async () => {
         if (ticket.status && ['done', 'concluído', 'concluido'].includes(ticket.status.toLowerCase())) return false;
       }
     }
+    if (typeFilter && ticket.task_type !== typeFilter) return false;
     return true;
   });
 
@@ -1908,6 +1923,9 @@ const fetchWeekStatus = async () => {
                     <button onClick={() => setTaskViewMode('list')} className={`px-3 py-1.5 rounded-lg text-xs font-medium transition flex items-center gap-1.5 ${taskViewMode === 'list' ? 'bg-zinc-800 text-zinc-100 shadow-sm' : 'text-zinc-400 hover:text-zinc-200'}`}>
                       <ListFilter className="w-3.5 h-3.5" /> Lista
                     </button>
+                    <button onClick={() => setTaskViewMode('knowledge')} className={`px-3 py-1.5 rounded-lg text-xs font-medium transition flex items-center gap-1.5 ${taskViewMode === 'knowledge' ? 'bg-purple-500/10 text-purple-400 border border-purple-500/20 shadow-sm' : 'text-zinc-400 hover:text-zinc-200'}`}>
+                      🧠 Base de Conhecimento
+                    </button>
                   </div>
 
                   <button 
@@ -1931,6 +1949,14 @@ const fetchWeekStatus = async () => {
                     {availableProjects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
                   </select>
 
+                  <select value={typeFilter} onChange={e => setTypeFilter(e.target.value)} className="bg-zinc-900 border border-zinc-800 text-zinc-300 text-sm rounded-xl px-3 py-2 focus:outline-none">
+                    <option value="">Qualquer tipo</option>
+                    <option value="Software">Software</option>
+                    <option value="Hardware">Hardware</option>
+                    <option value="Redes">Redes</option>
+                    <option value="Geral">Geral</option>
+                  </select>
+
                   {taskViewMode === 'list' && (
                     <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)} className="bg-zinc-900 border border-zinc-800 text-zinc-300 text-sm rounded-xl px-3 py-2 focus:outline-none">
                       <option value="">Estados (Ativos)</option>
@@ -1947,7 +1973,120 @@ const fetchWeekStatus = async () => {
                 </div>
               </div>
 
-              {taskViewMode === 'kanban' ? (
+              {taskViewMode === 'knowledge' ? (
+                <div className="bg-zinc-900 border border-zinc-800 rounded-xl p-6 flex-1 overflow-y-auto">
+                  <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-6 pb-4 border-b border-zinc-800">
+                    <div>
+                      <h2 className="text-lg font-bold text-zinc-100">Base de Conhecimento</h2>
+                      <p className="text-xs text-zinc-400 mt-1">Consulta tarefas concluídas por ti e pela tua equipa para encontrar soluções passadas.</p>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <span className="text-xs font-medium text-zinc-500">Filtrar por tipo:</span>
+                      <select value={typeFilter} onChange={e => setTypeFilter(e.target.value)} className="bg-zinc-950 border border-zinc-800 text-zinc-300 text-sm rounded-xl px-3 py-2 focus:outline-none">
+                        <option value="">Todas as Categorias</option>
+                        <option value="Software">Software</option>
+                        <option value="Hardware">Hardware</option>
+                        <option value="Redes">Redes</option>
+                        <option value="Geral">Geral</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="space-y-3">
+                    {availableTickets
+                      .filter(t => t.status === 'Done') // Mostra APENAS concluídas
+                      .filter(t => typeFilter === '' || t.task_type === typeFilter) // Filtra pelo tipo
+                      .map(ticket => {
+                        const assignee = getAssigneeName(ticket.assigned_to_id);
+                        return (
+                          <div key={ticket.id} className="bg-zinc-950 border border-zinc-800 p-4 rounded-xl hover:border-zinc-700 transition group flex flex-col sm:flex-row gap-4 justify-between items-start shadow-sm">
+                            <div className="space-y-3 flex-1 w-full min-w-0">
+                              
+                              {/* CABEÇALHO DO TICKET */}
+                              <div className="flex items-center gap-3">
+                                <span className="text-xs font-mono text-zinc-500 bg-zinc-900 px-2 py-1 rounded-md">#{ticket.id}</span>
+                                <h3 className="font-medium text-sm text-zinc-100 truncate">{ticket.title}</h3>
+                                {ticket.task_type && ticket.task_type !== 'Geral' && (
+                                  <span className="text-[10px] px-2 py-0.5 rounded border border-purple-500/30 bg-purple-500/10 text-purple-400 font-medium whitespace-nowrap">
+                                    {ticket.task_type}
+                                  </span>
+                                )}
+                              </div>
+                              
+                              {/* CAIXA DE CONHECIMENTO (PROBLEMA + SOLUÇÃO + ANEXOS) */}
+                              <div className="bg-zinc-900/50 p-4 rounded-xl border border-zinc-800/60 space-y-4">
+                                
+                                {/* PROBLEMA ORIGINAL */}
+                                <div>
+                                  <p className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider mb-1.5 flex items-center gap-1.5">
+                                    <AlertCircle className="w-3.5 h-3.5" /> Problema Original
+                                  </p>
+                                  <p className="text-xs text-zinc-400 leading-relaxed">
+                                    {ticket.description || 'Sem descrição inicial registada.'}
+                                  </p>
+                                </div>
+
+                                {/* SOLUÇÃO / DESCRIÇÃO FINAL */}
+                                <div className="pt-3 border-t border-zinc-800/60">
+                                  <p className="text-[10px] font-semibold text-emerald-500 uppercase tracking-wider mb-1.5 flex items-center gap-1.5">
+                                    <CheckCircle2 className="w-3.5 h-3.5" /> Solução Aplicada
+                                  </p>
+                                  <p className="text-sm text-zinc-200 leading-relaxed whitespace-pre-wrap">
+                                    {ticket.final_description || 'Tarefa concluída sem relatório detalhado.'}
+                                  </p>
+                                </div>
+
+                                {/* ANEXOS / IMAGENS */}
+                                {ticket.attachment_url && (
+                                  <div className="pt-3 border-t border-zinc-800/60">
+                                    <p className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                                      <Paperclip className="w-3.5 h-3.5" /> Ficheiros Anexados
+                                    </p>
+                                    
+                                    {/* Verifica se é uma imagem pela extensão */}
+                                    {ticket.attachment_url.match(/\.(jpeg|jpg|gif|png)$/i) ? (
+                                      <a href={`${API_URL}/${ticket.attachment_url}`} target="_blank" rel="noopener noreferrer" className="block max-w-sm rounded-xl overflow-hidden border border-zinc-700 hover:border-blue-500 transition shadow-sm">
+                                        <img 
+                                          src={`${API_URL}/${ticket.attachment_url}`} 
+                                          alt="Anexo da Tarefa" 
+                                          className="w-full h-auto object-cover max-h-48"
+                                        />
+                                      </a>
+                                    ) : (
+                                      <a href={`${API_URL}/${ticket.attachment_url}`} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 text-xs text-blue-400 bg-blue-500/10 px-3 py-2 rounded-xl w-fit border border-blue-500/20 hover:bg-blue-500/20 transition">
+                                        <Download className="w-4 h-4" /> Transferir Documento
+                                      </a>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+
+                              {/* RODAPÉ DO TICKET */}
+                              <div className="text-[11px] text-zinc-500 flex flex-wrap items-center gap-4 pt-1">
+                                <span className="flex items-center gap-1"><Folder className="w-3.5 h-3.5" /> {getProjectName(ticket.project_id)}</span>
+                                {assignee && <span className="text-emerald-400 font-medium flex items-center gap-1"><UserCheck className="w-3.5 h-3.5" /> Resolvido por: {assignee}</span>}
+                                {ticket.due_date && <span className="flex items-center gap-1"><Calendar className="w-3.5 h-3.5" /> {ticket.due_date.split('T')[0]}</span>}
+                              </div>
+                            </div>
+                            
+                            {/* BOTÃO DE COMENTÁRIOS */}
+                            <button 
+                              onClick={() => openComments(ticket)} 
+                              className="shrink-0 text-xs bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-300 px-3 py-2 rounded-xl transition flex items-center gap-2 mt-2 sm:mt-0"
+                            >
+                              <MessageSquare className="w-3.5 h-3.5" /> Ver Discussão
+                            </button>
+                          </div>
+                        );
+                    })}
+                    {availableTickets.filter(t => t.status === 'Done' && (typeFilter === '' || t.task_type === typeFilter)).length === 0 && (
+                      <div className="py-12 text-center text-xs text-zinc-500 border border-dashed border-zinc-800 rounded-xl">
+                        Nenhuma tarefa concluída encontrada nesta categoria.
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ) : taskViewMode === 'kanban' ? (
                 <div className="grid grid-cols-1 md:grid-cols-4 gap-4 flex-1 overflow-x-auto pb-4 items-start">
                   {kanbanColumns.map(col => {
                     const columnTickets = sortedTickets.filter(t => t.status === col.id);
@@ -1990,6 +2129,11 @@ const fetchWeekStatus = async () => {
                                       {ticket.priority && (
                                         <span className={`text-[10px] px-2 py-0.5 rounded border font-medium ${getPriorityBadgeStyle(ticket.priority)}`}>
                                           {ticket.priority}
+                                        </span>
+                                      )}
+                                      {ticket.task_type && ticket.task_type !== 'Geral' && (
+                                        <span className={`text-[10px] px-2 py-0.5 rounded border font-medium ${getTaskTypeBadgeStyle(ticket.task_type)}`}>
+                                          {ticket.task_type === 'Software' ? '💻 ' : ticket.task_type === 'Hardware' ? '🔧 ' : '🌐 '}{ticket.task_type}
                                         </span>
                                       )}
                                     </div>
@@ -2055,6 +2199,11 @@ const fetchWeekStatus = async () => {
                                 {ticket.priority && (
                                   <span className={`text-[10px] px-2 py-0.5 rounded border font-medium ${getPriorityBadgeStyle(ticket.priority)}`}>
                                     {ticket.priority}
+                                  </span>
+                                )}
+                                {ticket.task_type && ticket.task_type !== 'Geral' && (
+                                  <span className={`text-[10px] px-2 py-0.5 rounded border font-medium ${getTaskTypeBadgeStyle(ticket.task_type)}`}>
+                                    {ticket.task_type === 'Software' ? '💻 ' : ticket.task_type === 'Hardware' ? '🔧 ' : '🌐 '}{ticket.task_type}
                                   </span>
                                 )}
                                 {isDone && <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">CONCLUÍDO</span>}
@@ -3329,7 +3478,7 @@ const fetchWeekStatus = async () => {
                 <label className="block text-xs font-medium text-zinc-400 mb-1">Descrição</label>
                 <textarea value={newDesc} onChange={e => setNewDesc(e.target.value)} rows="3" className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2 text-sm text-zinc-100 focus:outline-none resize-none" />
               </div>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-3 gap-3">
                 <div>
                   <label className="block text-xs font-medium text-zinc-400 mb-1">Prioridade</label>
                   <select value={newPriority} onChange={e => setNewPriority(e.target.value)} className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-sm text-zinc-100 focus:outline-none">
@@ -3343,6 +3492,15 @@ const fetchWeekStatus = async () => {
                     <option value="In Progress">Em progresso</option>
                     <option value="In Review">Em revisão</option>
                     <option value="Done">Concluído</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-zinc-400 mb-1">Tipo</label>
+                  <select value={newTaskType} onChange={e => setNewTaskType(e.target.value)} className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-sm text-zinc-100 focus:outline-none">
+                    <option value="Geral">Geral</option>
+                    <option value="Software">Software</option>
+                    <option value="Hardware">Hardware</option>
+                    <option value="Redes">Redes</option>
                   </select>
                 </div>
               </div>
@@ -3561,9 +3719,13 @@ const fetchWeekStatus = async () => {
           <div className="bg-zinc-900 border border-zinc-800 rounded-2xl max-w-lg w-full p-6 shadow-2xl flex flex-col max-h-[80vh]">
             <h2 className="text-lg font-semibold mb-2">Comentários: {activeTaskForComments?.title}</h2>
             <div className="flex-1 overflow-y-auto space-y-3 my-4 pr-2">
-              {comments.length === 0 ? <p className="text-xs text-zinc-500 text-center py-6">Ainda sem comentários.</p> : comments.map(c => (
-                <div key={c.id} className="bg-zinc-950 border border-zinc-800 p-3 rounded-xl text-xs space-y-1">
-                  <p className="text-zinc-300">{c.text}</p>
+              {comments.length === 0 ? <p className="text-xs text-zinc-500 text-center py-6">Ainda sem comentários.</p> : comments.map(comment => (
+                <div key={comment.id} className="bg-zinc-900 p-3 rounded-xl border border-zinc-800 space-y-1">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="font-medium text-purple-400">👤 {comment.author_name}</span>
+                    <span className="text-[10px] text-zinc-500">{comment.created_at ? comment.created_at.split('T')[0] : ''}</span>
+                  </div>
+                  <p className="text-xs text-zinc-300">{comment.text}</p>
                 </div>
               ))}
             </div>
