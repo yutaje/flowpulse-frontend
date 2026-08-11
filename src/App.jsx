@@ -16,6 +16,96 @@ export default function App() {
   const [taskViewMode, setTaskViewMode] = useState('kanban'); // 'kanban', 'list'
   const [showGanttModal, setShowGanttModal] = useState(false);
 
+  // --- NOVOS ESTADOS PARA O RELATÓRIO DIÁRIO ---
+  const [dailyReport, setDailyReport] = useState(null);
+  const [todayTickets, setTodayTickets] = useState([]);
+  const [generatingDaily, setGeneratingDaily] = useState(false);
+  const [weekStatus, setWeekStatus] = useState([]);
+
+  // Função para ir buscar o relatório de hoje
+  const fetchDailyReport = async () => {
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      const res = await axios.get(`${API_URL}/tickets/my-day/today`, { headers });
+      setDailyReport(res.data.report);
+      setTodayTickets(res.data.tickets_worked);
+    } catch (err) {
+      console.error("Erro ao carregar o dia:", err);
+    }
+  };
+
+const fetchWeekStatus = async () => {
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      const res = await axios.get(`${API_URL}/tickets/my-day/week`, { headers });
+      setWeekStatus(res.data);
+    } catch (err) {
+      console.error("Erro ao carregar a semana:", err);
+    }
+  };
+
+  const generateDailyReportIA = async () => {
+    if (todayTickets.length === 0) {
+      alert("Ainda não registaste tempo em nenhuma tarefa hoje para a IA resumir!");
+      return;
+    }
+    setGeneratingDaily(true);
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      const res = await axios.post(`${API_URL}/tickets/my-day/generate-ai`, {}, { headers });
+      
+      setDailyReport(prev => ({
+        ...prev,
+        summary: res.data.summary,
+        detailed_report: res.data.detailed_report
+      }));
+    } catch (err) {
+      alert("Erro ao ligar ao assistente inteligente.");
+    } finally {
+      setGeneratingDaily(false);
+    }
+  };
+
+  const submitDailyReport = async () => {
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      await axios.put(`${API_URL}/tickets/my-day/today`, {
+        summary: dailyReport.summary,
+        detailed_report: dailyReport.detailed_report,
+        kilometers: Number(dailyReport.kilometers || 0),
+        overtime_hours: Number(dailyReport.overtime_hours || 0)
+      }, { headers });
+      
+      alert("Relatório Diário Submetido com Sucesso! Excelente trabalho hoje.");
+      fetchDailyReport(); // Recarrega para veres o crachá verde de 'SUBMETIDO'
+    } catch (err) {
+      alert("Erro ao submeter relatório.");
+    }
+  };
+
+  const reopenDailyReport = async () => {
+    if (!window.confirm("Queres reabrir o relatório para edição? O estado passará novamente a Rascunho e a tua equipa será notificada se já o tiverem lido.")) return;
+    
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      await axios.put(`${API_URL}/tickets/my-day/reopen`, {}, { headers });
+      
+      // Recarrega os dados do dia e a barrinha da semana!
+      fetchDailyReport();
+      fetchWeekStatus(); 
+    } catch (err) {
+      alert("Erro ao reabrir o relatório.");
+    }
+  };
+
+  // Carregar os dados automaticamente quando mudas para o separador
+  useEffect(() => {
+    if (activeTab === 'my-day' && token) {
+      fetchDailyReport();
+      fetchWeekStatus();
+    }
+  }, [activeTab, token]);
+
   // Estados para o Modal de Tarefas do Projeto
   const [showProjectTasksModal, setShowProjectTasksModal] = useState(false);
   const [activeProjectForTasks, setActiveProjectForTasks] = useState(null);
@@ -225,6 +315,20 @@ export default function App() {
       await axios.put(`${API_URL}/notifications/read-all`, {}, { headers });
       fetchNotifications();
     } catch (e) {}
+  };
+
+  const handleOpenTaskFromNotif = (message) => {
+    const match = message.match(/#(\d+)/);
+    if (match) {
+      const ticketId = Number(match[1]);
+      const ticket = tickets.find(t => t.id === ticketId);
+      if (ticket) {
+        setShowNotificationsModal(false); // Fecha o modal de notificações
+        changeTab('tasks'); // Muda para a aba de Tarefas
+      } else {
+        alert("A tarefa correspondente não foi encontrada ou não tens permissão para aceder.");
+      }
+    }
   };
 
   const unreadCount = notifications.filter(n => !n.is_read).length;
@@ -1095,6 +1199,11 @@ export default function App() {
 
           <button onClick={() => changeTab('tasks')} className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition ${activeTab === 'tasks' ? 'bg-zinc-800 text-zinc-100 shadow-sm' : 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-850'}`}>
             <CheckCircle2 className="w-4 h-4" /> Tarefas
+          </button>
+
+          {/* NOVO BOTÃO "O MEU DIA" */}
+          <button onClick={() => changeTab('my-day')} className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition ${activeTab === 'my-day' ? 'bg-blue-500/10 text-blue-400 border border-blue-500/20 shadow-sm' : 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-850 border border-transparent'}`}>
+            <Clock className="w-4 h-4" /> O Meu Dia
           </button>
 
           <button onClick={() => changeTab('teams')} className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition ${activeTab === 'teams' ? 'bg-zinc-800 text-zinc-100 shadow-sm' : 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-850'}`}>
@@ -2126,7 +2235,7 @@ export default function App() {
                     <div className="grid grid-cols-2 gap-4">
                       <div>
                         <label className="block text-[11px] font-medium text-zinc-400 mb-1.5 uppercase tracking-wider">Nova senha</label>
-                        <input type="password" value={settingsNewPassword} onChange={e => setNewPassword(e.target.value)} required className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-sm text-zinc-100 focus:outline-none focus:border-zinc-700 transition" placeholder="Mínimo de 6 caracteres" />
+                        <input type="password" value={settingsNewPassword} onChange={e => setSettingsNewPassword(e.target.value)} required className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-sm text-zinc-100 focus:outline-none focus:border-zinc-700 transition" placeholder="Mínimo de 6 caracteres" />
                       </div>
                       <div>
                         <label className="block text-[11px] font-medium text-zinc-400 mb-1.5 uppercase tracking-wider">Confirmar senha</label>
@@ -2276,6 +2385,178 @@ export default function App() {
                 </div>
               </div>
 
+            </div>
+          )}
+
+          {/* ============================================= */}
+          {/* NOVO SEPARADOR: O MEU DIA (RELATÓRIO DIÁRIO)   */}
+          {/* ============================================= */}
+          {activeTab === 'my-day' && (
+            <div className="max-w-4xl mx-auto py-4 space-y-6">
+              
+              {/* 1. TÍTULO DA PÁGINA */}
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-2">
+                <div>
+                  <h1 className="text-xl font-bold tracking-tight text-blue-400 flex items-center gap-2">
+                    <Clock className="w-5 h-5" /> Relatório Diário de Atividade
+                  </h1>
+                  <p className="text-xs text-zinc-400 mt-1">Gere e submete o teu trabalho de hoje.</p>
+                </div>
+                {dailyReport && (
+                  <div className={`px-3 py-1.5 rounded-lg text-xs font-bold border w-fit ${dailyReport.status === 'Submetido' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' : 'bg-zinc-800 text-zinc-300 border-zinc-700'}`}>
+                    Estado: {dailyReport.status.toUpperCase()}
+                  </div>
+                )}
+              </div>
+
+              {/* 2. BARRA DOS ÚLTIMOS 7 DIAS */}
+              <div className="bg-zinc-900/80 border border-zinc-800 rounded-2xl p-4 shadow-sm">
+                <h2 className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider mb-3">O Teu Registo (Últimos 7 dias)</h2>
+                <div className="flex items-center gap-2 overflow-x-auto pb-1">
+                  {weekStatus.map((day) => {
+                    let bgColor = 'bg-zinc-950 border-zinc-800/50';
+                    let textColor = 'text-zinc-500';
+                    let icon = '➖';
+                    
+                    if (day.status === 'Submetido') { 
+                      bgColor = 'bg-emerald-500/10 border-emerald-500/30'; textColor = 'text-emerald-400'; icon = '✔️'; 
+                    } else if (day.status === 'Rascunho') { 
+                      bgColor = 'bg-amber-500/10 border-amber-500/30'; textColor = 'text-amber-400'; icon = '📝'; 
+                    } else if (day.status === 'Em falta') { 
+                      bgColor = 'bg-red-500/10 border-red-500/30'; textColor = 'text-red-400'; icon = '✖️'; 
+                    }
+
+                    const isToday = day.date === new Date().toISOString().split('T')[0];
+
+                    return (
+                      <div key={day.date} className={`flex-1 min-w-[70px] flex flex-col items-center justify-center py-2 px-1 rounded-xl border ${bgColor} ${isToday ? 'ring-1 ring-blue-500/50 shadow-md' : ''}`}>
+                        <span className={`text-[10px] font-medium uppercase ${textColor}`}>{day.day_name}</span>
+                        <span className={`text-lg font-bold ${textColor}`}>{day.day_num}</span>
+                        <span className="text-[10px] mt-1" title={day.status}>{icon}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* LISTA DE TAREFAS DE HOJE */}
+              <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-6 shadow-xl">
+                <h2 className="text-sm font-semibold text-zinc-100 mb-4 border-b border-zinc-800 pb-2">Tarefas em que trabalhaste hoje</h2>
+                
+                {todayTickets.length === 0 ? (
+                  <div className="py-8 text-center text-xs text-zinc-500 border border-dashed border-zinc-800 rounded-xl">
+                    Ainda não registaste tempo em nenhuma tarefa hoje.
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {todayTickets.map(t => (
+                      <div key={t.id} className="bg-zinc-950 border border-zinc-800 p-3.5 rounded-xl flex items-center justify-between">
+                        <div>
+                          <div className="flex items-center gap-2 mb-1">
+                            <span className="text-xs font-mono text-zinc-500">#{t.id}</span>
+                            <span className={`text-[10px] px-2 py-0.5 rounded font-medium ${t.status === 'Done' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-amber-500/10 text-amber-400'}`}>
+                              {t.status}
+                            </span>
+                          </div>
+                          <h3 className="text-sm font-medium text-zinc-200">{t.title}</h3>
+                        </div>
+                        <div className="text-right">
+                          <p className="text-[10px] text-zinc-500 uppercase tracking-wider mb-0.5">Tempo Hoje</p>
+                          <p className="text-lg font-bold text-blue-400">{t.hours_today}h</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* DADOS EXTRAS E IA */}
+              {/* DADOS EXTRAS E IA */}
+              {dailyReport && (
+                <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-6 shadow-xl space-y-6">
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs font-medium text-zinc-400 mb-1.5 uppercase tracking-wider">Quilómetros (Kms)</label>
+                      <input 
+                        type="number" 
+                        value={dailyReport.kilometers || ''} 
+                        onChange={e => setDailyReport({...dailyReport, kilometers: e.target.value})}
+                        disabled={dailyReport.status === 'Submetido'}
+                        className={`w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-sm text-zinc-100 focus:outline-none transition ${dailyReport.status === 'Submetido' ? 'opacity-50 cursor-not-allowed' : 'focus:border-zinc-700'}`} 
+                        placeholder="Ex: 45" 
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-zinc-400 mb-1.5 uppercase tracking-wider">Horas Extraordinárias</label>
+                      <input 
+                        type="number" 
+                        step="0.5"
+                        value={dailyReport.overtime_hours || ''} 
+                        onChange={e => setDailyReport({...dailyReport, overtime_hours: e.target.value})}
+                        disabled={dailyReport.status === 'Submetido'}
+                        className={`w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-sm text-zinc-100 focus:outline-none transition ${dailyReport.status === 'Submetido' ? 'opacity-50 cursor-not-allowed' : 'focus:border-zinc-700'}`} 
+                        placeholder="Ex: 1.5" 
+                      />
+                    </div>
+                  </div>
+
+                  <div className="border-t border-zinc-800 pt-6">
+                    <div className="flex items-center justify-between mb-4">
+                      <h2 className="text-sm font-semibold text-zinc-100">Resumo Profissional</h2>
+                      <button 
+                        onClick={generateDailyReportIA}
+                        disabled={generatingDaily || dailyReport?.status === 'Submetido'}
+                        className={`flex items-center gap-1.5 text-xs font-bold px-3 py-1.5 rounded-xl transition shadow-sm ${generatingDaily || dailyReport?.status === 'Submetido' ? 'bg-zinc-950 border-zinc-900 text-zinc-600 cursor-not-allowed' : 'bg-purple-500/10 hover:bg-purple-500/20 text-purple-400 border border-purple-500/30'}`}
+                      >
+                        {generatingDaily ? '✨ A analisar dia...' : '✨ Gerar Resumo do Dia'}
+                      </button>
+                    </div>
+                    
+                    <div className="space-y-4">
+                      <div>
+                        <label className="block text-xs font-medium text-zinc-400 mb-1.5">Resumo Curto</label>
+                        <textarea 
+                          value={dailyReport.summary || ''} 
+                          onChange={e => setDailyReport({...dailyReport, summary: e.target.value})}
+                          disabled={dailyReport.status === 'Submetido'}
+                          rows="2" 
+                          className={`w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-sm text-zinc-100 focus:outline-none resize-none transition ${dailyReport.status === 'Submetido' ? 'opacity-50 cursor-not-allowed' : 'focus:border-zinc-700'}`} 
+                          placeholder="Clica no botão ✨ acima para a IA redigir por ti..." 
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-zinc-400 mb-1.5">Relatório Detalhado</label>
+                        <textarea 
+                          value={dailyReport.detailed_report || ''} 
+                          onChange={e => setDailyReport({...dailyReport, detailed_report: e.target.value})}
+                          disabled={dailyReport.status === 'Submetido'}
+                          rows="5" 
+                          className={`w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-sm text-zinc-100 focus:outline-none resize-none transition ${dailyReport.status === 'Submetido' ? 'opacity-50 cursor-not-allowed' : 'focus:border-zinc-700'}`} 
+                          placeholder="Descrição de todas as intervenções e estado atual..." 
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex justify-end gap-3 pt-4 border-t border-zinc-800">
+                    {dailyReport.status === 'Submetido' ? (
+                      <button 
+                        onClick={reopenDailyReport}
+                        className="flex items-center gap-2 bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/30 font-medium text-sm px-6 py-2.5 rounded-xl transition shadow-sm"
+                      >
+                        ✏️ Editar Relatório
+                      </button>
+                    ) : (
+                      <button 
+                        onClick={submitDailyReport}
+                        className="bg-blue-600 text-white font-medium text-sm px-6 py-2.5 rounded-xl hover:bg-blue-500 transition shadow-md"
+                      >
+                        Submeter Relatório de Hoje
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -2604,7 +2885,7 @@ export default function App() {
                             key={proj.id}
                             onClick={() => {
                               setShowQuickSearch(false);
-                              goToProjectTasks(proj.id);
+                              // goToProjectTasks(proj.id); // se tiveres essa função, descomenta
                             }}
                             className="flex items-center justify-between p-3 rounded-xl hover:bg-zinc-800/80 cursor-pointer transition group"
                           >
@@ -2693,22 +2974,41 @@ export default function App() {
                   Tudo limpo! Nenhuma notificação.
                 </div>
               ) : (
-                notifications.map(n => (
-                  <div key={n.id} className={`p-4 rounded-xl flex items-start gap-3.5 transition ${n.is_read ? 'bg-zinc-900/50 opacity-70' : 'bg-zinc-950 border border-zinc-800/80 shadow-sm'}`}>
-                    <div className={`mt-1.5 w-2.5 h-2.5 rounded-full shrink-0 ${n.is_read ? 'bg-zinc-700' : 'bg-red-500'}`}></div>
-                    <div className="flex-1 min-w-0">
-                      <p className={`text-sm ${n.is_read ? 'text-zinc-400 font-normal' : 'text-zinc-100 font-medium'}`}>{n.message}</p>
-                      <p className="text-[10px] text-zinc-500 mt-1 uppercase tracking-wider font-mono">
-                        {new Date(n.created_at).toLocaleString('pt-PT')}
-                      </p>
+                notifications.map(n => {
+                  const hasTaskRef = /#\d+/.test(n.message);
+
+                  return (
+                    <div key={n.id} className={`p-4 rounded-xl flex items-start justify-between gap-3.5 transition ${n.is_read ? 'bg-zinc-900/50 opacity-70' : 'bg-zinc-950 border border-zinc-800/80 shadow-sm'}`}>
+                      <div className="flex items-start gap-3.5 min-w-0 flex-1">
+                        <div className={`mt-1.5 w-2.5 h-2.5 rounded-full shrink-0 ${n.is_read ? 'bg-zinc-700' : 'bg-red-500'}`}></div>
+                        <div className="flex-1 min-w-0">
+                          <p className={`text-sm ${n.is_read ? 'text-zinc-400 font-normal' : 'text-zinc-100 font-medium'}`}>{n.message}</p>
+                          <p className="text-[10px] text-zinc-500 mt-1 uppercase tracking-wider font-mono">
+                            {new Date(n.created_at).toLocaleString('pt-PT')}
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 shrink-0">
+                        {hasTaskRef && (
+                          <button 
+                            onClick={() => handleOpenTaskFromNotif(n.message)}
+                            className="px-2.5 py-1.5 bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/30 text-blue-400 text-[10px] font-medium rounded-lg transition flex items-center gap-1"
+                            title="Abrir Tarefa"
+                          >
+                            🔍 Ver Tarefa
+                          </button>
+                        )}
+
+                        {!n.is_read && (
+                          <button onClick={() => markNotifAsRead(n.id)} className="px-2.5 py-1.5 bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-zinc-300 text-[10px] font-medium rounded-lg transition">
+                            Ler
+                          </button>
+                        )}
+                      </div>
                     </div>
-                    {!n.is_read && (
-                      <button onClick={() => markNotifAsRead(n.id)} className="px-2.5 py-1.5 bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-zinc-300 text-[10px] font-medium rounded-lg transition shrink-0">
-                        Ler
-                      </button>
-                    )}
-                  </div>
-                ))
+                  );
+                })
               )}
             </div>
           </div>
