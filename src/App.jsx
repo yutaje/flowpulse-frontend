@@ -186,6 +186,7 @@ const fetchWeekStatus = async () => {
   const [newPriority, setNewPriority] = useState('Média');
   const [newTaskType, setNewTaskType] = useState('Geral');
   const [typeFilter, setTypeFilter] = useState('');
+  const [knowledgeSort, setKnowledgeSort] = useState('newest');
   const [newStatus, setNewStatus] = useState('To Do');
   const [newProjectId, setNewProjectId] = useState('');
   const [newClientId, setNewClientId] = useState(''); 
@@ -1981,6 +1982,15 @@ const fetchWeekStatus = async () => {
                       <p className="text-xs text-zinc-400 mt-1">Consulta tarefas concluídas por ti e pela tua equipa para encontrar soluções passadas.</p>
                     </div>
                     <div className="flex items-center gap-3">
+                      <select 
+                        value={knowledgeSort || 'newest'} 
+                        onChange={e => setKnowledgeSort(e.target.value)} 
+                        className="bg-zinc-950 border border-zinc-800 text-zinc-300 text-sm rounded-xl px-3 py-2 focus:outline-none"
+                      >
+                        <option value="newest">Mais recente</option>
+                        <option value="oldest">Mais antigo</option>
+                      </select>
+
                       <span className="text-xs font-medium text-zinc-500">Filtrar por tipo:</span>
                       <select value={typeFilter} onChange={e => setTypeFilter(e.target.value)} className="bg-zinc-950 border border-zinc-800 text-zinc-300 text-sm rounded-xl px-3 py-2 focus:outline-none">
                         <option value="">Todas as Categorias</option>
@@ -1994,8 +2004,14 @@ const fetchWeekStatus = async () => {
 
                   <div className="space-y-3">
                     {availableTickets
-                      .filter(t => t.status === 'Done') // Mostra APENAS concluídas
-                      .filter(t => typeFilter === '' || t.task_type === typeFilter) // Filtra pelo tipo
+                      .filter(t => t.status && ['done', 'concluído', 'concluido'].includes(t.status.toLowerCase()))
+                      .filter(t => typeFilter === '' || t.task_type === typeFilter)
+                      .sort((a, b) => {
+                        if (knowledgeSort === 'oldest') {
+                          return a.id - b.id;
+                        }
+                        return b.id - a.id;
+                      })
                       .map(ticket => {
                         const assignee = getAssigneeName(ticket.assigned_to_id);
                         return (
@@ -2037,23 +2053,23 @@ const fetchWeekStatus = async () => {
                                 </div>
 
                                 {/* ANEXOS / IMAGENS */}
-                                {ticket.attachment_url && (
+                                {ticket.attachment_path && (
                                   <div className="pt-3 border-t border-zinc-800/60">
                                     <p className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider mb-2 flex items-center gap-1.5">
                                       <Paperclip className="w-3.5 h-3.5" /> Ficheiros Anexados
                                     </p>
                                     
                                     {/* Verifica se é uma imagem pela extensão */}
-                                    {ticket.attachment_url.match(/\.(jpeg|jpg|gif|png)$/i) ? (
-                                      <a href={`${API_URL}/${ticket.attachment_url}`} target="_blank" rel="noopener noreferrer" className="block max-w-sm rounded-xl overflow-hidden border border-zinc-700 hover:border-blue-500 transition shadow-sm">
+                                    {ticket.attachment_path.match(/\.(jpeg|jpg|gif|png)$/i) ? (
+                                      <a href={`${API_URL}/${ticket.attachment_path}`} target="_blank" rel="noopener noreferrer" className="block max-w-sm rounded-xl overflow-hidden border border-zinc-700 hover:border-blue-500 transition shadow-sm">
                                         <img 
-                                          src={`${API_URL}/${ticket.attachment_url}`} 
+                                          src={`${API_URL}/${ticket.attachment_path}`} 
                                           alt="Anexo da Tarefa" 
                                           className="w-full h-auto object-cover max-h-48"
                                         />
                                       </a>
                                     ) : (
-                                      <a href={`${API_URL}/${ticket.attachment_url}`} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 text-xs text-blue-400 bg-blue-500/10 px-3 py-2 rounded-xl w-fit border border-blue-500/20 hover:bg-blue-500/20 transition">
+                                      <a href={`${API_URL}/${ticket.attachment_path}`} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 text-xs text-blue-400 bg-blue-500/10 px-3 py-2 rounded-xl w-fit border border-blue-500/20 hover:bg-blue-500/20 transition">
                                         <Download className="w-4 h-4" /> Transferir Documento
                                       </a>
                                     )}
@@ -2079,7 +2095,7 @@ const fetchWeekStatus = async () => {
                           </div>
                         );
                     })}
-                    {availableTickets.filter(t => t.status === 'Done' && (typeFilter === '' || t.task_type === typeFilter)).length === 0 && (
+                    {availableTickets.filter(t => t.status && ['done', 'concluído', 'concluido'].includes(t.status.toLowerCase()) && (typeFilter === '' || t.task_type === typeFilter)).length === 0 && (
                       <div className="py-12 text-center text-xs text-zinc-500 border border-dashed border-zinc-800 rounded-xl">
                         Nenhuma tarefa concluída encontrada nesta categoria.
                       </div>
