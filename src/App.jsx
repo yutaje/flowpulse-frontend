@@ -34,6 +34,16 @@ export default function App() {
     }
   };
 
+  const fetchAuditLogs = async () => {
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      const res = await axios.get(`${API_URL}/audit-logs/`, { headers });
+      setAuditLogs(res.data);
+    } catch (err) {
+      console.error("Erro ao carregar os logs do sistema:", err);
+    }
+  };
+
 const fetchWeekStatus = async () => {
     try {
       const headers = { Authorization: `Bearer ${token}` };
@@ -104,11 +114,15 @@ const fetchWeekStatus = async () => {
       fetchDailyReport();
       fetchWeekStatus();
     }
+    if (activeTab === 'admin' && token) {
+      fetchAuditLogs();
+    }
   }, [activeTab, token]);
 
   // Estados para o Modal de Tarefas do Projeto
   const [showProjectTasksModal, setShowProjectTasksModal] = useState(false);
   const [activeProjectForTasks, setActiveProjectForTasks] = useState(null);
+  const [auditLogs, setAuditLogs] = useState([]);
 
   // Estados para o Modal de Conclusão de Tarefa
   const [showCompleteModal, setShowCompleteModal] = useState(false);
@@ -1122,6 +1136,59 @@ const fetchWeekStatus = async () => {
     return c ? c.name : null;
   };
 
+  // 1. Função para descobrir o nome
+  const getLogUserName = (userId) => {
+    if (!userId) return 'Sessão Não Iniciada'; // Mais preciso para os logins
+    const user = usersList.find(u => u.id === userId);
+    return user ? (user.name || user.email) : `Colaborador #${userId}`;
+  };
+
+  // 2. Função para traduzir as rotas (Agora com extração de IDs!)
+  const translateLogAction = (action, details) => {
+    if (!details) return { badge: action, text: 'Ação desconhecida' };
+    
+    const isSuccess = details.includes('Status: 20'); 
+    const statusText = isSuccess ? '' : '(Falhou)';
+
+    if (details.includes('/login')) return { badge: 'LOGIN', text: `Tentativa de login ${statusText}` };
+    if (details.includes('/tickets/my-day')) return { badge: 'RELATÓRIO', text: `Atualizou o relatório diário ${statusText}` };
+    
+    // VERIFICA SE É UMA AÇÃO NAS TAREFAS
+    if (details.includes('/tickets/')) {
+      // Magia para extrair o ID da tarefa da Rota (Ex: /tickets/15 -> 15)
+      const match = details.match(/\/tickets\/(\d+)/);
+      const ticketId = match ? match[1] : '';
+      const taskRef = ticketId ? `Tarefa #${ticketId}` : 'uma tarefa';
+
+      if (details.includes('/complete')) return { badge: 'TAREFA', text: `Concluiu a ${taskRef} ${statusText}` };
+      if (action === 'POST') return { badge: 'TAREFA', text: `Criou uma nova tarefa ${statusText}` };
+      if (action === 'PUT') return { badge: 'TAREFA', text: `Modificou a ${taskRef} (Cronómetro/Estado/Edição) ${statusText}` };
+      if (action === 'DELETE') return { badge: 'TAREFA', text: `Apagou a ${taskRef} ${statusText}` };
+    }
+    
+    // VERIFICA SE É UMA AÇÃO NOS PROJETOS
+    if (details.includes('/projects/')) {
+      const match = details.match(/\/projects\/(\d+)/);
+      const projId = match ? match[1] : '';
+      const projRef = projId ? `Projeto #${projId}` : 'um projeto';
+
+      if (action === 'POST') return { badge: 'PROJETO', text: `Criou um novo projeto ${statusText}` };
+      if (action === 'PUT') return { badge: 'PROJETO', text: `Editou o ${projRef} ${statusText}` };
+      if (action === 'DELETE') return { badge: 'PROJETO', text: `Apagou o ${projRef} ${statusText}` };
+    }
+
+    // VERIFICA SE É UMA AÇÃO NOS UTILIZADORES
+    if (details.includes('/users/')) {
+      if (action === 'POST') return { badge: 'COLABORADOR', text: `Registou um novo colaborador ${statusText}` };
+      if (action === 'PUT') return { badge: 'COLABORADOR', text: `Editou permissões de um colaborador ${statusText}` };
+      if (action === 'DELETE') return { badge: 'COLABORADOR', text: `Apagou um colaborador ${statusText}` };
+    }
+    
+    const area = details.split(' |')[0].replace('Rota: ', '');
+    return { badge: action, text: `Ação na área: ${area}` };
+  };
+
+
   const kanbanColumns = [
     { id: 'To Do', title: 'A fazer', color: 'bg-zinc-500' },
     { id: 'In Progress', title: 'Em progresso', color: 'bg-blue-500' },
@@ -1504,6 +1571,7 @@ const fetchWeekStatus = async () => {
                 </div>
               </div>
 
+              {/* TABELA DE UTILIZADORES (A que já tinhas) */}
               <div className="bg-zinc-900 border border-zinc-800 rounded-2xl overflow-hidden shadow-xl">
                 <div className="px-6 py-4 border-b border-zinc-800/80 bg-zinc-900/50">
                   <h2 className="text-sm font-semibold text-zinc-200">Utilizadores do Sistema</h2>
@@ -1556,6 +1624,85 @@ const fetchWeekStatus = async () => {
                   })}
                 </div>
               </div>
+
+              {/* SISTEMA DE LOGS (BIG BROTHER) - NOVO! */}
+              <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-6 shadow-xl mt-6">
+                <div className="flex items-center justify-between mb-4 border-b border-zinc-800 pb-2">
+                  <h2 className="text-sm font-semibold text-zinc-100 flex items-center gap-2">
+                    🛡️ Registos do Sistema (Audit Logs)
+                  </h2>
+                  <button 
+                    onClick={fetchAuditLogs}
+                    className="text-xs bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-3 py-1.5 rounded-lg transition"
+                  >
+                    🔄 Atualizar
+                  </button>
+                </div>
+                
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-sm text-zinc-400">
+                    <thead className="text-xs text-zinc-500 uppercase bg-zinc-950/50 border-b border-zinc-800">
+                      <tr>
+                        <th className="px-4 py-3 font-medium">Data/Hora</th>
+                        <th className="px-4 py-3 font-medium">User ID</th>
+                        <th className="px-4 py-3 font-medium">Ação</th>
+                        <th className="px-4 py-3 font-medium">Detalhes (Rota e Status)</th>
+                      </tr>
+                    </thead>
+                                        <tbody className="divide-y divide-zinc-800/50">
+                      {auditLogs.length > 0 ? (
+                        auditLogs.map((log) => {
+                          const translated = translateLogAction(log.action, log.details);
+                          
+                          return (
+                            <tr key={log.id} className="hover:bg-zinc-800/20 transition">
+                              {/* DATA */}
+                              <td className="px-4 py-3 whitespace-nowrap text-xs text-zinc-400">
+                                {new Date(log.created_at).toLocaleString('pt-PT')}
+                              </td>
+                              
+                              {/* NOME DO UTILIZADOR */}
+                              <td className="px-4 py-3">
+                                <span className="bg-zinc-800 border border-zinc-700/50 text-zinc-300 px-2 py-1 rounded text-xs font-medium">
+                                  👤 {getLogUserName(log.user_id)}
+                                </span>
+                              </td>
+                              
+                              {/* BADGE DA AÇÃO */}
+                              <td className="px-4 py-3">
+                                <span className={`px-2 py-1 rounded text-[10px] font-bold tracking-wider ${
+                                  translated.badge === 'LOGIN' ? 'bg-blue-500/10 text-blue-400 border border-blue-500/20' :
+                                  log.action === 'DELETE' ? 'bg-red-500/10 text-red-400 border border-red-500/20' :
+                                  log.action === 'POST' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' :
+                                  log.action === 'PUT' ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20' :
+                                  'bg-zinc-800 text-zinc-400 border border-zinc-700'
+                                }`}>
+                                  {translated.badge}
+                                </span>
+                              </td>
+                              
+                              {/* TEXTO HUMANO + DETALHE TÉCNICO */}
+                              <td className="px-4 py-3 text-xs">
+                                <span className="font-medium text-zinc-200">{translated.text}</span>
+                                <span className="text-zinc-600 block mt-0.5 text-[10px] font-mono">
+                                  {log.details}
+                                </span>
+                              </td>
+                            </tr>
+                          );
+                        })
+                      ) : (
+                        <tr>
+                          <td colSpan="4" className="px-4 py-8 text-center text-zinc-500">
+                            Nenhum registo encontrado no sistema.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
             </div>
           )}
 
