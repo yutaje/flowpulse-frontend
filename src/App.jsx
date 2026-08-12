@@ -23,12 +23,18 @@ export default function App() {
   const [todayTickets, setTodayTickets] = useState([]);
   const [generatingDaily, setGeneratingDaily] = useState(false);
   const [weekStatus, setWeekStatus] = useState([]);
+  // Começa com a data de hoje por defeito
+  const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
+  // Só dá para editar se for Rascunho (que inclui os novos e os Recusados)
+  const canEdit = dailyReport && dailyReport.status === 'Rascunho';
+  // Fotografia anexada ao relatório
+  const [imagem, setImagem] = useState(null);
 
-  // Função para ir buscar o relatório de hoje
+  // Função para ir buscar o relatório do dia selecionado
   const fetchDailyReport = async () => {
     try {
       const headers = { Authorization: `Bearer ${token}` };
-      const res = await axios.get(`${API_URL}/tickets/my-day/today`, { headers });
+      const res = await axios.get(`${API_URL}/tickets/my-day/today?target_date=${selectedDate}`, { headers });
       setDailyReport(res.data.report);
       setTodayTickets(res.data.tickets_worked);
     } catch (err) {
@@ -107,6 +113,20 @@ export default function App() {
   }
 };
 
+  // A função que os botões de atualizar vão chamar
+  const handleRefresh = async () => {
+    setIsRefreshing(true); // Liga a animação
+
+    try {
+      await fetchAdminUsersReports();
+    } catch (error) {
+      console.error("Erro ao atualizar:", error);
+    } finally {
+      // Desliga a animação (com um delay de meio segundo para o utilizador ver o botão a rodar)
+      setTimeout(() => setIsRefreshing(false), 500);
+    }
+  };
+
   // --- ADMIN: Validar / Recusar um relatório de um colaborador ---
   const handleUpdateReportStatus = async (reportId, newStatus) => {
     try {
@@ -120,11 +140,11 @@ export default function App() {
       }
 
       const headers = { Authorization: `Bearer ${token}` };
+      // Atenção ao /tickets aqui no início do caminho:
       await axios.put(`${API_URL}/tickets/admin/reports/${reportId}/status`, {
         status: newStatus,
         rejection_reason: reason
       }, { headers });
-
       alert(`Relatório alterado com sucesso!`);
       fetchAdminUsersReports(); // Atualiza a lista na hora
     } catch (err) {
@@ -253,20 +273,30 @@ const fetchWeekStatus = async () => {
 
   const submitDailyReport = async () => {
     try {
+      const formData = new FormData();
+      formData.append("summary", dailyReport.summary || "");
+      formData.append("detailed_report", dailyReport.detailed_report || "");
+      formData.append("kilometers", Number(dailyReport.kilometers || 0));
+      formData.append("overtime_hours", Number(dailyReport.overtime_hours || 0));
+      formData.append("pending_work", dailyReport.pending_work || "");
+      formData.append("observations", dailyReport.observations || "");
+      formData.append("materials_used", dailyReport.materials_used || "");
+
+      if (imagem) {
+        formData.append("file", imagem);
+      }
+
+      // No Axios, quando enviamos FormData, não podemos meter o 'Content-Type': 'application/json'
+      // Por isso enviamos só a Authorization e o Axios resolve o resto sozinho
       const headers = { Authorization: `Bearer ${token}` };
-      await axios.put(`${API_URL}/tickets/my-day/today`, {
-        summary: dailyReport.summary,
-        detailed_report: dailyReport.detailed_report,
-        kilometers: Number(dailyReport.kilometers || 0),
-        overtime_hours: Number(dailyReport.overtime_hours || 0),
-        pending_work: dailyReport.pending_work || '',
-        observations: dailyReport.observations || '',
-        materials_used: dailyReport.materials_used || ''
-      }, { headers });
+
+      await axios.put(`${API_URL}/tickets/my-day/today?target_date=${selectedDate}`, formData, { headers });
       
       alert("Relatório Diário Submetido com Sucesso! Excelente trabalho hoje.");
+      setImagem(null);
       fetchDailyReport(); 
     } catch (err) {
+      console.error("Erro ao submeter:", err);
       alert("Erro ao submeter relatório.");
     }
   };
@@ -297,6 +327,13 @@ const fetchWeekStatus = async () => {
       fetchAdminUsersReports();
     }
   }, [activeTab, token]);
+
+  // Recarrega o relatório sempre que o utilizador clica noutro dia
+  useEffect(() => {
+    if (activeTab === 'my-day' && token) {
+      fetchDailyReport();
+    }
+  }, [selectedDate]);
 
   // Estados para o Modal de Tarefas do Projeto
   const [showProjectTasksModal, setShowProjectTasksModal] = useState(false);
@@ -329,6 +366,48 @@ const fetchWeekStatus = async () => {
   
   const [adminUsersReports, setAdminUsersReports] = useState([]);
   const [selectedAdminUser, setSelectedAdminUser] = useState(null);
+  // O estado que controla se a animação está a rodar
+  const [isRefreshing, setIsRefreshing] = useState(false);
+
+  // Estados dos Filtros de Relatórios (Admin)
+  const [searchTerm, setSearchTerm] = useState("");
+  const [filterMonth, setFilterMonth] = useState("");
+  const [filterYear, setFilterYear] = useState(new Date().getFullYear().toString());
+  const [filterStatus, setFilterStatus] = useState("");
+
+  // --- ADMIN: Lógica de Filtragem dos Relatórios (Pesquisa + Mês + Ano + Estado) ---
+  const getFilteredUsers = () => {
+    // 1º - Verifica se a lista principal de utilizadores existe
+    if (!adminUsersReports) return [];
+
+    return adminUsersReports.map(user => {
+      // 2º - Filtra os relatórios que estão DENTRO do utilizador
+      const filteredReports = user.reports.filter(report => {
+        const reportDate = new Date(report.date);
+        const reportMonth = (reportDate.getMonth() + 1).toString();
+        const reportYear = reportDate.getFullYear().toString();
+
+        const matchMonth = filterMonth ? reportMonth === filterMonth : true;
+        const matchYear = filterYear ? reportYear === filterYear : true;
+        const matchStatus = filterStatus ? report.status === filterStatus : true;
+
+        return matchMonth && matchYear && matchStatus;
+      });
+
+      // Retorna o utilizador apenas com os relatórios que passaram no filtro
+      return { ...user, reports: filteredReports };
+    }).filter(user => {
+      // 3º - Filtra os utilizadores pela barra de pesquisa
+      const matchSearch = (user.name || "").toLowerCase().includes(searchTerm.toLowerCase()) ||
+                          (user.email || "").toLowerCase().includes(searchTerm.toLowerCase());
+
+      // Magia: Só mostra o utilizador se ele corresponder à pesquisa de nome E tiver relatórios para mostrar!
+      return matchSearch && user.reports.length > 0;
+    });
+  };
+
+  // Esta é a lista que vamos mandar renderizar no HTML!
+  const filteredUsersReports = getFilteredUsers();
 
   const [activeWorkers, setActiveWorkers] = useState([]);
   const [currentUserInfo, setCurrentUserInfo] = useState({ id: null, role: 'Member', name: '', email: '' });
@@ -1760,8 +1839,8 @@ const fetchWeekStatus = async () => {
                   <button onClick={handleExportCSV} className="flex items-center gap-2 bg-zinc-900 hover:bg-zinc-850 border border-zinc-800 text-zinc-300 font-medium text-xs px-4 py-2 rounded-xl transition shadow-sm">
                     <Download className="w-4 h-4 text-emerald-400" /> Exportar Relatório CSV
                   </button>
-                  <button onClick={() => fetchData()} className="p-2 bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-zinc-100 rounded-xl transition">
-                    <RefreshCw className="w-4 h-4" />
+                  <button onClick={handleRefresh} disabled={isRefreshing} className="p-2 bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-zinc-100 rounded-xl transition">
+                    <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin text-yellow-500' : ''}`} />
                   </button>
                   <button onClick={handleOpenCreateUserModal} className="flex items-center gap-2 bg-amber-500/10 border border-amber-500/30 text-amber-400 font-medium text-xs px-4 py-2 rounded-xl hover:bg-amber-500/20 transition">
                     <UserCheck className="w-4 h-4" /> Criar Utilizador
@@ -1778,21 +1857,74 @@ const fetchWeekStatus = async () => {
                     <p className="text-xs text-zinc-400 mt-0.5">Clica num colaborador para inspecionar o histórico de relatórios submetidos</p>
                   </div>
                   <button 
-                    onClick={fetchAdminUsersReports}
-                    className="text-xs bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-3 py-1.5 rounded-lg transition"
+                    onClick={handleRefresh}
+                    disabled={isRefreshing}
+                    className="flex items-center gap-2 text-xs bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-3 py-1.5 rounded-lg transition"
                   >
-                    🔄 Atualizar
+                    <RefreshCw className={`w-4 h-4 text-blue-500 ${isRefreshing ? 'animate-spin' : ''}`} />
+                    {isRefreshing ? 'A atualizar...' : 'Atualizar'}
                   </button>
+                </div>
+
+                {/* Barra de Filtros Inteligente */}
+                <div className="bg-[#18181b] border border-[#27272a] p-4 rounded-xl mb-6 flex flex-col md:flex-row gap-4 items-center shadow-md">
+
+                  {/* Pesquisa por Texto */}
+                  <div className="flex-1 w-full">
+                    <input 
+                      type="text" 
+                      placeholder="Pesquisar por técnico ou email..." 
+                      value={searchTerm}
+                      onChange={(e) => setSearchTerm(e.target.value)}
+                      className="w-full bg-[#27272a] border border-[#3f3f46] text-white rounded-lg px-4 py-2 focus:outline-none focus:border-yellow-600 transition-colors placeholder-gray-400"
+                    />
+                  </div>
+
+                  {/* Filtro de Estado */}
+                  <div className="w-full md:w-48">
+                    <select 
+                      value={filterStatus} 
+                      onChange={(e) => setFilterStatus(e.target.value)}
+                      className="w-full bg-[#27272a] border border-[#3f3f46] text-white rounded-lg px-4 py-2 focus:outline-none focus:border-yellow-600 cursor-pointer"
+                    >
+                      <option value="">Qualquer Estado</option>
+                      <option value="Submetido">🟡 Submetido (Por Validar)</option>
+                      <option value="Validado">🟢 Validado</option>
+                    </select>
+                  </div>
+
+                  {/* Filtro de Mês */}
+                  <div className="w-full md:w-48">
+                    <select 
+                      value={filterMonth} 
+                      onChange={(e) => setFilterMonth(e.target.value)}
+                      className="w-full bg-[#27272a] border border-[#3f3f46] text-white rounded-lg px-4 py-2 focus:outline-none focus:border-yellow-600 cursor-pointer"
+                    >
+                      <option value="">Todo o Ano</option>
+                      <option value="1">Janeiro</option>
+                      <option value="2">Fevereiro</option>
+                      <option value="3">Março</option>
+                      <option value="4">Abril</option>
+                      <option value="5">Maio</option>
+                      <option value="6">Junho</option>
+                      <option value="7">Julho</option>
+                      <option value="8">Agosto</option>
+                      <option value="9">Setembro</option>
+                      <option value="10">Outubro</option>
+                      <option value="11">Novembro</option>
+                      <option value="12">Dezembro</option>
+                    </select>
+                  </div>
                 </div>
 
                 <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
                   
                   {/* COLUNA DA ESQUERDA: LISTA DE UTILIZADORES */}
                   <div className="space-y-2 max-h-[500px] overflow-y-auto pr-2 bg-zinc-950/50 p-3 rounded-xl border border-zinc-800/80">
-                    {adminUsersReports.length === 0 ? (
+                    {filteredUsersReports.length === 0 ? (
                       <p className="text-xs text-zinc-500 text-center py-8">Sem utilizadores ou a carregar...</p>
                     ) : (
-                      adminUsersReports.map(item => (
+                      filteredUsersReports.map(item => (
                         <div 
                           key={item.user_id}
                           onClick={() => setSelectedAdminUser(item)}
@@ -3073,9 +3205,14 @@ const fetchWeekStatus = async () => {
                     }
 
                     const isToday = day.date === new Date().toISOString().split('T')[0];
+                    const isSelected = day.date === selectedDate;
 
                     return (
-                      <div key={day.date} className={`flex-1 min-w-[70px] flex flex-col items-center justify-center py-2 px-1 rounded-xl border ${bgColor} ${isToday ? 'ring-1 ring-blue-500/50 shadow-md' : ''}`}>
+                      <div
+                        key={day.date}
+                        onClick={() => setSelectedDate(day.date)}
+                        className={`flex-1 min-w-[70px] flex flex-col items-center justify-center py-2 px-1 rounded-xl border cursor-pointer transition-all ${bgColor} ${isToday ? 'ring-1 ring-blue-500/50 shadow-md' : ''} ${isSelected ? 'border-yellow-500 scale-105' : ''}`}
+                      >
                         <span className={`text-[10px] font-medium uppercase ${textColor}`}>{day.day_name}</span>
                         <span className={`text-lg font-bold ${textColor}`}>{day.day_num}</span>
                         <span className="text-[10px] mt-1" title={day.status}>{icon}</span>
@@ -3140,8 +3277,8 @@ const fetchWeekStatus = async () => {
                         type="number" 
                         value={dailyReport.kilometers || ''} 
                         onChange={e => setDailyReport({...dailyReport, kilometers: e.target.value})}
-                        disabled={dailyReport.status === 'Submetido'}
-                        className={`w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-sm text-zinc-100 focus:outline-none transition ${dailyReport.status === 'Submetido' ? 'opacity-50 cursor-not-allowed' : 'focus:border-zinc-700'}`} 
+                        disabled={!canEdit}
+                        className={`w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-sm text-zinc-100 focus:outline-none transition ${!canEdit ? 'opacity-50 cursor-not-allowed' : 'focus:border-zinc-700'}`} 
                         placeholder="Ex: 45" 
                       />
                     </div>
@@ -3152,8 +3289,8 @@ const fetchWeekStatus = async () => {
                         step="0.5"
                         value={dailyReport.overtime_hours || ''} 
                         onChange={e => setDailyReport({...dailyReport, overtime_hours: e.target.value})}
-                        disabled={dailyReport.status === 'Submetido'}
-                        className={`w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-sm text-zinc-100 focus:outline-none transition ${dailyReport.status === 'Submetido' ? 'opacity-50 cursor-not-allowed' : 'focus:border-zinc-700'}`} 
+                        disabled={!canEdit}
+                        className={`w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-sm text-zinc-100 focus:outline-none transition ${!canEdit ? 'opacity-50 cursor-not-allowed' : 'focus:border-zinc-700'}`} 
                         placeholder="Ex: 1.5" 
                       />
                     </div>
@@ -3164,8 +3301,8 @@ const fetchWeekStatus = async () => {
                       <h2 className="text-sm font-semibold text-zinc-100">Resumo Profissional</h2>
                       <button 
                         onClick={generateDailyReportIA}
-                        disabled={generatingDaily || dailyReport?.status === 'Submetido'}
-                        className={`flex items-center gap-1.5 text-xs font-bold px-3 py-1.5 rounded-xl transition shadow-sm ${generatingDaily || dailyReport?.status === 'Submetido' ? 'bg-zinc-950 border-zinc-900 text-zinc-600 cursor-not-allowed' : 'bg-purple-500/10 hover:bg-purple-500/20 text-purple-400 border border-purple-500/30'}`}
+                        disabled={generatingDaily || !canEdit}
+                        className={`flex items-center gap-1.5 text-xs font-bold px-3 py-1.5 rounded-xl transition shadow-sm ${generatingDaily || !canEdit ? 'bg-zinc-950 border-zinc-900 text-zinc-600 cursor-not-allowed' : 'bg-purple-500/10 hover:bg-purple-500/20 text-purple-400 border border-purple-500/30'}`}
                       >
                         {generatingDaily ? '✨ A analisar dia...' : '✨ Gerar Resumo do Dia'}
                       </button>
@@ -3177,9 +3314,9 @@ const fetchWeekStatus = async () => {
                         <textarea 
                           value={dailyReport.summary || ''} 
                           onChange={e => setDailyReport({...dailyReport, summary: e.target.value})}
-                          disabled={dailyReport.status === 'Submetido'}
+                          disabled={!canEdit}
                           rows="2" 
-                          className={`w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-sm text-zinc-100 focus:outline-none resize-none transition ${dailyReport.status === 'Submetido' ? 'opacity-50 cursor-not-allowed' : 'focus:border-zinc-700'}`} 
+                          className={`w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-sm text-zinc-100 focus:outline-none resize-none transition ${!canEdit ? 'opacity-50 cursor-not-allowed' : 'focus:border-zinc-700'}`} 
                           placeholder="Clica no botão ✨ acima para a IA redigir por ti..." 
                         />
                       </div>
@@ -3188,9 +3325,9 @@ const fetchWeekStatus = async () => {
                         <textarea 
                           value={dailyReport.detailed_report || ''} 
                           onChange={e => setDailyReport({...dailyReport, detailed_report: e.target.value})}
-                          disabled={dailyReport.status === 'Submetido'}
+                          disabled={!canEdit}
                           rows="5" 
-                          className={`w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-sm text-zinc-100 focus:outline-none resize-none transition ${dailyReport.status === 'Submetido' ? 'opacity-50 cursor-not-allowed' : 'focus:border-zinc-700'}`} 
+                          className={`w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-sm text-zinc-100 focus:outline-none resize-none transition ${!canEdit ? 'opacity-50 cursor-not-allowed' : 'focus:border-zinc-700'}`} 
                           placeholder="Descrição de todas as intervenções e estado atual..." 
                         />
                       </div>
@@ -3204,9 +3341,9 @@ const fetchWeekStatus = async () => {
                       <textarea 
                         value={dailyReport.pending_work || ''} 
                         onChange={e => setDailyReport({...dailyReport, pending_work: e.target.value})}
-                        disabled={dailyReport.status === 'Submetido'}
+                        disabled={!canEdit}
                         rows="2" 
-                        className={`w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-sm text-zinc-100 focus:outline-none resize-none transition ${dailyReport.status === 'Submetido' ? 'opacity-50 cursor-not-allowed' : 'focus:border-zinc-700'}`} 
+                        className={`w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-sm text-zinc-100 focus:outline-none resize-none transition ${!canEdit ? 'opacity-50 cursor-not-allowed' : 'focus:border-zinc-700'}`} 
                         placeholder="Indica se ficou algum trabalho por terminar para amanhã..." 
                       />
                     </div>
@@ -3216,9 +3353,9 @@ const fetchWeekStatus = async () => {
                       <textarea 
                         value={dailyReport.observations || ''} 
                         onChange={e => setDailyReport({...dailyReport, observations: e.target.value})}
-                        disabled={dailyReport.status === 'Submetido'}
+                        disabled={!canEdit}
                         rows="2" 
-                        className={`w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-sm text-zinc-100 focus:outline-none resize-none transition ${dailyReport.status === 'Submetido' ? 'opacity-50 cursor-not-allowed' : 'focus:border-zinc-700'}`} 
+                        className={`w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-sm text-zinc-100 focus:outline-none resize-none transition ${!canEdit ? 'opacity-50 cursor-not-allowed' : 'focus:border-zinc-700'}`} 
                         placeholder="Regista incidentes ocorridos ou observações relevantes..." 
                       />
                     </div>
@@ -3228,12 +3365,24 @@ const fetchWeekStatus = async () => {
                       <textarea 
                         value={dailyReport.materials_used || ''} 
                         onChange={e => setDailyReport({...dailyReport, materials_used: e.target.value})}
-                        disabled={dailyReport.status === 'Submetido'}
+                        disabled={!canEdit}
                         rows="2" 
-                        className={`w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-sm text-zinc-100 focus:outline-none resize-none transition ${dailyReport.status === 'Submetido' ? 'opacity-50 cursor-not-allowed' : 'focus:border-zinc-700'}`} 
+                        className={`w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-sm text-zinc-100 focus:outline-none resize-none transition ${!canEdit ? 'opacity-50 cursor-not-allowed' : 'focus:border-zinc-700'}`} 
                         placeholder="Lista o material aplicado nas intervenções de hoje..." 
                       />
                     </div>
+                  </div>
+
+                  {/* UPLOAD DE FOTOGRAFIAS */}
+                  <div className="mb-6">
+                    <label className="block text-sm font-medium text-gray-400 mb-2">Fotografias Anexadas</label>
+                    <input 
+                      type="file" 
+                      accept="image/*"
+                      disabled={!canEdit}
+                      onChange={(e) => setImagem(e.target.files[0])}
+                      className={`w-full bg-[#18181b] border border-[#27272a] text-gray-300 rounded-lg px-4 py-2 file:mr-4 file:py-2 file:px-4 file:rounded-md file:border-0 file:text-sm file:font-semibold file:bg-blue-600 file:text-white hover:file:bg-blue-700 ${!canEdit ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+                    />
                   </div>
 
                   <div className="flex justify-end gap-3 pt-4 border-t border-zinc-800">
@@ -3244,7 +3393,7 @@ const fetchWeekStatus = async () => {
                       >
                         ✏️ Editar Relatório
                       </button>
-                    ) : (
+                    ) : canEdit && (
                       <button 
                         onClick={submitDailyReport}
                         className="bg-blue-600 text-white font-medium text-sm px-6 py-2.5 rounded-xl hover:bg-blue-500 transition shadow-md"
