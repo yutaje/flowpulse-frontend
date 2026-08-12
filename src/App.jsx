@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
 import { 
   CheckCircle2, Clock, AlertCircle, Plus, Search, 
   LogOut, ShieldAlert, LayoutDashboard, Ticket as TicketIcon, Trash2, Edit3, Play, Square, MessageSquare, FolderPlus, RefreshCw, Calendar, Users, Crown, Folder, UserCheck, Kanban, ListFilter, ArrowUpDown, ChevronLeft, ChevronRight, Settings, BarChart3, Bell, Check, Download, Building2, Phone, Mail, BarChart, X, Upload, Paperclip 
@@ -34,6 +36,67 @@ export default function App() {
     }
   };
 
+  const exportDailyReportPDF = (reportData, ticketsList) => {
+  console.log("A tentar gerar PDF...", { reportData, ticketsList });
+
+  try {
+    if (!ticketsList || ticketsList.length === 0) {
+      alert("Não tens tarefas registadas para hoje para exportar no PDF!");
+      return;
+    }
+
+    const doc = new jsPDF();
+    const todayStr = new Date().toISOString().split('T')[0];
+    const nowStr = new Date().toISOString().replace('T', ' ').substring(0, 16);
+
+    doc.setFontSize(14);
+    doc.text(`Data: ${reportData?.date || todayStr}`, 14, 20);
+    doc.setFontSize(10);
+    doc.setTextColor(100);
+    doc.text(`Gerado em ${nowStr}`, 14, 26);
+
+    doc.setFontSize(16);
+    doc.setTextColor(0);
+    doc.text("Registos de Trabalho", 14, 38);
+
+    const tableRows = ticketsList.map(t => [
+      t.id,
+      t.title,
+      t.start_time || reportData?.date || '-',
+      t.end_time || '-',
+      `${t.hours_today || 0}h`
+    ]);
+
+    doc.autoTable({
+      startY: 44,
+      head: [['ID', 'TAREFA', 'INICIO', 'FIM', 'DURACAO']],
+      body: tableRows,
+      theme: 'grid',
+      headStyles: { fillColor: [24, 24, 27], textColor: [255, 255, 255], fontStyle: 'bold' },
+      styles: { fontSize: 9, cellPadding: 3 },
+    });
+
+    const finalY = doc.lastAutoTable.finalY + 10;
+    const totalHours = ticketsList.reduce((acc, t) => acc + (t.hours_today || 0), 0);
+    
+    doc.setFontSize(11);
+    doc.setFont(undefined, 'bold');
+    doc.text(`Total concluido: ${totalHours.toFixed(2)}h`, 14, finalY);
+
+    doc.setFontSize(9);
+    doc.setFont(undefined, 'normal');
+    doc.setTextColor(120);
+    doc.text(`${ticketsList.length} registos`, 14, finalY + 10);
+    doc.text(`${totalHours.toFixed(2)}h registadas`, 14, finalY + 15);
+
+    doc.save(`registos_trabalho_${todayStr}.pdf`);
+    console.log("PDF gerado com sucesso!");
+  } catch (err) {
+    console.error("Erro crítico ao gerar o PDF:", err);
+    alert("Ocorreu um erro ao gerar o PDF. Abre a consola (F12) para ver os detalhes.");
+  }
+};
+
   const fetchAdminUsersReports = async () => {
   try {
     const headers = { Authorization: `Bearer ${token}` };
@@ -41,6 +104,108 @@ export default function App() {
     setAdminUsersReports(res.data);
   } catch (err) {
     console.error("Erro ao carregar relatórios:", err);
+  }
+};
+
+  // --- ADMIN: Validar / Recusar um relatório de um colaborador ---
+  const handleUpdateReportStatus = async (reportId, newStatus) => {
+    try {
+      let reason = null;
+
+      if (newStatus === 'Recusado') {
+        reason = window.prompt("Qual o motivo da recusa? (O técnico vai ver isto)");
+
+        // Se o admin cancelar o prompt, não fazemos o pedido
+        if (reason === null) return;
+      }
+
+      const headers = { Authorization: `Bearer ${token}` };
+      await axios.put(`${API_URL}/tickets/admin/reports/${reportId}/status`, {
+        status: newStatus,
+        rejection_reason: reason
+      }, { headers });
+
+      alert(`Relatório alterado com sucesso!`);
+      fetchAdminUsersReports(); // Atualiza a lista na hora
+    } catch (err) {
+      console.error("Erro ao atualizar estado:", err);
+      alert("Erro ao alterar o estado do relatório.");
+    }
+  };
+
+ const exportAdminReportPDF = (report, userName) => {
+  try {
+    const doc = new jsPDF();
+    const reportDate = report.date || new Date().toISOString().split('T')[0];
+    const nowStr = new Date().toISOString().replace('T', ' ').substring(0, 16);
+
+    doc.setFontSize(11);
+    doc.setFont(undefined, 'normal');
+    doc.text(`Data: ${reportDate}`, 14, 15);
+    doc.setFontSize(9);
+    doc.setTextColor(100);
+    doc.text(`Gerado em ${nowStr}`, 14, 21);
+
+    doc.setFontSize(14);
+    doc.setFont(undefined, 'bold');
+    doc.setTextColor(0);
+    doc.text("Registos de Trabalho", 14, 32);
+    doc.setFontSize(10);
+    doc.text(`Colaborador: ${userName || 'Desconhecido'}`, 14, 38);
+
+    const userTickets = (report.tickets && report.tickets.length > 0) ? report.tickets : [
+      { 
+        id: report.id || '1', 
+        title: report.summary || 'Atividade Operacional Geral', 
+        start_date: reportDate, 
+        due_date: reportDate, 
+        hours_today: report.overtime_hours ?? 1.0 
+      }
+    ];
+
+    const tableRows = userTickets.map(t => [
+      t.id ?? '-',
+      t.title ?? t.name ?? 'Intervenção técnica',
+      t.start_date ?? reportDate,
+      t.due_date ?? reportDate,
+      `${t.hours_today ?? 0}h`
+    ]);
+
+    // O comando final que desenha a tabela (usa o import da linha 1)
+    autoTable(doc, {
+      startY: 44,
+      head: [['ID', 'TAREFA', 'INICIO', 'FIM', 'DURACAO']],
+      body: tableRows,
+      theme: 'grid',
+      headStyles: { 
+        fillColor: [24, 24, 27], 
+        textColor: [255, 255, 255], 
+        fontStyle: 'bold',
+        fontSize: 9
+      },
+      styles: { fontSize: 9, cellPadding: 3 },
+    });
+
+    const finalY = doc.lastAutoTable ? doc.lastAutoTable.finalY + 10 : 60;
+    const totalDuration = userTickets.reduce((acc, t) => acc + (Number(t.hours_today) || 0), 0);
+
+    doc.setFontSize(10);
+    doc.setFont(undefined, 'bold');
+    doc.setTextColor(0);
+    doc.text(`Total concluido: ${totalDuration.toFixed(2)}h`, 14, finalY);
+
+    doc.setFontSize(9);
+    doc.setFont(undefined, 'normal');
+    doc.setTextColor(120);
+    doc.text(`${userTickets.length} registos`, 14, finalY + 8);
+    doc.text(`${totalDuration.toFixed(2)}h registadas`, 14, finalY + 13);
+    doc.text(`Quilómetros: ${report.kilometers || 0} km`, 14, finalY + 18);
+
+    const safeName = (userName || 'utilizador').replace(/\s+/g, '_');
+    doc.save(`registos_trabalho_${safeName}_${reportDate}.pdf`);
+  } catch (err) {
+    console.error("Erro ao gerar PDF:", err);
+    alert("Erro ao gerar o PDF. Vê a consola (F12).");
   }
 };
 
@@ -1667,11 +1832,43 @@ const fetchWeekStatus = async () => {
 
                         {selectedAdminUser.reports.map(rep => (
                           <div key={rep.id} className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 space-y-3">
-                            <div className="flex items-center justify-between">
+                            <div className="flex items-center justify-between flex-wrap gap-2">
                               <span className="text-xs font-mono font-bold text-blue-400">📅 Data: {rep.date}</span>
-                              <span className={`text-[10px] px-2 py-0.5 rounded font-bold border ${rep.status === 'Submetido' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' : 'bg-amber-500/10 text-amber-400 border-amber-500/30'}`}>
-                                {rep.status.toUpperCase()}
-                              </span>
+
+                              {/* GRUPO DE BOTÕES DE ADMIN (VALIDAR, RECUSAR E EXPORTAR) */}
+                              <div className="flex items-center gap-2">
+                                <span className={`text-[10px] px-2 py-0.5 rounded font-bold border ${
+                                  rep.status === 'Validado' ? 'bg-purple-500/10 text-purple-400 border-purple-500/30' :
+                                  rep.status === 'Submetido' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' :
+                                  'bg-amber-500/10 text-amber-400 border-amber-500/30'
+                                }`}>
+                                  {rep.status.toUpperCase()}
+                                </span>
+
+                                {/* Botão Validar */}
+                                <button
+                                  onClick={() => handleUpdateReportStatus(rep.id, 'Validado')}
+                                  className="text-[10px] bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 px-2 py-1 rounded transition"
+                                >
+                                  ✅ Validar
+                                </button>
+
+                                {/* Botão Recusar (Devolve para rascunho) */}
+                                <button
+                                  onClick={() => handleUpdateReportStatus(rep.id, 'Recusado')}
+                                  className="text-[10px] bg-red-600/20 hover:bg-red-600/30 text-red-300 border border-red-500/30 px-2 py-1 rounded transition"
+                                >
+                                  ❌ Recusar
+                                </button>
+
+                                {/* Botão Exportar PDF Individual */}
+                                <button
+                                  onClick={() => exportAdminReportPDF(rep, selectedAdminUser.name)}
+                                  className="text-[10px] bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border border-zinc-700 px-2.5 py-1 rounded transition flex items-center gap-1"
+                                >
+                                  📥 Exportar PDF
+                                </button>
+                              </div>
                             </div>
 
                             <div className="grid grid-cols-2 gap-2 text-xs text-zinc-400 bg-zinc-950 p-2.5 rounded-lg border border-zinc-800/80">
@@ -2845,6 +3042,12 @@ const fetchWeekStatus = async () => {
                   </h1>
                   <p className="text-xs text-zinc-400 mt-1">Gere e submete o teu trabalho de hoje.</p>
                 </div>
+                <button 
+                  onClick={() => exportDailyReportPDF(dailyReport, todayTickets)}
+                  className="flex items-center gap-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-medium px-4 py-2.5 rounded-xl transition border border-zinc-700 shadow-sm"
+                >
+                  <Download className="w-4 h-4 text-emerald-400" /> Exportar Relatório em PDF
+                </button>
                 {dailyReport && (
                   <div className={`px-3 py-1.5 rounded-lg text-xs font-bold border w-fit ${dailyReport.status === 'Submetido' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' : 'bg-zinc-800 text-zinc-300 border-zinc-700'}`}>
                     Estado: {dailyReport.status.toUpperCase()}
@@ -2912,6 +3115,19 @@ const fetchWeekStatus = async () => {
                   </div>
                 )}
               </div>
+
+              {/* AVISO DE RELATÓRIO DEVOLVIDO PARA CORREÇÃO */}
+              {dailyReport && dailyReport.status === 'Rascunho' && dailyReport.rejection_reason && (
+                <div className="bg-red-500/10 border border-red-500/50 p-4 rounded-xl mb-4 flex items-start gap-3">
+                  <span className="text-xl">⚠️</span>
+                  <div>
+                    <h4 className="text-red-400 font-bold text-sm">Relatório Devolvido para Correção</h4>
+                    <p className="text-red-300 text-xs mt-1">
+                      <strong>Motivo do Admin:</strong> {dailyReport.rejection_reason}
+                    </p>
+                  </div>
+                </div>
+              )}
 
               {/* DADOS EXTRAS E IA */}
               {/* DADOS EXTRAS E IA */}
