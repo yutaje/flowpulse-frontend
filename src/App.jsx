@@ -17,6 +17,8 @@ export default function App() {
   const [activeTab, setActiveTab] = useState(localStorage.getItem('activeTab') || 'dashboard');
   const [taskViewMode, setTaskViewMode] = useState('kanban'); // 'kanban', 'list'
   const [showGanttModal, setShowGanttModal] = useState(false);
+  // Controla a abertura do menu/sidebar em modo gaveta no telemóvel
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
   // --- NOVOS ESTADOS PARA O RELATÓRIO DIÁRIO ---
   const [dailyReport, setDailyReport] = useState(null);
@@ -39,6 +41,47 @@ export default function App() {
       setTodayTickets(res.data.tickets_worked);
     } catch (err) {
       console.error("Erro ao carregar o dia:", err);
+    }
+  };
+
+  // --- Exportação de Relatório via Backend (PDF / Word) ---
+  const exportarRelatorio = async (formato) => {
+    try {
+      const endpoint = formato === 'pdf' ? 'export-pdf' : 'export-word';
+      
+      const response = await axios.get(`${API_URL}/tickets/my-day/${endpoint}?target_date=${selectedDate}`, {
+        headers: { Authorization: `Bearer ${token}` },
+        responseType: 'blob',
+      });
+
+      // Se o backend mandar um JSON de erro por engano mas vier como blob, vamos ler para ver o que diz
+      if (response.data.type === 'application/json' || response.data.size < 200) {
+        const text = await response.data.text();
+        console.error("Erro do Backend:", text);
+        alert("Erro do Servidor: " + text);
+        return;
+      }
+
+      const blob = new Blob([response.data]);
+      const link = document.createElement('a');
+      link.href = window.URL.createObjectURL(blob);
+      
+      const extensao = formato === 'pdf' ? 'pdf' : 'docx';
+      link.download = `Relatorio_${selectedDate}.${extensao}`;
+      
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    } catch (error) {
+      console.error("Erro completo ao exportar:", error);
+      // Vamos tentar ler o erro real se vier do servidor
+      if (error.response && error.response.data) {
+        const errorText = await error.response.data.text();
+        console.error("Detalhe do erro:", errorText);
+        alert("Erro no servidor: " + errorText);
+      } else {
+        alert("Erro ao descarregar o relatório. Abre a consola do browser (F12) para ver o erro técnico.");
+      }
     }
   };
 
@@ -366,6 +409,8 @@ const fetchWeekStatus = async () => {
   
   const [adminUsersReports, setAdminUsersReports] = useState([]);
   const [selectedAdminUser, setSelectedAdminUser] = useState(null);
+  // Controla qual o dia que estamos a inspecionar no Dashboard (começa hoje)
+  const [dashboardDate, setDashboardDate] = useState(new Date().toISOString().split('T')[0]);
   // O estado que controla se a animação está a rodar
   const [isRefreshing, setIsRefreshing] = useState(false);
 
@@ -408,6 +453,47 @@ const fetchWeekStatus = async () => {
 
   // Esta é a lista que vamos mandar renderizar no HTML!
   const filteredUsersReports = getFilteredUsers();
+
+  // Lógica para o Dashboard Lowkey do Dia Selecionado
+  const getSelectedDayDashboard = () => {
+    if (!adminUsersReports) return [];
+
+    return adminUsersReports.map(user => {
+      // Procura o relatório para a data selecionada no calendário
+      const relatorioDia = user.reports.find(r => r.date.split('T')[0] === dashboardDate);
+
+      let status = "Em falta";
+      let icone = "✖️";
+      let corTexto = "text-zinc-500";
+      let corBorda = "border-zinc-800";
+
+      if (relatorioDia) {
+        if (relatorioDia.status === "Submetido" || relatorioDia.status === "Validado") {
+          status = relatorioDia.status;
+          icone = "✔️";
+          corTexto = "text-emerald-500/80";
+          corBorda = "border-emerald-500/20";
+        } else if (relatorioDia.status === "Rascunho") {
+          status = "A preencher...";
+          icone = "📝";
+          corTexto = "text-yellow-500/80";
+          corBorda = "border-yellow-500/20";
+        }
+      }
+
+      return {
+        id: user.user_id,
+        nome: user.name,
+        status,
+        icone,
+        corTexto,
+        corBorda,
+        hora: relatorioDia?.submitted_at ? new Date(relatorioDia.submitted_at).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : "--:--"
+      };
+    });
+  };
+
+  const dashboardCardsData = getSelectedDayDashboard();
 
   const [activeWorkers, setActiveWorkers] = useState([]);
   const [currentUserInfo, setCurrentUserInfo] = useState({ id: null, role: 'Member', name: '', email: '' });
@@ -1519,8 +1605,20 @@ const fetchWeekStatus = async () => {
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 flex overflow-hidden">
       
+      {/* Overlay escuro de fundo quando o menu abre no telemóvel */}
+      {isMobileMenuOpen && (
+        <div 
+          onClick={() => setIsMobileMenuOpen(false)}
+          className="fixed inset-0 bg-black/60 z-40 md:hidden backdrop-blur-xs"
+        />
+      )}
+
       {/* SIDEBAR */}
-      <aside className="w-64 bg-zinc-900 border-r border-zinc-800 flex flex-col p-4 shrink-0 h-screen sticky top-0 z-20">
+      <aside className={`
+        fixed inset-y-0 left-0 z-50 w-64 bg-zinc-900 border-r border-zinc-800 flex flex-col p-4 h-screen transition-transform duration-300 ease-in-out
+        ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full'}
+        md:translate-x-0 md:static md:sticky md:top-0 md:shrink-0 md:z-20
+      `}>
         <div className="flex items-center gap-3 px-3 py-3 mb-6">
           <div className="p-2 bg-zinc-800 rounded-lg"><TicketIcon className="w-5 h-5 text-zinc-200" /></div>
           <span className="font-semibold tracking-tight text-lg">FlowPulse</span>
@@ -1586,14 +1684,28 @@ const fetchWeekStatus = async () => {
       <main className="flex-1 flex flex-col h-screen overflow-hidden relative">
         
         <header className="shrink-0 h-16 border-b border-zinc-800/80 bg-zinc-950/80 backdrop-blur-md px-8 flex items-center justify-between z-10 sticky top-0">
-          <button
-            onClick={() => setShowQuickSearch(true)}
-            className="flex items-center gap-3 bg-zinc-900 border border-zinc-800/80 hover:border-zinc-700 text-zinc-400 hover:text-zinc-200 px-4 py-2 rounded-xl text-xs transition shadow-sm group w-72"
-          >
-            <Search className="w-3.5 h-3.5 text-zinc-500 group-hover:text-zinc-300 transition" />
-            <span className="flex-1 text-left truncate">Pesquisar tarefas ou projetos...</span>
-            <kbd className="bg-zinc-950 border border-zinc-800 text-zinc-500 px-1.5 py-0.5 rounded text-[10px] font-mono">⌘K</kbd>
-          </button>
+          <div className="flex items-center gap-3">
+            {/* Botão de Menu (Hambúrguer) - visível apenas no telemóvel */}
+            <button 
+              onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
+              className="md:hidden bg-[#18181b] border border-[#27272a] text-zinc-300 p-2 rounded-lg flex items-center justify-center cursor-pointer hover:bg-[#27272a]"
+              title="Menu"
+            >
+              {/* Ícone de 3 pontinhos / barras */}
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 6h16M4 12h16m-7 6h7"></path>
+              </svg>
+            </button>
+
+            <button
+              onClick={() => setShowQuickSearch(true)}
+              className="flex items-center gap-3 bg-zinc-900 border border-zinc-800/80 hover:border-zinc-700 text-zinc-400 hover:text-zinc-200 px-4 py-2 rounded-xl text-xs transition shadow-sm group w-72"
+            >
+              <Search className="w-3.5 h-3.5 text-zinc-500 group-hover:text-zinc-300 transition" />
+              <span className="flex-1 text-left truncate">Pesquisar tarefas ou projetos...</span>
+              <kbd className="bg-zinc-950 border border-zinc-800 text-zinc-500 px-1.5 py-0.5 rounded text-[10px] font-mono">⌘K</kbd>
+            </button>
+          </div>
 
           <div className="flex items-center gap-3">
             <button 
@@ -1864,6 +1976,46 @@ const fetchWeekStatus = async () => {
                     <RefreshCw className={`w-4 h-4 text-blue-500 ${isRefreshing ? 'animate-spin' : ''}`} />
                     {isRefreshing ? 'A atualizar...' : 'Atualizar'}
                   </button>
+                </div>
+
+                {/* Dashboard Dinâmico por Data - Clean & Lowkey */}
+                <div className="mb-8">
+                  <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-4 gap-2">
+                    <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-widest">
+                      Ponto de Situação ({dashboardDate})
+                    </h2>
+
+                    {/* Seletor de data minimalista */}
+                    <input 
+                      type="date" 
+                      value={dashboardDate}
+                      onChange={(e) => setDashboardDate(e.target.value)}
+                      className="bg-[#18181b] border border-[#27272a] text-zinc-300 text-xs rounded-lg px-3 py-1.5 focus:outline-none focus:border-yellow-600 cursor-pointer"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-4">
+                    {dashboardCardsData.map(tec => (
+                      <div 
+                        key={tec.id} 
+                        className={`bg-[#18181b] border ${tec.corBorda} rounded-xl p-4 flex flex-col justify-between shadow-sm transition-all hover:bg-[#27272a]`}
+                      >
+                        <div className="flex justify-between items-start mb-2">
+                          <span className="text-zinc-200 font-medium truncate pr-2">{tec.nome}</span>
+                          <span className="text-xs">{tec.icone}</span>
+                        </div>
+
+                        <div className="flex justify-between items-end mt-2">
+                          <span className={`text-xs font-medium ${tec.corTexto}`}>
+                            {tec.status}
+                          </span>
+                          <span className="text-[10px] text-zinc-600 font-mono">
+                            {tec.hora}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 </div>
 
                 {/* Barra de Filtros Inteligente */}
@@ -3174,12 +3326,23 @@ const fetchWeekStatus = async () => {
                   </h1>
                   <p className="text-xs text-zinc-400 mt-1">Gere e submete o teu trabalho de hoje.</p>
                 </div>
-                <button 
-                  onClick={() => exportDailyReportPDF(dailyReport, todayTickets)}
-                  className="flex items-center gap-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-medium px-4 py-2.5 rounded-xl transition border border-zinc-700 shadow-sm"
-                >
-                  <Download className="w-4 h-4 text-emerald-400" /> Exportar Relatório em PDF
-                </button>
+                <div className="flex gap-3">
+                  {/* Botão PDF */}
+                  <button 
+                    onClick={() => exportarRelatorio('pdf')}
+                    className="bg-zinc-800 hover:bg-zinc-700 text-zinc-200 px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2 cursor-pointer"
+                  >
+                    📥 Exportar Relatório em PDF
+                  </button>
+
+                  {/* Botão Word */}
+                  <button 
+                    onClick={() => exportarRelatorio('word')}
+                    className="bg-zinc-800 hover:bg-zinc-700 text-zinc-200 px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2 cursor-pointer"
+                  >
+                    📄 Exportar Relatório em Word
+                  </button>
+                </div>
                 {dailyReport && (
                   <div className={`px-3 py-1.5 rounded-lg text-xs font-bold border w-fit ${dailyReport.status === 'Submetido' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' : 'bg-zinc-800 text-zinc-300 border-zinc-700'}`}>
                     Estado: {dailyReport.status.toUpperCase()}
