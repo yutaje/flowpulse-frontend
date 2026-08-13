@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -403,6 +403,17 @@ const fetchWeekStatus = async () => {
   const [notifications, setNotifications] = useState([]); 
   const [showNotificationsModal, setShowNotificationsModal] = useState(false); 
 
+  // --- ESTADOS DO CHAT ---
+  const [chatRooms, setChatRooms] = useState([]);
+  const [activeChatRoom, setActiveChatRoom] = useState(null);
+  const [chatMessages, setChatMessages] = useState([]);
+  const [chatInput, setChatInput] = useState('');
+  const [showChatModal, setShowChatModal] = useState(false);
+  const [chatUnreadCount, setChatUnreadCount] = useState(0);
+  const [showNewChatList, setShowNewChatList] = useState(false);
+  const chatWsRef = useRef(null);
+  const messagesEndRef = useRef(null);
+
   // Estados da Barra de Pesquisa Rápida (Spotlight / Cmd+K)
   const [showQuickSearch, setShowQuickSearch] = useState(false);
   const [quickSearchQuery, setQuickSearchQuery] = useState('');
@@ -654,6 +665,147 @@ const fetchWeekStatus = async () => {
       setNotifications(res.data);
     } catch (e) { console.error(e); }
   };
+
+  // Carregar salas de chat do utilizador
+  const fetchChatRooms = async () => {
+    if (!token || !currentUserInfo.id) return;
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      // Passamos o user_id aqui em baixo nos parâmetros do URL 👇
+      const res = await axios.get(`${API_URL}/chat/rooms?user_id=${currentUserInfo.id}`, { headers });
+      setChatRooms(res.data);
+
+      // Magia: Soma todas as não lidas de todas as salas e atualiza a bolinha de fora!
+      const totalUnread = res.data.reduce((sum, room) => sum + (room.unread_count || 0), 0);
+      setChatUnreadCount(totalUnread);
+
+    } catch (e) {
+      console.error("Erro ao carregar salas de chat", e);
+    }
+  };
+
+  // Carregar o número total de mensagens não lidas
+  const fetchUnreadCount = async () => {
+    if (!token || !currentUserInfo.id) return;
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      const res = await axios.get(`${API_URL}/chat/unread-count?user_id=${currentUserInfo.id}`, { headers });
+      setChatUnreadCount(res.data.unread_count);
+    } catch (e) {
+      console.error("Erro ao carregar mensagens não lidas", e);
+    }
+  };
+
+  // Carregar histórico de mensagens de uma sala específica
+  const openChatRoom = async (room) => {
+    setActiveChatRoom(room);
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      // Vai buscar o histórico
+      const res = await axios.get(`${API_URL}/chat/history/${room.id}`, { headers });
+      setChatMessages(res.data);
+
+      // Avisa o backend que as mensagens desta sala foram lidas
+      await axios.put(`${API_URL}/chat/rooms/${room.id}/read?user_id=${currentUserInfo.id}`, {}, { headers });
+
+      // Vai buscar o novo número de mensagens não lidas (para apagar ou diminuir a bolinha)
+      fetchUnreadCount();
+
+    } catch (e) {
+      console.error("Erro ao carregar histórico de chat", e);
+    }
+  };
+
+  // 1. Efect para o WebSocket e SCROLL AUTOMÁTICO
+  useEffect(() => {
+    if (!activeChatRoom || !token || !currentUserInfo.id) return;
+
+    // Converte o endereço para ws:// (WebSocket)
+    const wsUrl = API_URL.replace('http', 'ws') + `/chat/ws/${activeChatRoom.id}/${currentUserInfo.id}`;
+    const ws = new WebSocket(wsUrl);
+    chatWsRef.current = ws;
+
+    ws.onmessage = (event) => {
+      const newMsg = JSON.parse(event.data);
+
+      // A. Adiciona a mensagem à lista em tempo real
+      setChatMessages(prev => {
+        const updated = [...prev, newMsg];
+
+        // B. Puxa o ecrã para baixo com um micro-delay para garantir que a mensagem já lá está!
+        setTimeout(() => {
+          messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+        }, 100);
+
+        return updated;
+      });
+
+      // C. A BOLINHA VERMELHA SÓ ACENDE SE QUEM MANDOU FOI A OUTRA PESSOA
+      if (newMsg.sender_id !== currentUserInfo.id) {
+        // Se a aba estiver fechada, acende a bolinha
+        if (!showChatModal) {
+          setChatUnreadCount(prev => prev + 1);
+        }
+      }
+    };
+
+    return () => {
+      ws.close();
+    };
+  }, [activeChatRoom, currentUserInfo.id, token, showChatModal]);
+
+  // Faz scroll automático para o fundo sempre que as mensagens carregam ou mudas de sala
+  useEffect(() => {
+    if (activeChatRoom && showChatModal) {
+      // Um micro-delay para garantir que o React já acabou de desenhar o HTML todo
+      setTimeout(() => {
+        messagesEndRef.current?.scrollIntoView({ behavior: "auto" }); 
+        // Usamos "auto" em vez de "smooth" para o scroll ser imediato ao abrir a conversa!
+      }, 50);
+    }
+  }, [chatMessages, activeChatRoom, showChatModal]);
+
+  // 2. Função de Envio de Mensagem 
+  const sendChatMessage = (e) => {
+    e.preventDefault();
+    if (!chatInput.trim() || !chatWsRef.current || !activeChatRoom) return;
+
+    // Envia para o backend (o WebSocket encarrega-se de devolver à sala e mostrar na janela)
+    chatWsRef.current.send(JSON.stringify({ content: chatInput }));
+
+    // Limpa a caixa de texto instantaneamente
+    setChatInput('');
+
+    // Puxa o ecrã para baixo do teu lado
+    setTimeout(() => {
+      messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    }, 100);
+  };
+
+  // Iniciar (ou abrir) uma conversa direta com um colega
+  const startDirectChat = async (otherUserId) => {
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      // Chama o endpoint do backend que criamos agora
+      const res = await axios.post(`${API_URL}/chat/rooms/direct/${otherUserId}?current_user_id=${currentUserInfo.id}`, {}, { headers });
+
+      // Fecha a lista de novos chats, atualiza as salas e abre logo esta sala
+      setShowNewChatList(false);
+      await fetchChatRooms();
+      openChatRoom(res.data);
+    } catch (err) {
+      console.error("Erro ao iniciar chat direto:", err);
+      alert("Erro ao abrir conversa com o colega.");
+    }
+  };
+
+  // Carregar as salas quando a app arranca ou o token muda
+  useEffect(() => {
+    if (token && currentUserInfo.id) {
+      fetchChatRooms();
+      fetchUnreadCount(); // <--- ADICIONAR ESTA LINHA AQUI!
+    }
+  }, [token, currentUserInfo.id]);
 
   useEffect(() => {
     if (token) {
@@ -1708,6 +1860,175 @@ const fetchWeekStatus = async () => {
           </div>
 
           <div className="flex items-center gap-3">
+
+            {/* === ÍCONE DE CHAT NOVO === */}
+            <div className="relative">
+              <button 
+                onClick={() => {
+                  setShowChatModal(!showChatModal);
+                  if (!showChatModal) {
+                    fetchChatRooms();
+                    setChatUnreadCount(0); // Limpa a bolinha vermelha ao abrir
+                  }
+                }}
+                className="relative p-2 text-zinc-400 hover:text-zinc-100 bg-zinc-900 border border-zinc-800 rounded-xl transition cursor-pointer"
+                title="Mensagens"
+              >
+                {/* Ícone de Balão de Mensagem */}
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 10h.01M12 10h.01M16 10h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"></path>
+                </svg>
+
+                {chatUnreadCount > 0 && (
+                  <span className="absolute -top-1 -right-1 bg-red-600 text-white text-[10px] font-bold w-4 h-4 rounded-full flex items-center justify-center animate-pulse">
+                    {chatUnreadCount}
+                  </span>
+                )}
+              </button>
+
+              {/* MINI ABA POP-UP DO CHAT */}
+              {showChatModal && (
+                <div className="absolute right-0 mt-2 w-80 sm:w-96 bg-zinc-900 border border-zinc-800 rounded-2xl shadow-2xl z-50 text-zinc-200 overflow-hidden flex flex-col h-[400px]">
+                  
+                  {/* Cabeçalho da Aba */}
+                  <div className="flex justify-between items-center px-4 py-3 bg-zinc-950 border-b border-zinc-800">
+                    <h3 className="font-semibold text-sm">
+                      {activeChatRoom ? (
+                        <button onClick={() => setActiveChatRoom(null)} className="text-blue-400 hover:underline text-xs">
+                          ← Voltar
+                        </button>
+                      ) : showNewChatList ? (
+                        <button onClick={() => setShowNewChatList(false)} className="text-blue-400 hover:underline text-xs">
+                          ← Conversas
+                        </button>
+                      ) : "Mensagens"}
+                    </h3>
+
+                    <div className="flex items-center gap-2">
+                      {!activeChatRoom && !showNewChatList && (
+                        <button 
+                          onClick={() => setShowNewChatList(true)}
+                          className="text-xs bg-blue-600 hover:bg-blue-500 text-white px-2.5 py-1 rounded-lg transition"
+                        >
+                          + Nova Conversa
+                        </button>
+                      )}
+                      <button onClick={() => setShowChatModal(false)} className="text-zinc-500 hover:text-zinc-300 text-sm">✕</button>
+                    </div>
+                  </div>
+
+                  {/* Conteúdo dinâmico da Aba */}
+                  {activeChatRoom ? (
+                    // Janela de Chat Ativa
+                    <div className="flex-1 flex flex-col justify-between p-3 bg-zinc-950 overflow-hidden">
+                      <div className="flex-1 overflow-y-auto space-y-2 pr-1">
+                        {chatMessages.map((msg, index) => {
+                          const isMe = msg.sender_id === currentUserInfo.id;
+                          return (
+                            <div key={index} className={`flex flex-col ${isMe ? 'items-end' : 'items-start'}`}>
+                              <div className={`max-w-[75%] px-3 py-2 rounded-xl text-xs ${isMe ? 'bg-blue-600 text-white' : 'bg-zinc-800 text-zinc-200'}`}>
+                                {msg.content}
+                              </div>
+                              <span className="text-[9px] text-zinc-500 mt-0.5">{msg.created_at || msg.last_time}</span>
+                            </div>
+                          );
+                        })}
+                        <div ref={messagesEndRef} />
+                      </div>
+
+                      <form onSubmit={sendChatMessage} className="mt-2 flex gap-2 pt-2 border-t border-zinc-800">
+                        <input 
+                          type="text" 
+                          value={chatInput}
+                          onChange={e => setChatInput(e.target.value)}
+                          placeholder="Escreve uma mensagem..."
+                          className="flex-1 bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-zinc-100 focus:outline-none focus:border-blue-500"
+                        />
+                        <button type="submit" className="bg-blue-600 hover:bg-blue-500 text-white px-3 py-2 rounded-xl text-xs font-medium transition">
+                          Enviar
+                        </button>
+                      </form>
+                    </div>
+                  ) : showNewChatList ? (
+                    // Lista de Colaboradores para escolher com quem falar
+                    <div className="flex-1 overflow-y-auto p-2 space-y-1">
+                      <p className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider px-2 py-1">Selecionar Colaborador</p>
+                      {usersList.filter(u => u.id !== currentUserInfo.id).map(user => (
+                        <div 
+                          key={user.id}
+                          onClick={() => startDirectChat(user.id)}
+                          className="p-3 hover:bg-zinc-800/60 rounded-xl cursor-pointer transition flex items-center gap-3 border border-transparent hover:border-zinc-700"
+                        >
+                          <div className="w-8 h-8 rounded-full bg-zinc-800 flex items-center justify-center text-xs font-bold text-zinc-200">
+                            {(user.name || user.email).charAt(0).toUpperCase()}
+                          </div>
+                          <div>
+                            <p className="text-xs font-semibold text-zinc-100">{user.name || 'Sem nome'}</p>
+                            <p className="text-[10px] text-zinc-400">{user.email}</p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    // Lista de Salas Existentes
+                    <div className="flex-1 overflow-y-auto p-2 space-y-1">
+                      {chatRooms.length === 0 ? (
+                        <div className="text-center py-12 space-y-2">
+                          <p className="text-xs text-zinc-500">Ainda não tens conversas ativas.</p>
+                          <button 
+                            onClick={() => setShowNewChatList(true)}
+                            className="text-xs bg-blue-600/20 text-blue-400 border border-blue-500/30 px-3 py-1.5 rounded-xl hover:bg-blue-600/30 transition"
+                          >
+                            Iniciar primeira conversa
+                          </button>
+                        </div>
+                      ) : (
+                        chatRooms.map(room => (
+                          <div 
+                            key={room.id}
+                            onClick={() => openChatRoom(room)}
+                            className="p-3 hover:bg-zinc-800/60 rounded-xl cursor-pointer transition border border-transparent hover:border-zinc-700 flex justify-between items-center"
+                          >
+                            <div className="min-w-0 pr-2 flex-1 flex items-center gap-2.5">
+
+                              {/* 🔵 BOLINHA AZUL DE NÃO LIDA */}
+                              {room.unread_count > 0 && (
+                                <div className="w-2.5 h-2.5 rounded-full bg-blue-500 shrink-0 shadow-[0_0_8px_rgba(59,130,246,0.5)]"></div>
+                              )}
+
+                              <div className="min-w-0">
+                                <p className={`text-xs truncate ${room.unread_count > 0 ? 'font-bold text-white' : 'font-semibold text-zinc-100'}`}>
+                                  {room.name}
+                                </p>
+                                <p className={`text-[11px] truncate mt-0.5 ${room.unread_count > 0 ? 'font-semibold text-zinc-200' : 'text-zinc-400'}`}>
+                                  {room.last_message}
+                                </p>
+                              </div>
+                            </div>
+
+                            <div className="flex flex-col items-end gap-1.5 shrink-0">
+                              <span className={`text-[9px] ${room.unread_count > 0 ? 'text-blue-400 font-bold' : 'text-zinc-500'}`}>
+                                {room.last_time}
+                              </span>
+
+                              {/* (Opcional) Mostra também o número de mensagens dentro da sala */}
+                              {room.unread_count > 0 && (
+                                <span className="bg-blue-600 text-white text-[9px] font-bold px-1.5 py-0.5 rounded-full">
+                                  {room.unread_count}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  )}
+
+                </div>
+              )}
+            </div>
+            {/* FIM DO ÍCONE DE CHAT */}
+
             <button 
               onClick={() => setShowNotificationsModal(true)}
               className="relative p-2 text-zinc-400 hover:text-zinc-100 bg-zinc-900 border border-zinc-800 rounded-xl transition"
