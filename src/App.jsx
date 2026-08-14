@@ -386,6 +386,10 @@ const fetchWeekStatus = async () => {
   const [activeProjectForTasks, setActiveProjectForTasks] = useState(null);
   const [auditLogs, setAuditLogs] = useState([]);
 
+  // Estados para o Modal de Tarefas da Equipa
+  const [showTeamTasksModal, setShowTeamTasksModal] = useState(false);
+  const [activeTeamForTasks, setActiveTeamForTasks] = useState(null);
+
   // Estados para o Modal de Conclusão de Tarefa
   const [showCompleteModal, setShowCompleteModal] = useState(false);
   const [ticketToComplete, setTicketToComplete] = useState(null);
@@ -3267,6 +3271,17 @@ const fetchWeekStatus = async () => {
                             <p className="text-xs text-zinc-400 mt-0.5">{team.description || 'Sem descrição'}</p>
                           </div>
                           <div className="flex items-center gap-2">
+                            {/* BOTÃO PARA ABRIR O POOL DE TAREFAS DA EQUIPA */}
+                            <button 
+                              onClick={() => {
+                                setActiveTeamForTasks(team);
+                                setShowTeamTasksModal(true);
+                              }}
+                              className="flex items-center gap-1.5 bg-blue-600/10 hover:bg-blue-600/20 text-blue-400 border border-blue-500/30 text-xs font-semibold px-3 py-2 rounded-xl transition"
+                              title="Ver todas as tarefas desta equipa"
+                            >
+                              🎯 Pool de Tarefas
+                            </button>
                             <button onClick={() => openEditTeamModal(team)} className="p-2 bg-zinc-950 border border-zinc-800 text-zinc-400 hover:text-zinc-100 rounded-xl transition"><Edit3 className="w-4 h-4" /></button>
                             <button onClick={() => handleDeleteTeam(team.id)} className="p-2 bg-zinc-950 border border-zinc-800 text-red-400 hover:text-red-300 rounded-xl transition"><Trash2 className="w-4 h-4" /></button>
                           </div>
@@ -3294,7 +3309,14 @@ const fetchWeekStatus = async () => {
                             <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-400">Projetos</h3>
                             <div className="space-y-2">
                               {teamProjects.map(proj => (
-                                <div key={proj.id} className="bg-zinc-950 border border-zinc-800 p-3 rounded-xl text-xs text-zinc-200 font-medium">📁 {proj.name}</div>
+                                <div 
+                                  key={proj.id} 
+                                  onClick={() => openProjectTasksModal(proj)}
+                                  className="bg-zinc-950 border border-zinc-800 p-3 rounded-xl text-xs text-zinc-200 font-medium cursor-pointer hover:border-zinc-700 transition flex justify-between items-center"
+                                >
+                                  <span>📁 {proj.name}</span>
+                                  <span className="text-[10px] text-blue-400 hover:underline">Ver Tarefas ➔</span>
+                                </div>
                               ))}
                             </div>
                           </div>
@@ -4244,58 +4266,192 @@ const fetchWeekStatus = async () => {
         </div>
       </main>
 
-      {/* MODAL DE TAREFAS DO PROJETO */}
+      {/* MODAL TASK POOL DO PROJETO / EQUIPA */}
       {showProjectTasksModal && activeProjectForTasks && (
         <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fadeIn" onClick={() => setShowProjectTasksModal(false)}>
-          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl max-w-xl w-full p-6 shadow-2xl flex flex-col max-h-[80vh]" onClick={e => e.stopPropagation()}>
+          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl max-w-2xl w-full p-6 shadow-2xl flex flex-col max-h-[85vh]" onClick={e => e.stopPropagation()}>
+            
+            {/* Cabeçalho */}
             <div className="flex items-center justify-between mb-4 pb-3 border-b border-zinc-800">
               <div>
-                <h2 className="text-base font-semibold text-zinc-100">Tarefas do Projeto: {activeProjectForTasks.name}</h2>
-                <p className="text-xs text-zinc-400 mt-0.5">Visão geral de todas as tarefas (ativas e concluídas)</p>
+                <h2 className="text-base font-semibold text-zinc-100 flex items-center gap-2">
+                  <span>🎯 Pool de Tarefas:</span> {activeProjectForTasks.name}
+                </h2>
+                <p className="text-xs text-zinc-400 mt-0.5">Clica em "Agarrar" para assumir e começar a trabalhar numa tarefa livre.</p>
               </div>
               <button onClick={() => setShowProjectTasksModal(false)} className="p-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-xl transition">
-                <X className="w-4 h-4" />
+                ✕
               </button>
             </div>
 
-            <div className="flex-1 overflow-y-auto space-y-2.5 pr-1">
+            {/* Lista de Tarefas do Projeto */}
+            <div className="flex-1 overflow-y-auto space-y-3 pr-1">
               {availableTickets.filter(t => t.project_id === activeProjectForTasks.id).length === 0 ? (
                 <div className="py-12 text-center text-xs text-zinc-500 border border-dashed border-zinc-800 rounded-xl">
-                  Nenhuma tarefa associada a este projeto.
+                  Nenhuma tarefa associada a este projeto neste momento.
                 </div>
               ) : (
                 availableTickets
                   .filter(t => t.project_id === activeProjectForTasks.id)
                   .map(ticket => {
                     const isDone = ticket.status && ['done', 'concluído', 'concluido'].includes(ticket.status.toLowerCase());
-                    const assignee = getAssigneeName(ticket.assigned_to_id);
+                    const assigneeName = getAssigneeName(ticket.assigned_to_id);
+                    
                     return (
-                      <div key={ticket.id} className={`p-4 rounded-xl border flex items-center justify-between gap-3 text-xs transition ${isDone ? 'bg-zinc-950/40 border-zinc-900 opacity-60' : 'bg-zinc-950 border-zinc-800/80 shadow-sm'}`}>
+                      <div key={ticket.id} className="bg-zinc-950 border border-zinc-800 p-4 rounded-xl flex items-center justify-between gap-4">
                         <div className="space-y-1 min-w-0 flex-1">
                           <div className="flex items-center gap-2">
-                            <span className="text-zinc-500 font-mono">#{ticket.id}</span>
-                            <span className={`font-medium truncate ${isDone ? 'line-through text-zinc-400' : 'text-zinc-100'}`}>{ticket.title}</span>
+                            <span className="text-xs font-mono text-zinc-500">#{ticket.id}</span>
+                            <h4 className="font-medium text-sm text-zinc-100 truncate">{ticket.title}</h4>
                             {ticket.priority && (
                               <span className={`text-[10px] px-2 py-0.5 rounded border font-medium ${getPriorityBadgeStyle(ticket.priority)}`}>
                                 {ticket.priority}
                               </span>
                             )}
                           </div>
-                          <p className="text-zinc-400 truncate pl-6">{ticket.description || 'Sem descrição'}</p>
+                          <p className="text-xs text-zinc-400 truncate pl-6">{ticket.description || 'Sem descrição'}</p>
                           <div className="flex items-center gap-4 text-[11px] text-zinc-500 pl-6 pt-1">
-                            <span>Estado: <strong className={isDone ? 'text-emerald-400' : 'text-blue-400'}>{ticket.status}</strong></span>
-                            {assignee && <span>👤 {assignee}</span>}
-                            {ticket.due_date && <span>📅 {ticket.due_date.split('T')[0]}</span>}
+                            <span>Estado: <strong className="text-zinc-300">{ticket.status}</strong></span>
+                            {assigneeName ? (
+                              <span className="text-amber-400">👤 Atribuído a: {assigneeName}</span>
+                            ) : (
+                              <span className="text-emerald-400 font-bold">🟢 Disponível (Livre)</span>
+                            )}
                           </div>
+                        </div>
+
+                        {/* Botão de Agarrar Tarefa (/grab) */}
+                        <div className="shrink-0">
+                          {!assigneeName && !isDone ? (
+                            <button 
+                              onClick={async () => {
+                                try {
+                                  const headers = { Authorization: `Bearer ${token}` };
+                                  await axios.put(`${API_URL}/tickets/${ticket.id}/grab`, {}, { headers });
+                                  alert("Tarefa agarrada com sucesso! Passou para ti.");
+                                  fetchData(); // Atualiza a lista geral
+                                } catch (error) {
+                                  alert(error.response?.data?.detail || "Erro ao agarrar tarefa.");
+                                }
+                              }}
+                              className="bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold px-4 py-2 rounded-xl transition shadow-md flex items-center gap-1.5"
+                            >
+                              ✋ Agarrar
+                            </button>
+                          ) : (
+                            <span className="text-[11px] text-zinc-500 italic bg-zinc-900 px-3 py-1.5 rounded-xl border border-zinc-800">
+                              {isDone ? 'Concluída' : 'Ocupada'}
+                            </span>
+                          )}
                         </div>
                       </div>
                     );
                   })
               )}
             </div>
+
           </div>
         </div>
       )}
+
+      {/* MODAL TASK POOL DA EQUIPA */}
+      {showTeamTasksModal && activeTeamForTasks && (() => {
+        // Encontra todos os IDs de projetos atribuídos a esta equipa
+        const teamProjectIds = availableProjects
+          .filter(p => p.team_id === activeTeamForTasks.id)
+          .map(p => p.id);
+
+        // Filtra as tarefas que pertencem aos projetos desta equipa
+        const teamTickets = availableTickets.filter(t => teamProjectIds.includes(t.project_id));
+
+        return (
+          <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fadeIn" onClick={() => setShowTeamTasksModal(false)}>
+            <div className="bg-zinc-900 border border-zinc-800 rounded-2xl max-w-2xl w-full p-6 shadow-2xl flex flex-col max-h-[85vh]" onClick={e => e.stopPropagation()}>
+              
+              {/* Cabeçalho do Modal */}
+              <div className="flex items-center justify-between mb-4 pb-3 border-b border-zinc-800">
+                <div>
+                  <h2 className="text-base font-semibold text-zinc-100 flex items-center gap-2">
+                    <span>👥 Pool de Tarefas da Equipa:</span> {activeTeamForTasks.name}
+                  </h2>
+                  <p className="text-xs text-zinc-400 mt-0.5">Tarefas disponíveis nos projetos desta equipa.</p>
+                </div>
+                <button onClick={() => setShowTeamTasksModal(false)} className="p-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-xl transition">
+                  ✕
+                </button>
+              </div>
+
+              {/* Lista de Tarefas da Equipa */}
+              <div className="flex-1 overflow-y-auto space-y-3 pr-1">
+                {teamTickets.length === 0 ? (
+                  <div className="py-12 text-center text-xs text-zinc-500 border border-dashed border-zinc-800 rounded-xl">
+                    Nenhuma tarefa associada aos projetos desta equipa de momento.
+                  </div>
+                ) : (
+                  teamTickets.map(ticket => {
+                    const isDone = ticket.status && ['done', 'concluído', 'concluido'].includes(ticket.status.toLowerCase());
+                    const assigneeName = getAssigneeName(ticket.assigned_to_id);
+                    
+                    return (
+                      <div key={ticket.id} className="bg-zinc-950 border border-zinc-800 p-4 rounded-xl flex items-center justify-between gap-4">
+                        <div className="space-y-1 min-w-0 flex-1">
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs font-mono text-zinc-500">#{ticket.id}</span>
+                            <h4 className="font-medium text-sm text-zinc-100 truncate">{ticket.title}</h4>
+                            <span className="text-[10px] bg-zinc-900 border border-zinc-800 px-2 py-0.5 rounded text-zinc-400">
+                              📁 {getProjectName(ticket.project_id)}
+                            </span>
+                            {ticket.priority && (
+                              <span className={`text-[10px] px-2 py-0.5 rounded border font-medium ${getPriorityBadgeStyle(ticket.priority)}`}>
+                                {ticket.priority}
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-xs text-zinc-400 truncate pl-6">{ticket.description || 'Sem descrição'}</p>
+                          <div className="flex items-center gap-4 text-[11px] text-zinc-500 pl-6 pt-1">
+                            <span>Estado: <strong className="text-zinc-300">{ticket.status}</strong></span>
+                            {assigneeName ? (
+                              <span className="text-amber-400">👤 Atribuído a: {assigneeName}</span>
+                            ) : (
+                              <span className="text-emerald-400 font-bold">🟢 Disponível (Livre)</span>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Botão Agarrar Tarefa */}
+                        <div className="shrink-0">
+                          {!assigneeName && !isDone ? (
+                            <button 
+                              onClick={async () => {
+                                try {
+                                  const headers = { Authorization: `Bearer ${token}` };
+                                  await axios.put(`${API_URL}/tickets/${ticket.id}/grab`, {}, { headers });
+                                  alert("Tarefa agarrada com sucesso! Ficou atribuída a ti.");
+                                  fetchData();
+                                } catch (error) {
+                                  alert(error.response?.data?.detail || "Erro ao agarrar tarefa.");
+                                }
+                              }}
+                              className="bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold px-4 py-2 rounded-xl transition shadow-md flex items-center gap-1.5"
+                            >
+                              ✋ Agarrar
+                            </button>
+                          ) : (
+                            <span className="text-[11px] text-zinc-500 italic bg-zinc-900 px-3 py-1.5 rounded-xl border border-zinc-800">
+                              {isDone ? 'Concluída' : 'Ocupada'}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+
+            </div>
+          </div>
+        );
+      })()}
 
       {/* MODAL DE CONCLUSÃO DE TAREFA */}
       {showCompleteModal && ticketToComplete && (
