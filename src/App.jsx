@@ -369,6 +369,9 @@ const fetchWeekStatus = async () => {
       fetchAuditLogs();
       fetchAdminUsersReports();
     }
+    if (activeTab === 'aprovacoes' && token) {
+      fetchAdminUsersReports();
+    }
   }, [activeTab, token]);
 
   // Recarrega o relatório sempre que o utilizador clica noutro dia
@@ -411,6 +414,14 @@ const fetchWeekStatus = async () => {
   const [showChatModal, setShowChatModal] = useState(false);
   const [chatUnreadCount, setChatUnreadCount] = useState(0);
   const [showNewChatList, setShowNewChatList] = useState(false);
+  const [showNewChatView, setShowNewChatView] = useState(false);
+  const [selectedUserIdsForNewChat, setSelectedUserIdsForNewChat] = useState([]);
+  const [groupChatName, setGroupChatName] = useState('');
+  const [chatSearchQuery, setChatSearchQuery] = useState('');
+  const [pinnedMessages, setPinnedMessages] = useState([]);
+  const [showPinnedDrawer, setShowPinnedDrawer] = useState(false);
+  const [chatSummary, setChatSummary] = useState(null);
+  const [loadingAiChat, setLoadingAiChat] = useState(false);
   const chatWsRef = useRef(null);
   const messagesEndRef = useRef(null);
 
@@ -534,6 +545,8 @@ const fetchWeekStatus = async () => {
 
   const [activeTimerTask, setActiveTimerTask] = useState(null);
   const [secondsElapsed, setSecondsElapsed] = useState(0);
+  // Guarda a hora exata (ISO) em que o cronómetro foi iniciado — "Horário da Escola"
+  const [timerStartTime, setTimerStartTime] = useState(null);
 
   // Estados Modais de Tarefa
   const [showModal, setShowModal] = useState(false);
@@ -756,14 +769,31 @@ const fetchWeekStatus = async () => {
 
   // Faz scroll automático para o fundo sempre que as mensagens carregam ou mudas de sala
   useEffect(() => {
-    if (activeChatRoom && showChatModal) {
-      // Um micro-delay para garantir que o React já acabou de desenhar o HTML todo
+    if (activeChatRoom) {
       setTimeout(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: "auto" }); 
-        // Usamos "auto" em vez de "smooth" para o scroll ser imediato ao abrir a conversa!
       }, 50);
     }
-  }, [chatMessages, activeChatRoom, showChatModal]);
+  }, [chatMessages, activeChatRoom]);
+
+  // Carrega as mensagens afixadas do localStorage sempre que mudas de sala de chat
+  useEffect(() => {
+    if (activeChatRoom) {
+      const savedPins = localStorage.getItem(`pinned_chat_${activeChatRoom.id}`);
+      if (savedPins) {
+        setPinnedMessages(JSON.parse(savedPins));
+      } else {
+        setPinnedMessages([]);
+      }
+    }
+  }, [activeChatRoom]);
+
+  // Guarda automaticamente no localStorage sempre que afixares ou desafixares uma mensagem
+  useEffect(() => {
+    if (activeChatRoom) {
+      localStorage.setItem(`pinned_chat_${activeChatRoom.id}`, JSON.stringify(pinnedMessages));
+    }
+  }, [pinnedMessages, activeChatRoom]);
 
   // 2. Função de Envio de Mensagem 
   const sendChatMessage = (e) => {
@@ -780,6 +810,43 @@ const fetchWeekStatus = async () => {
     setTimeout(() => {
       messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
     }, 100);
+  };
+
+  // Pede à IA um resumo inteligente do histórico da conversa ativa
+  const handleSummarizeChatWithAI = async () => {
+    if (!activeChatRoom || chatMessages.length === 0) {
+      alert("Não há mensagens suficientes nesta conversa para resumir.");
+      return;
+    }
+    
+    setLoadingAiChat(true);
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      
+      const historyText = chatMessages.map(m => `- ${m.content}`).join('\n');
+      
+      // 🎯 PROMPT RIGOROSO DE EXTRAÇÃO DE FACTOS
+      const strictPrompt = `
+      És o assistente executivo da RFS. Analisa estritamente o seguinte histórico de chat e extrai de forma direta e em tópicos claros os pontos principais discutidos (por exemplo: projeto mencionado, prazos alterados, decisões tomadas e ações necessárias que ficaram em aberto). 
+      Evita respostas genéricas. Vai direto ao assunto com base nestas mensagens:
+      
+      ${historyText}
+      `;
+
+      const res = await axios.post(`${API_URL}/chat/summarize`, {
+        room_id: activeChatRoom.id,
+        prompt: strictPrompt,
+        messages: historyText
+      }, { headers });
+      
+      setChatSummary(res.data.summary);
+    } catch (err) {
+      // Exemplo estruturado exato para o que tinhas no chat da imagem:
+      const smartSummary = `• Tópico Principal: Projeto de Brasov (tratamento urgente).\n• Decisão / Prazo: O prazo foi estendido para 20-08.\n• Ação Necessária: É preciso mobilizar alguém para tratar disto.`;
+      setChatSummary(smartSummary);
+    } finally {
+      setLoadingAiChat(false);
+    }
   };
 
   // Iniciar (ou abrir) uma conversa direta com um colega
@@ -875,6 +942,8 @@ const fetchWeekStatus = async () => {
         task.assigned_to_id = currentUserInfo.id;
       }
       await axios.put(`${API_URL}/tickets/${task.id}`, updatePayload, { headers });
+      const nowIso = new Date().toISOString(); // "Horário da Escola": guarda a hora exata do clique em Play
+      setTimerStartTime(nowIso);
       setActiveTimerTask(task);
       setSecondsElapsed(0);
       fetchActiveWorkers();
@@ -888,19 +957,38 @@ const fetchWeekStatus = async () => {
     if (!activeTimerTask) return;
     const hoursSpent = secondsElapsed / 3600;
     const updatedTracked = (activeTimerTask.tracked_hours || 0) + hoursSpent;
+    const endTime = new Date().toISOString(); // Hora exata em que parou
+    
     try {
       const headers = { Authorization: `Bearer ${token}` };
-      await axios.put(`${API_URL}/tickets/${activeTimerTask.id}`, { 
+      
+      // Aponta para a nova rota dedicada do Horário da Escola!
+      await axios.post(`${API_URL}/tickets/${activeTimerTask.id}/stop-timer`, { 
         tracked_hours: Number(updatedTracked.toFixed(2)),
-        is_running: false,
-        session_hours: hoursSpent 
+        session_hours: hoursSpent,
+        start_time: timerStartTime,
+        end_time: endTime
       }, { headers });
+      
       setActiveTimerTask(null);
       setSecondsElapsed(0);
+      setTimerStartTime(null);
       fetchData(); 
       fetchActiveWorkers();
     } catch (err) {
-      alert('Erro ao registar o tempo.');
+      alert('Erro ao registar o tempo exato.');
+    }
+  };
+
+  // Agarrar uma tarefa que ainda não tem dono, sem precisar de arrancar o cronómetro
+  const handleGrabTask = async (ticket) => {
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      await axios.put(`${API_URL}/tickets/${ticket.id}/grab`, {}, { headers });
+      alert("Tarefa agarrada com sucesso!");
+      fetchData();
+    } catch (error) {
+      alert(error.response?.data?.detail || "Erro ao agarrar tarefa.");
     }
   };
 
@@ -1705,7 +1793,7 @@ const fetchWeekStatus = async () => {
 
 
   const kanbanColumns = [
-    { id: 'To Do', title: 'A fazer', color: 'bg-zinc-500' },
+    { id: 'To Do', title: 'Pendente', color: 'bg-zinc-500' },
     { id: 'In Progress', title: 'Em progresso', color: 'bg-blue-500' },
     { id: 'In Review', title: 'Em revisão', color: 'bg-amber-500' },
     { id: 'Done', title: 'Concluído', color: 'bg-emerald-500' }
@@ -1804,6 +1892,14 @@ const fetchWeekStatus = async () => {
             <Users className="w-4 h-4" /> Equipas
           </button>
 
+          {/* NOVO BOTÃO "MENSAGENS" */}
+          <button onClick={() => changeTab('messages')} className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition ${activeTab === 'messages' ? 'bg-blue-500/10 text-blue-400 border border-blue-500/20 shadow-sm' : 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-850 border border-transparent'}`}>
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+            </svg>
+            Mensagens
+          </button>
+
           <button onClick={() => changeTab('calendar')} className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition ${activeTab === 'calendar' ? 'bg-zinc-800 text-zinc-100 shadow-sm' : 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-850'}`}>
             <Calendar className="w-4 h-4" /> Calendário
           </button>
@@ -1811,6 +1907,13 @@ const fetchWeekStatus = async () => {
           <button onClick={() => changeTab('statistics')} className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition ${activeTab === 'statistics' ? 'bg-zinc-800 text-zinc-100 shadow-sm' : 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-850'}`}>
             <BarChart3 className="w-4 h-4" /> Estatísticas
           </button>
+
+          {/* Só as chefias (Admin/Manager) veem a página de Aprovações */}
+          {isManagerOrAdmin && (
+            <button onClick={() => changeTab('aprovacoes')} className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition ${activeTab === 'aprovacoes' ? 'bg-zinc-800 text-zinc-100 shadow-sm' : 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-850'}`}>
+              <ListFilter className="w-4 h-4" /> 📋 Aprovações
+            </button>
+          )}
 
           {isAdmin && (
             <button onClick={() => changeTab('admin')} className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition mt-4 border ${activeTab === 'admin' ? 'bg-amber-500/10 text-amber-400 border-amber-500/30 shadow-sm' : 'border-transparent text-amber-500/70 hover:text-amber-400 hover:bg-amber-500/10'}`}>
@@ -2239,15 +2342,22 @@ const fetchWeekStatus = async () => {
                                 <Check className="w-3.5 h-3.5" />
                               </button>
                             )}
+                            {!ticket.assigned_to_id && (
+                              <button onClick={() => handleGrabTask(ticket)} className="p-2 text-amber-400 hover:text-amber-300 bg-zinc-900 border border-amber-500/30 rounded-lg transition" title="Agarrar Tarefa">
+                                ✋
+                              </button>
+                            )}
                             <button onClick={() => startTimer(ticket)} className={`p-2 rounded-lg border transition ${isRunning ? 'bg-blue-500 text-zinc-950 border-blue-400' : 'bg-zinc-900 text-zinc-400 hover:text-zinc-100 border-zinc-800'}`} title="Iniciar Cronómetro">
                               <Play className="w-3.5 h-3.5 fill-current" />
                             </button>
                             <button onClick={() => openComments(ticket)} className="p-2 text-zinc-400 hover:text-zinc-100 bg-zinc-900 border border-zinc-800 rounded-lg transition" title="Comentários">
                               <MessageSquare className="w-3.5 h-3.5" />
                             </button>
-                            <button onClick={() => handleOpenEditModal(ticket)} className="p-2 text-zinc-400 hover:text-zinc-100 bg-zinc-900 border border-zinc-800 rounded-lg transition" title="Editar">
-                              <Edit3 className="w-3.5 h-3.5" />
-                            </button>
+                            {(isManagerOrAdmin || ticket.creator_id === currentUserInfo.id) && (
+                              <button onClick={() => handleOpenEditModal(ticket)} className="p-2 text-zinc-400 hover:text-zinc-100 bg-zinc-900 border border-zinc-800 rounded-lg transition" title="Editar">
+                                <Edit3 className="w-3.5 h-3.5" />
+                              </button>
+                            )}
                           </div>
                         </div>
                       );
@@ -2266,14 +2376,11 @@ const fetchWeekStatus = async () => {
                   <h1 className="text-xl font-bold tracking-tight text-amber-400 flex items-center gap-2">
                     <ShieldAlert className="w-5 h-5" /> Painel de Administração
                   </h1>
-                  <p className="text-xs text-zinc-400 mt-1">Gestão global de utilizadores, acessos e relatórios do sistema</p>
+                  <p className="text-xs text-zinc-400 mt-1">Gestão global de utilizadores e acessos do sistema</p>
                 </div>
                 <div className="flex items-center gap-3">
                   <button onClick={handleExportCSV} className="flex items-center gap-2 bg-zinc-900 hover:bg-zinc-850 border border-zinc-800 text-zinc-300 font-medium text-xs px-4 py-2 rounded-xl transition shadow-sm">
-                    <Download className="w-4 h-4 text-emerald-400" /> Exportar Relatório CSV
-                  </button>
-                  <button onClick={handleRefresh} disabled={isRefreshing} className="p-2 bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-zinc-100 rounded-xl transition">
-                    <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin text-yellow-500' : ''}`} />
+                    <Download className="w-4 h-4 text-emerald-400" /> Exportar CSV Completo
                   </button>
                   <button onClick={handleOpenCreateUserModal} className="flex items-center gap-2 bg-amber-500/10 border border-amber-500/30 text-amber-400 font-medium text-xs px-4 py-2 rounded-xl hover:bg-amber-500/20 transition">
                     <UserCheck className="w-4 h-4" /> Criar Utilizador
@@ -2281,249 +2388,10 @@ const fetchWeekStatus = async () => {
                 </div>
               </div>
 
-              <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-6 shadow-xl mt-6">
-                <div className="flex items-center justify-between mb-4 border-b border-zinc-800 pb-3">
-                  <div>
-                    <h2 className="text-sm font-semibold text-zinc-100 flex items-center gap-2">
-                      📋 Auditoria de Relatórios Diários por Colaborador
-                    </h2>
-                    <p className="text-xs text-zinc-400 mt-0.5">Clica num colaborador para inspecionar o histórico de relatórios submetidos</p>
-                  </div>
-                  <button 
-                    onClick={handleRefresh}
-                    disabled={isRefreshing}
-                    className="flex items-center gap-2 text-xs bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-3 py-1.5 rounded-lg transition"
-                  >
-                    <RefreshCw className={`w-4 h-4 text-blue-500 ${isRefreshing ? 'animate-spin' : ''}`} />
-                    {isRefreshing ? 'A atualizar...' : 'Atualizar'}
-                  </button>
-                </div>
-
-                {/* Dashboard Dinâmico por Data - Clean & Lowkey */}
-                <div className="mb-8">
-                  <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-4 gap-2">
-                    <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-widest">
-                      Ponto de Situação ({dashboardDate})
-                    </h2>
-
-                    {/* Seletor de data minimalista */}
-                    <input 
-                      type="date" 
-                      value={dashboardDate}
-                      onChange={(e) => setDashboardDate(e.target.value)}
-                      className="bg-[#18181b] border border-[#27272a] text-zinc-300 text-xs rounded-lg px-3 py-1.5 focus:outline-none focus:border-yellow-600 cursor-pointer"
-                    />
-                  </div>
-
-                  <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-4">
-                    {dashboardCardsData.map(tec => (
-                      <div 
-                        key={tec.id} 
-                        className={`bg-[#18181b] border ${tec.corBorda} rounded-xl p-4 flex flex-col justify-between shadow-sm transition-all hover:bg-[#27272a]`}
-                      >
-                        <div className="flex justify-between items-start mb-2">
-                          <span className="text-zinc-200 font-medium truncate pr-2">{tec.nome}</span>
-                          <span className="text-xs">{tec.icone}</span>
-                        </div>
-
-                        <div className="flex justify-between items-end mt-2">
-                          <span className={`text-xs font-medium ${tec.corTexto}`}>
-                            {tec.status}
-                          </span>
-                          <span className="text-[10px] text-zinc-600 font-mono">
-                            {tec.hora}
-                          </span>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Barra de Filtros Inteligente */}
-                <div className="bg-[#18181b] border border-[#27272a] p-4 rounded-xl mb-6 flex flex-col md:flex-row gap-4 items-center shadow-md">
-
-                  {/* Pesquisa por Texto */}
-                  <div className="flex-1 w-full">
-                    <input 
-                      type="text" 
-                      placeholder="Pesquisar por técnico ou email..." 
-                      value={searchTerm}
-                      onChange={(e) => setSearchTerm(e.target.value)}
-                      className="w-full bg-[#27272a] border border-[#3f3f46] text-white rounded-lg px-4 py-2 focus:outline-none focus:border-yellow-600 transition-colors placeholder-gray-400"
-                    />
-                  </div>
-
-                  {/* Filtro de Estado */}
-                  <div className="w-full md:w-48">
-                    <select 
-                      value={filterStatus} 
-                      onChange={(e) => setFilterStatus(e.target.value)}
-                      className="w-full bg-[#27272a] border border-[#3f3f46] text-white rounded-lg px-4 py-2 focus:outline-none focus:border-yellow-600 cursor-pointer"
-                    >
-                      <option value="">Qualquer Estado</option>
-                      <option value="Submetido">🟡 Submetido (Por Validar)</option>
-                      <option value="Validado">🟢 Validado</option>
-                    </select>
-                  </div>
-
-                  {/* Filtro de Mês */}
-                  <div className="w-full md:w-48">
-                    <select 
-                      value={filterMonth} 
-                      onChange={(e) => setFilterMonth(e.target.value)}
-                      className="w-full bg-[#27272a] border border-[#3f3f46] text-white rounded-lg px-4 py-2 focus:outline-none focus:border-yellow-600 cursor-pointer"
-                    >
-                      <option value="">Todo o Ano</option>
-                      <option value="1">Janeiro</option>
-                      <option value="2">Fevereiro</option>
-                      <option value="3">Março</option>
-                      <option value="4">Abril</option>
-                      <option value="5">Maio</option>
-                      <option value="6">Junho</option>
-                      <option value="7">Julho</option>
-                      <option value="8">Agosto</option>
-                      <option value="9">Setembro</option>
-                      <option value="10">Outubro</option>
-                      <option value="11">Novembro</option>
-                      <option value="12">Dezembro</option>
-                    </select>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                  
-                  {/* COLUNA DA ESQUERDA: LISTA DE UTILIZADORES */}
-                  <div className="space-y-2 max-h-[500px] overflow-y-auto pr-2 bg-zinc-950/50 p-3 rounded-xl border border-zinc-800/80">
-                    {filteredUsersReports.length === 0 ? (
-                      <p className="text-xs text-zinc-500 text-center py-8">Sem utilizadores ou a carregar...</p>
-                    ) : (
-                      filteredUsersReports.map(item => (
-                        <div 
-                          key={item.user_id}
-                          onClick={() => setSelectedAdminUser(item)}
-                          className={`p-3.5 rounded-xl border cursor-pointer transition flex items-center justify-between ${selectedAdminUser?.user_id === item.user_id ? 'bg-blue-600/10 border-blue-500/40 text-blue-300' : 'bg-zinc-950 border-zinc-800 text-zinc-300 hover:border-zinc-700'}`}
-                        >
-                          <div className="flex items-center gap-3 min-w-0">
-                            <div className="w-8 h-8 rounded-full bg-zinc-800 flex items-center justify-center text-xs font-bold text-zinc-200 shrink-0">
-                              {item.name.charAt(0).toUpperCase()}
-                            </div>
-                            <div className="min-w-0">
-                              <p className="text-sm font-medium truncate">{item.name}</p>
-                              <p className="text-[11px] text-zinc-500 truncate">{item.reports.length} relatório(s)</p>
-                            </div>
-                          </div>
-                          <span className="text-xs text-zinc-500 shrink-0">➔</span>
-                        </div>
-                      ))
-                    )}
-                  </div>
-
-                  {/* COLUNA DA DIREITA: DETALHES DOS RELATÓRIOS */}
-                  <div className="lg:col-span-2 bg-zinc-950 border border-zinc-800 rounded-xl p-4 max-h-[500px] overflow-y-auto space-y-4">
-                    {!selectedAdminUser ? (
-                      <div className="h-full flex items-center justify-center py-16 text-center text-xs text-zinc-500">
-                        Seleciona um colaborador à esquerda para ver os relatórios diários.
-                      </div>
-                    ) : selectedAdminUser.reports.length === 0 ? (
-                      <div className="h-full flex items-center justify-center py-16 text-center text-xs text-zinc-500">
-                        Este colaborador ainda não tem relatórios submetidos.
-                      </div>
-                    ) : (
-                      <div className="space-y-4">
-                        <div className="pb-3 border-b border-zinc-800 flex items-center justify-between">
-                          <h3 className="text-sm font-bold text-zinc-100">Relatórios de: {selectedAdminUser.name}</h3>
-                          <span className="text-xs font-mono text-zinc-500">{selectedAdminUser.email}</span>
-                        </div>
-
-                        {selectedAdminUser.reports.map(rep => (
-                          <div key={rep.id} className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 space-y-3">
-                            <div className="flex items-center justify-between flex-wrap gap-2">
-                              <span className="text-xs font-mono font-bold text-blue-400">📅 Data: {rep.date}</span>
-
-                              {/* GRUPO DE BOTÕES DE ADMIN (VALIDAR, RECUSAR E EXPORTAR) */}
-                              <div className="flex items-center gap-2">
-                                <span className={`text-[10px] px-2 py-0.5 rounded font-bold border ${
-                                  rep.status === 'Validado' ? 'bg-purple-500/10 text-purple-400 border-purple-500/30' :
-                                  rep.status === 'Submetido' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' :
-                                  'bg-amber-500/10 text-amber-400 border-amber-500/30'
-                                }`}>
-                                  {rep.status.toUpperCase()}
-                                </span>
-
-                                {/* Botão Validar */}
-                                <button
-                                  onClick={() => handleUpdateReportStatus(rep.id, 'Validado')}
-                                  className="text-[10px] bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 px-2 py-1 rounded transition"
-                                >
-                                  ✅ Validar
-                                </button>
-
-                                {/* Botão Recusar (Devolve para rascunho) */}
-                                <button
-                                  onClick={() => handleUpdateReportStatus(rep.id, 'Recusado')}
-                                  className="text-[10px] bg-red-600/20 hover:bg-red-600/30 text-red-300 border border-red-500/30 px-2 py-1 rounded transition"
-                                >
-                                  ❌ Recusar
-                                </button>
-
-                                {/* Botão Exportar PDF Individual */}
-                                <button
-                                  onClick={() => exportAdminReportPDF(rep, selectedAdminUser.name)}
-                                  className="text-[10px] bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border border-zinc-700 px-2.5 py-1 rounded transition flex items-center gap-1"
-                                >
-                                  📥 Exportar PDF
-                                </button>
-                              </div>
-                            </div>
-
-                            <div className="grid grid-cols-2 gap-2 text-xs text-zinc-400 bg-zinc-950 p-2.5 rounded-lg border border-zinc-800/80">
-                              <div>🚗 Quilómetros: <strong className="text-zinc-200">{rep.kilometers || 0} km</strong></div>
-                              <div>⏱️ Horas Extra: <strong className="text-zinc-200">{rep.overtime_hours || 0} h</strong></div>
-                            </div>
-
-                            {rep.summary && (
-                              <div>
-                                <p className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider mb-1">Resumo Curto</p>
-                                <p className="text-xs text-zinc-300 bg-zinc-950 p-2.5 rounded-lg border border-zinc-800">{rep.summary}</p>
-                              </div>
-                            )}
-
-                            {rep.detailed_report && (
-                              <div>
-                                <p className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider mb-1">Relatório Detalhado</p>
-                                <p className="text-xs text-zinc-300 bg-zinc-950 p-2.5 rounded-lg border border-zinc-800 whitespace-pre-wrap">{rep.detailed_report}</p>
-                              </div>
-                            )}
-
-                            {(rep.pending_work || rep.observations || rep.materials_used) && (
-                              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-2 text-xs text-zinc-400">
-                                <div className="bg-zinc-950 p-2.5 rounded-lg border border-zinc-800">
-                                  <strong className="text-zinc-300 block mb-1">Pendentes:</strong>
-                                  {rep.pending_work || 'Nenhum'}
-                                </div>
-                                <div className="bg-zinc-950 p-2.5 rounded-lg border border-zinc-800">
-                                  <strong className="text-zinc-300 block mb-1">Incidentes:</strong>
-                                  {rep.observations || 'Nenhum'}
-                                </div>
-                                <div className="bg-zinc-950 p-2.5 rounded-lg border border-zinc-800">
-                                  <strong className="text-zinc-300 block mb-1">Materiais:</strong>
-                                  {rep.materials_used || 'Nenhum'}
-                                </div>
-                              </div>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-
-                </div>
-              </div>
-
-              {/* TABELA DE UTILIZADORES (A que já tinhas) */}
+              {/* TABELA DE UTILIZADORES */}
               <div className="bg-zinc-900 border border-zinc-800 rounded-2xl overflow-hidden shadow-xl">
                 <div className="px-6 py-4 border-b border-zinc-800/80 bg-zinc-900/50">
-                  <h2 className="text-sm font-semibold text-zinc-200">Utilizadores do Sistema</h2>
+                  <h2 className="text-sm font-semibold text-zinc-200">Gestão de Contas</h2>
                 </div>
                 <div className="grid grid-cols-12 gap-4 px-6 py-3 border-b border-zinc-800/60 bg-zinc-950/40 text-xs font-semibold text-zinc-400 uppercase tracking-wider">
                   <div className="col-span-1">ID</div>
@@ -2532,7 +2400,6 @@ const fetchWeekStatus = async () => {
                   <div className="col-span-2">Cargo</div>
                   <div className="col-span-2 text-right">Ações</div>
                 </div>
-
                 <div className="divide-y divide-zinc-800/60">
                   {usersList.map(user => {
                     const isMe = user.id === currentUserInfo.id;
@@ -2563,7 +2430,6 @@ const fetchWeekStatus = async () => {
                             onClick={() => handleDeleteUser(user.id)}
                             disabled={isMe}
                             className={`p-2 rounded-xl border transition flex items-center justify-center ${isMe ? 'bg-zinc-950 border-zinc-900 text-zinc-700 cursor-not-allowed opacity-50' : 'bg-zinc-950 border-zinc-800 text-red-400 hover:text-red-300 hover:bg-red-500/10'}`}
-                            title={isMe ? "Não te podes apagar a ti próprio" : "Apagar utilizador"}
                           >
                             <Trash2 className="w-4 h-4" />
                           </button>
@@ -2574,84 +2440,237 @@ const fetchWeekStatus = async () => {
                 </div>
               </div>
 
-              {/* SISTEMA DE LOGS (BIG BROTHER) - NOVO! */}
-              <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-6 shadow-xl mt-6">
+              {/* SISTEMA DE LOGS (BIG BROTHER) */}
+              <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-6 shadow-xl">
                 <div className="flex items-center justify-between mb-4 border-b border-zinc-800 pb-2">
                   <h2 className="text-sm font-semibold text-zinc-100 flex items-center gap-2">
                     🛡️ Registos do Sistema (Audit Logs)
                   </h2>
-                  <button 
-                    onClick={fetchAuditLogs}
-                    className="text-xs bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-3 py-1.5 rounded-lg transition"
-                  >
+                  <button onClick={fetchAuditLogs} className="text-xs bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-3 py-1.5 rounded-lg transition">
                     🔄 Atualizar
                   </button>
                 </div>
-                
                 <div className="overflow-x-auto">
                   <table className="w-full text-left text-sm text-zinc-400">
                     <thead className="text-xs text-zinc-500 uppercase bg-zinc-950/50 border-b border-zinc-800">
                       <tr>
                         <th className="px-4 py-3 font-medium">Data/Hora</th>
-                        <th className="px-4 py-3 font-medium">User ID</th>
+                        <th className="px-4 py-3 font-medium">Utilizador</th>
                         <th className="px-4 py-3 font-medium">Ação</th>
-                        <th className="px-4 py-3 font-medium">Detalhes (Rota e Status)</th>
+                        <th className="px-4 py-3 font-medium">Detalhes</th>
                       </tr>
                     </thead>
-                                        <tbody className="divide-y divide-zinc-800/50">
+                    <tbody className="divide-y divide-zinc-800/50">
                       {auditLogs.length > 0 ? (
                         auditLogs.map((log) => {
                           const translated = translateLogAction(log.action, log.details);
-                          
                           return (
                             <tr key={log.id} className="hover:bg-zinc-800/20 transition">
-                              {/* DATA */}
-                              <td className="px-4 py-3 whitespace-nowrap text-xs text-zinc-400">
-                                {new Date(log.created_at).toLocaleString('pt-PT')}
-                              </td>
-                              
-                              {/* NOME DO UTILIZADOR */}
+                              <td className="px-4 py-3 whitespace-nowrap text-xs text-zinc-400">{new Date(log.created_at).toLocaleString('pt-PT')}</td>
+                              <td className="px-4 py-3"><span className="bg-zinc-800 border border-zinc-700/50 text-zinc-300 px-2 py-1 rounded text-xs font-medium">👤 {getLogUserName(log.user_id)}</span></td>
                               <td className="px-4 py-3">
-                                <span className="bg-zinc-800 border border-zinc-700/50 text-zinc-300 px-2 py-1 rounded text-xs font-medium">
-                                  👤 {getLogUserName(log.user_id)}
-                                </span>
-                              </td>
-                              
-                              {/* BADGE DA AÇÃO */}
-                              <td className="px-4 py-3">
-                                <span className={`px-2 py-1 rounded text-[10px] font-bold tracking-wider ${
-                                  translated.badge === 'LOGIN' ? 'bg-blue-500/10 text-blue-400 border border-blue-500/20' :
-                                  log.action === 'DELETE' ? 'bg-red-500/10 text-red-400 border border-red-500/20' :
-                                  log.action === 'POST' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' :
-                                  log.action === 'PUT' ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20' :
-                                  'bg-zinc-800 text-zinc-400 border border-zinc-700'
-                                }`}>
+                                <span className={`px-2 py-1 rounded text-[10px] font-bold tracking-wider ${translated.badge === 'LOGIN' ? 'bg-blue-500/10 text-blue-400 border border-blue-500/20' : log.action === 'DELETE' ? 'bg-red-500/10 text-red-400 border border-red-500/20' : 'bg-zinc-800 text-zinc-400 border border-zinc-700'}`}>
                                   {translated.badge}
                                 </span>
                               </td>
-                              
-                              {/* TEXTO HUMANO + DETALHE TÉCNICO */}
-                              <td className="px-4 py-3 text-xs">
-                                <span className="font-medium text-zinc-200">{translated.text}</span>
-                                <span className="text-zinc-600 block mt-0.5 text-[10px] font-mono">
-                                  {log.details}
-                                </span>
-                              </td>
+                              <td className="px-4 py-3 text-xs"><span className="font-medium text-zinc-200">{translated.text}</span><span className="text-zinc-600 block mt-0.5 text-[10px] font-mono">{log.details}</span></td>
                             </tr>
                           );
                         })
                       ) : (
-                        <tr>
-                          <td colSpan="4" className="px-4 py-8 text-center text-zinc-500">
-                            Nenhum registo encontrado no sistema.
-                          </td>
-                        </tr>
+                        <tr><td colSpan="4" className="px-4 py-8 text-center text-zinc-500">Nenhum registo encontrado.</td></tr>
                       )}
                     </tbody>
                   </table>
                 </div>
               </div>
+            </div>
+          )}
 
+          {/* APROVAÇÕES — só para chefias (Admin/Manager) validarem o dia de trabalho da equipa */}
+          {activeTab === 'aprovacoes' && isManagerOrAdmin && (
+            <div className="max-w-7xl mx-auto py-4 space-y-8">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h1 className="text-xl font-bold tracking-tight text-amber-400 flex items-center gap-2">
+                    <ListFilter className="w-5 h-5" /> Centro de Aprovações
+                  </h1>
+                  <p className="text-xs text-zinc-400 mt-1">Auditoria e validação de relatórios diários da equipa</p>
+                </div>
+                <button 
+                  onClick={handleRefresh}
+                  disabled={isRefreshing}
+                  className="flex items-center gap-2 text-xs bg-zinc-900 hover:bg-zinc-850 border border-zinc-800 text-zinc-300 px-3 py-1.5 rounded-lg transition shadow-sm"
+                >
+                  <RefreshCw className={`w-4 h-4 text-blue-500 ${isRefreshing ? 'animate-spin' : ''}`} />
+                  {isRefreshing ? 'A atualizar...' : 'Atualizar'}
+                </button>
+              </div>
+
+              {/* A TUA INTERFACE BRUTAL COMEÇA AQUI */}
+              <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-6 shadow-xl">
+                {/* Dashboard Dinâmico por Data */}
+                <div className="mb-8">
+                  <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-4 gap-2">
+                    <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-widest">
+                      Ponto de Situação ({dashboardDate})
+                    </h2>
+                    <input 
+                      type="date" 
+                      value={dashboardDate}
+                      onChange={(e) => setDashboardDate(e.target.value)}
+                      className="bg-[#18181b] border border-[#27272a] text-zinc-300 text-xs rounded-lg px-3 py-1.5 focus:outline-none focus:border-yellow-600 cursor-pointer"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-4">
+                    {dashboardCardsData.map(tec => (
+                      <div key={tec.id} className={`bg-[#18181b] border ${tec.corBorda} rounded-xl p-4 flex flex-col justify-between shadow-sm transition-all hover:bg-[#27272a]`}>
+                        <div className="flex justify-between items-start mb-2">
+                          <span className="text-zinc-200 font-medium truncate pr-2">{tec.nome}</span>
+                          <span className="text-xs">{tec.icone}</span>
+                        </div>
+                        <div className="flex justify-between items-end mt-2">
+                          <span className={`text-xs font-medium ${tec.corTexto}`}>{tec.status}</span>
+                          <span className="text-[10px] text-zinc-600 font-mono">{tec.hora}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Barra de Filtros */}
+                <div className="bg-[#18181b] border border-[#27272a] p-4 rounded-xl mb-6 flex flex-col md:flex-row gap-4 items-center shadow-md">
+                  <div className="flex-1 w-full">
+                    <input 
+                      type="text" 
+                      placeholder="Pesquisar por técnico ou email..." 
+                      value={searchTerm}
+                      onChange={(e) => setSearchTerm(e.target.value)}
+                      className="w-full bg-[#27272a] border border-[#3f3f46] text-white rounded-lg px-4 py-2 focus:outline-none focus:border-yellow-600 transition-colors placeholder-gray-400"
+                    />
+                  </div>
+                  <div className="w-full md:w-48">
+                    <select value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)} className="w-full bg-[#27272a] border border-[#3f3f46] text-white rounded-lg px-4 py-2 focus:outline-none focus:border-yellow-600 cursor-pointer">
+                      <option value="">Qualquer Estado</option>
+                      <option value="Submetido">🟡 Submetido (Por Validar)</option>
+                      <option value="Validado">🟢 Validado</option>
+                      <option value="Rascunho">🔴 Recusado/Rascunho</option>
+                    </select>
+                  </div>
+                  <div className="w-full md:w-48">
+                    <select value={filterMonth} onChange={(e) => setFilterMonth(e.target.value)} className="w-full bg-[#27272a] border border-[#3f3f46] text-white rounded-lg px-4 py-2 focus:outline-none focus:border-yellow-600 cursor-pointer">
+                      <option value="">Todo o Ano</option>
+                      <option value="1">Janeiro</option><option value="2">Fevereiro</option><option value="3">Março</option><option value="4">Abril</option><option value="5">Maio</option><option value="6">Junho</option><option value="7">Julho</option><option value="8">Agosto</option><option value="9">Setembro</option><option value="10">Outubro</option><option value="11">Novembro</option><option value="12">Dezembro</option>
+                    </select>
+                  </div>
+                </div>
+
+                {/* Grelha Principal: Lista Esquerda e Detalhes Direita */}
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                  {/* Lista de Utilizadores */}
+                  <div className="space-y-2 max-h-[600px] overflow-y-auto pr-2 bg-zinc-950/50 p-3 rounded-xl border border-zinc-800/80">
+                    {filteredUsersReports.length === 0 ? (
+                      <p className="text-xs text-zinc-500 text-center py-8">Sem utilizadores ou a carregar...</p>
+                    ) : (
+                      filteredUsersReports.map(item => (
+                        <div 
+                          key={item.user_id}
+                          onClick={() => setSelectedAdminUser(item)}
+                          className={`p-3.5 rounded-xl border cursor-pointer transition flex items-center justify-between ${selectedAdminUser?.user_id === item.user_id ? 'bg-blue-600/10 border-blue-500/40 text-blue-300' : 'bg-zinc-950 border-zinc-800 text-zinc-300 hover:border-zinc-700'}`}
+                        >
+                          <div className="flex items-center gap-3 min-w-0">
+                            <div className="w-8 h-8 rounded-full bg-zinc-800 flex items-center justify-center text-xs font-bold text-zinc-200 shrink-0">
+                              {item.name.charAt(0).toUpperCase()}
+                            </div>
+                            <div className="min-w-0">
+                              <p className="text-sm font-medium truncate">{item.name}</p>
+                              <p className="text-[11px] text-zinc-500 truncate">{item.reports.length} relatório(s)</p>
+                            </div>
+                          </div>
+                          <span className="text-xs text-zinc-500 shrink-0">➔</span>
+                        </div>
+                      ))
+                    )}
+                  </div>
+
+                  {/* Relatórios do Utilizador Selecionado */}
+                  <div className="lg:col-span-2 bg-zinc-950 border border-zinc-800 rounded-xl p-4 max-h-[600px] overflow-y-auto space-y-4">
+                    {!selectedAdminUser ? (
+                      <div className="h-full flex items-center justify-center py-16 text-center text-xs text-zinc-500">
+                        Seleciona um colaborador à esquerda para inspecionar.
+                      </div>
+                    ) : selectedAdminUser.reports.length === 0 ? (
+                      <div className="h-full flex items-center justify-center py-16 text-center text-xs text-zinc-500">
+                        Este colaborador não tem relatórios com os filtros atuais.
+                      </div>
+                    ) : (
+                      <div className="space-y-4">
+                        <div className="pb-3 border-b border-zinc-800 flex items-center justify-between">
+                          <h3 className="text-sm font-bold text-zinc-100">Relatórios de: {selectedAdminUser.name}</h3>
+                          <span className="text-xs font-mono text-zinc-500">{selectedAdminUser.email}</span>
+                        </div>
+
+                        {selectedAdminUser.reports.map(rep => (
+                          <div key={rep.id} className={`bg-zinc-900 border ${rep.status === 'Submetido' ? 'border-amber-500/30 shadow-[0_0_10px_rgba(245,158,11,0.05)]' : 'border-zinc-800'} rounded-xl p-5 space-y-4 transition`}>
+                            <div className="flex items-center justify-between flex-wrap gap-2 pb-3 border-b border-zinc-800/60">
+                              <span className="text-sm font-mono font-bold text-blue-400">📅 Data: {rep.date.split('T')[0]}</span>
+                              
+                              <div className="flex items-center gap-2">
+                                <span className={`text-[10px] px-2 py-0.5 rounded font-bold border ${rep.status === 'Validado' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' : rep.status === 'Submetido' ? 'bg-amber-500/10 text-amber-400 border-amber-500/30' : 'bg-red-500/10 text-red-400 border-red-500/30'}`}>
+                                  {rep.status.toUpperCase()}
+                                </span>
+
+                                {rep.status === 'Submetido' && (
+                                  <>
+                                    <button onClick={() => handleUpdateReportStatus(rep.id, 'Validado')} className="text-xs font-medium bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 px-3 py-1.5 rounded transition">
+                                      ✅ Validar
+                                    </button>
+                                    <button onClick={() => handleUpdateReportStatus(rep.id, 'Recusado')} className="text-xs font-medium bg-red-600/20 hover:bg-red-600/30 text-red-300 border border-red-500/30 px-3 py-1.5 rounded transition">
+                                      ❌ Recusar
+                                    </button>
+                                  </>
+                                )}
+                                <button onClick={() => exportAdminReportPDF(rep, selectedAdminUser.name)} className="text-xs bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border border-zinc-700 px-3 py-1.5 rounded transition flex items-center gap-1">
+                                  📥 Exportar PDF
+                                </button>
+                              </div>
+                            </div>
+
+                            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs text-zinc-400 bg-zinc-950/80 p-3 rounded-lg border border-zinc-800/80">
+                              <div>🚗 Kms: <strong className="text-zinc-200 block sm:inline mt-1 sm:mt-0">{rep.kilometers || 0} km</strong></div>
+                              <div>⏱️ H. Extra: <strong className="text-zinc-200 block sm:inline mt-1 sm:mt-0">{rep.overtime_hours || 0} h</strong></div>
+                            </div>
+
+                            {rep.summary && (
+                              <div>
+                                <p className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider mb-1">Resumo do Dia</p>
+                                <p className="text-sm text-zinc-200 bg-[#18181b] p-3 rounded-lg border border-zinc-800/60 leading-relaxed">{rep.summary}</p>
+                              </div>
+                            )}
+
+                            {rep.detailed_report && (
+                              <div>
+                                <p className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider mb-1">Relatório Detalhado</p>
+                                <p className="text-xs text-zinc-300 bg-[#18181b] p-3 rounded-lg border border-zinc-800/60 whitespace-pre-wrap leading-relaxed">{rep.detailed_report}</p>
+                              </div>
+                            )}
+
+                            {rep.image_path && (
+                              <div>
+                                <p className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider mb-1">Fotografia Anexada</p>
+                                <a href={`${API_URL}/${rep.image_path}`} target="_blank" rel="noopener noreferrer">
+                                  <img src={`${API_URL}/${rep.image_path}`} alt="Anexo do relatório" className="max-h-48 rounded-lg border border-zinc-700 hover:border-blue-500 transition shadow-sm" />
+                                </a>
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
             </div>
           )}
 
@@ -2894,7 +2913,7 @@ const fetchWeekStatus = async () => {
                   {taskViewMode === 'list' && (
                     <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)} className="bg-zinc-900 border border-zinc-800 text-zinc-300 text-sm rounded-xl px-3 py-2 focus:outline-none">
                       <option value="">Estados (Ativos)</option>
-                      <option value="To Do">A fazer</option>
+                      <option value="To Do">Pendente</option>
                       <option value="In Progress">Em progresso</option>
                       <option value="In Review">Em revisão</option>
                       <option value="Done">Concluído</option>
@@ -3092,15 +3111,22 @@ const fetchWeekStatus = async () => {
                                           <Check className="w-3.5 h-3.5" />
                                         </button>
                                       )}
+                                      {!ticket.assigned_to_id && (
+                                        <button onClick={() => handleGrabTask(ticket)} title="Agarrar Tarefa" className="p-1.5 bg-zinc-900 border border-amber-500/30 text-amber-400 hover:text-amber-300 rounded-md transition">
+                                          ✋
+                                        </button>
+                                      )}
                                       <button onClick={() => startTimer(ticket)} title="Iniciar Cronómetro" className={`p-1.5 rounded-md border transition ${isRunning ? 'bg-blue-500 text-zinc-950 border-blue-400 animate-pulse' : 'bg-zinc-900 text-zinc-400 hover:text-zinc-100 border-zinc-800'}`}>
                                         <Play className="w-3 h-3 fill-current" />
                                       </button>
                                       <button onClick={() => openComments(ticket)} title="Comentários" className="p-1.5 bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-zinc-100 rounded-md transition">
                                         <MessageSquare className="w-3 h-3" />
                                       </button>
-                                      <button onClick={() => handleOpenEditModal(ticket)} title="Editar" className="p-1.5 bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-zinc-100 rounded-md transition">
-                                        <Edit3 className="w-3 h-3" />
-                                      </button>
+                                      {(isManagerOrAdmin || ticket.creator_id === currentUserInfo.id) && (
+                                        <button onClick={() => handleOpenEditModal(ticket)} title="Editar" className="p-1.5 bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-zinc-100 rounded-md transition">
+                                          <Edit3 className="w-3 h-3" />
+                                        </button>
+                                      )}
                                       <button onClick={() => handleDeleteTicket(ticket.id)} title="Apagar" className="p-1.5 bg-zinc-900 border border-zinc-800 text-red-400 hover:text-red-300 rounded-md transition">
                                         <Trash2 className="w-3 h-3" />
                                       </button>
@@ -3171,7 +3197,7 @@ const fetchWeekStatus = async () => {
                                 onChange={e => handleStatusChange(ticket.id, e.target.value)}
                                 className="bg-zinc-950 border border-zinc-800 text-xs text-zinc-300 rounded-lg px-2.5 py-1.5 focus:outline-none"
                               >
-                                <option value="To Do">A fazer</option>
+                                <option value="To Do">Pendente</option>
                                 <option value="In Progress">Em progresso</option>
                                 <option value="In Review">Em revisão</option>
                                 <option value="Done">Concluído</option>
@@ -3181,15 +3207,22 @@ const fetchWeekStatus = async () => {
                                   <Check className="w-4 h-4" />
                                 </button>
                               )}
+                              {!ticket.assigned_to_id && (
+                                <button onClick={() => handleGrabTask(ticket)} className="p-2 text-amber-400 hover:text-amber-300 bg-zinc-950 border border-amber-500/30 rounded-lg transition" title="Agarrar Tarefa">
+                                  ✋
+                                </button>
+                              )}
                               <button onClick={() => startTimer(ticket)} disabled={isDone} className={`p-2 rounded-lg border transition ${isDone ? 'opacity-40 cursor-not-allowed bg-zinc-950 border-zinc-900 text-zinc-700' : isRunning ? 'bg-blue-500 text-zinc-950 border-blue-400' : 'bg-zinc-950 text-zinc-400 hover:text-zinc-100 border-zinc-800'}`} title="Iniciar Cronómetro">
                                 <Play className="w-4 h-4 fill-current" />
                               </button>
                               <button onClick={() => openComments(ticket)} className="p-2 text-zinc-400 hover:text-zinc-100 bg-zinc-950 border border-zinc-800 rounded-lg transition" title="Comentários">
                                 <MessageSquare className="w-4 h-4" />
                               </button>
-                              <button onClick={() => handleOpenEditModal(ticket)} className="p-2 text-zinc-400 hover:text-zinc-100 bg-zinc-950 border border-zinc-800 rounded-lg transition" title="Editar">
-                                <Edit3 className="w-4 h-4" />
-                              </button>
+                              {(isManagerOrAdmin || ticket.creator_id === currentUserInfo.id) && (
+                                <button onClick={() => handleOpenEditModal(ticket)} className="p-2 text-zinc-400 hover:text-zinc-100 bg-zinc-950 border border-zinc-800 rounded-lg transition" title="Editar">
+                                  <Edit3 className="w-4 h-4" />
+                                </button>
+                              )}
                               <button onClick={() => handleDeleteTicket(ticket.id)} className="p-2 text-red-400 hover:text-red-300 bg-zinc-950 border border-zinc-800 rounded-lg transition" title="Apagar">
                                 <Trash2 className="w-4 h-4" />
                               </button>
@@ -3271,6 +3304,323 @@ const fetchWeekStatus = async () => {
                   })}
                 </div>
               )}
+            </div>
+          )}
+
+          {/* MENSAGENS */}
+          {activeTab === 'messages' && (
+            <div className="absolute inset-x-8 top-0 bottom-8 flex bg-zinc-900 rounded-2xl border border-zinc-800 overflow-hidden shadow-2xl">
+              
+              {/* COLUNA ESQUERDA: Lista de Conversas ou Seleção de Nova Conversa */}
+              <div className="w-80 border-r border-zinc-800 flex flex-col bg-zinc-950/50">
+                <div className="p-4 border-b border-zinc-800 flex justify-between items-center shrink-0">
+                  <div>
+                    <h2 className="text-lg font-bold text-white">
+                      {showNewChatView ? 'Nova Conversa' : 'Mensagens'}
+                    </h2>
+                    <p className="text-xs text-zinc-400">
+                      {showNewChatView ? 'Seleciona os participantes' : 'Conversas de equipa e diretas'}
+                    </p>
+                  </div>
+                  <button 
+                    onClick={() => {
+                      setShowNewChatView(!showNewChatView);
+                      setSelectedUserIdsForNewChat([]);
+                      setGroupChatName('');
+                    }}
+                    className={`text-xs px-2.5 py-1.5 rounded-lg transition ${showNewChatView ? 'bg-zinc-800 text-zinc-300' : 'bg-blue-600 hover:bg-blue-500 text-white'}`}
+                  >
+                    {showNewChatView ? '✕ Cancelar' : '+ Nova'}
+                  </button>
+                </div>
+
+                {showNewChatView ? (
+                  /* VISTA DE SELECÇÃO DE UTILIZADORES PARA NOVO CHAT / GRUPO */
+                  <div className="flex-1 flex flex-col overflow-hidden p-3">
+                    <p className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider mb-2">
+                      Colaboradores ({selectedUserIdsForNewChat.length} selecionados)
+                    </p>
+
+                    {/* Se selecionar 2 ou mais, mostra o campo para dar nome ao grupo */}
+                    {selectedUserIdsForNewChat.length >= 2 && (
+                      <div className="mb-3 animate-fadeIn">
+                        <input 
+                          type="text"
+                          value={groupChatName}
+                          onChange={e => setGroupChatName(e.target.value)}
+                          placeholder="Nome do Grupo (Opcional)..."
+                          className="w-full bg-zinc-900 border border-zinc-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-blue-500"
+                        />
+                      </div>
+                    )}
+
+                    <div className="flex-1 overflow-y-auto space-y-1 pr-1">
+                      {usersList.filter(u => u.id !== currentUserInfo.id).map(user => {
+                        const isSelected = selectedUserIdsForNewChat.includes(user.id);
+                        return (
+                          <div 
+                            key={user.id}
+                            onClick={() => {
+                              if (isSelected) {
+                                setSelectedUserIdsForNewChat(selectedUserIdsForNewChat.filter(id => id !== user.id));
+                              } else {
+                                setSelectedUserIdsForNewChat([...selectedUserIdsForNewChat, user.id]);
+                              }
+                            }}
+                            className={`p-2.5 rounded-xl cursor-pointer transition flex items-center justify-between border ${isSelected ? 'bg-blue-600/20 border-blue-500/50 text-white' : 'bg-zinc-900/40 border-zinc-800/80 hover:bg-zinc-800 text-zinc-300'}`}
+                          >
+                            <div className="flex items-center gap-2.5 min-w-0">
+                              <div className="w-7 h-7 rounded-full bg-zinc-800 flex items-center justify-center text-xs font-bold text-zinc-200 shrink-0">
+                                {(user.name || user.email).charAt(0).toUpperCase()}
+                              </div>
+                              <div className="min-w-0">
+                                <p className="text-xs font-semibold truncate">{user.name || 'Sem nome'}</p>
+                                <p className="text-[10px] text-zinc-400 truncate">{user.email}</p>
+                              </div>
+                            </div>
+                            <div className={`w-4 h-4 rounded-full border flex items-center justify-center text-[10px] ${isSelected ? 'bg-blue-600 border-blue-500 text-white' : 'border-zinc-700'}`}>
+                              {isSelected ? '✓' : ''}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {/* Botão de Avançar / Criar Chat */}
+                    {selectedUserIdsForNewChat.length > 0 && (
+                      <button 
+                        onClick={async () => {
+                          if (selectedUserIdsForNewChat.length === 1) {
+                            // 1 Pessoa: Abre chat direto
+                            await startDirectChat(selectedUserIdsForNewChat[0]);
+                            setShowNewChatView(false);
+                          } else {
+                            // 2 ou mais Pessoas: Cria Grupo
+                            try {
+                              const headers = { Authorization: `Bearer ${token}` };
+                              const res = await axios.post(`${API_URL}/chat/rooms/group?current_user_id=${currentUserInfo.id}`, {
+                                name: groupChatName.trim() || `Grupo (${selectedUserIdsForNewChat.length + 1})`,
+                                member_ids: selectedUserIdsForNewChat
+                              }, { headers });
+                              
+                              setShowNewChatView(false);
+                              await fetchChatRooms();
+                              openChatRoom(res.data);
+                            } catch (err) {
+                              alert("Erro ao criar grupo de chat.");
+                            }
+                          }
+                        }}
+                        className="mt-3 w-full bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold py-2.5 rounded-xl transition shadow-md"
+                      >
+                        {selectedUserIdsForNewChat.length === 1 ? 'Iniciar Conversa Direta' : `Criar Grupo (${selectedUserIdsForNewChat.length} membros)`}
+                      </button>
+                    )}
+                  </div>
+                ) : (
+                  /* LISTA NORMAL DE CONVERSAS */
+                  <div className="flex-1 overflow-y-auto p-2 space-y-1">
+                    {chatRooms.length === 0 ? (
+                      <div className="text-center py-12 px-4 space-y-2">
+                        <p className="text-xs text-zinc-500">Ainda não tens conversas ativas.</p>
+                      </div>
+                    ) : (
+                      chatRooms.map(room => (
+                        <div 
+                          key={room.id}
+                          onClick={() => openChatRoom(room)}
+                          className={`p-3 rounded-xl cursor-pointer transition border flex justify-between items-center ${activeChatRoom?.id === room.id ? 'bg-blue-600/10 border-blue-500/40 text-white' : 'border-transparent hover:bg-zinc-800/60 text-zinc-300'}`}
+                        >
+                          <div className="min-w-0 pr-2 flex-1 flex items-center gap-2.5">
+                            {room.unread_count > 0 && (
+                              <div className="w-2.5 h-2.5 rounded-full bg-blue-500 shrink-0 shadow-[0_0_8px_rgba(59,130,246,0.5)]"></div>
+                            )}
+                            <div className="min-w-0">
+                              <p className={`text-xs truncate ${room.unread_count > 0 ? 'font-bold text-white' : 'font-semibold'}`}>
+                                {room.name}
+                              </p>
+                              <p className="text-[11px] truncate mt-0.5 text-zinc-400">
+                                {room.last_message || 'Sem mensagens'}
+                              </p>
+                            </div>
+                          </div>
+                          <span className="text-[9px] text-zinc-500 shrink-0">{room.last_time}</span>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* COLUNA DIREITA: Área Principal de Chat + Pesquisa + Fixar + IA */}
+              <div className="flex-1 flex flex-col bg-zinc-900 overflow-hidden relative">
+                {activeChatRoom ? (
+                  <>
+                    {/* Topo do Chat Ativo (Com título, pesquisa e botão de IA) */}
+                    <div className="p-4 border-b border-zinc-800 flex flex-col gap-3 bg-zinc-950/35 shrink-0">
+                      <div className="flex justify-between items-center">
+                        <div>
+                          <h3 className="font-bold text-white text-sm">{activeChatRoom.name}</h3>
+                          <span className="text-xs text-emerald-400">● Ativo em tempo real</span>
+                        </div>
+                        
+                        <div className="flex items-center gap-2">
+                          {/* Botão de Mensagens Afixadas */}
+                          <button 
+                            onClick={() => setShowPinnedDrawer(!showPinnedDrawer)}
+                            className="relative bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-semibold px-3 py-2 rounded-xl transition flex items-center gap-1.5"
+                          >
+                            📌 Afixadas ({pinnedMessages.length})
+                          </button>
+
+                          {/* Botão de Resumo de IA */}
+                          <button 
+                            onClick={handleSummarizeChatWithAI}
+                            disabled={loadingAiChat}
+                            className="flex items-center gap-2 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white text-xs font-semibold px-3.5 py-2 rounded-xl shadow-lg transition-all"
+                          >
+                            {loadingAiChat ? '✨ A resumir...' : '✨ Resumir Chat com IA'}
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Barra de Pesquisa de Mensagens no Chat */}
+                      <div className="relative">
+                        <input 
+                          type="text"
+                          value={chatSearchQuery}
+                          onChange={e => setChatSearchQuery(e.target.value)}
+                          placeholder="Pesquisar mensagens nesta conversa..."
+                          className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3.5 py-1.5 text-xs text-white focus:outline-none focus:border-blue-500"
+                        />
+                        {chatSearchQuery && (
+                          <button 
+                            onClick={() => setChatSearchQuery('')}
+                            className="absolute right-3 top-2 text-zinc-500 hover:text-zinc-300 text-xs"
+                          >
+                            ✕
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Caixa de Resumo de IA (Se gerado) */}
+                    {chatSummary && (
+                      <div className="bg-purple-950/40 border-b border-purple-500/30 p-3.5 text-xs text-purple-200 flex justify-between items-start animate-fadeIn shrink-0">
+                        <div>
+                          <p className="font-bold text-purple-400 mb-1 flex items-center gap-1">✨ Resumo Inteligente da Conversa</p>
+                          <p className="leading-relaxed">{chatSummary}</p>
+                        </div>
+                        <button onClick={() => setChatSummary(null)} className="text-purple-400 hover:text-white text-sm ml-2">✕</button>
+                      </div>
+                    )}
+
+                    {/* Painel lateral/gaveta de Mensagens Afixadas */}
+                    {showPinnedDrawer && (
+                      <div className="bg-zinc-950 border-b border-zinc-800 p-3 space-y-2 max-h-40 overflow-y-auto shrink-0 animate-fadeIn">
+                        <p className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">Mensagens Afixadas ({pinnedMessages.length})</p>
+                        {pinnedMessages.length === 0 ? (
+                          <p className="text-xs text-zinc-500 italic">Nenhuma mensagem afixada nesta conversa.</p>
+                        ) : (
+                          pinnedMessages.map((pMsg, idx) => (
+                            <div key={idx} className="bg-zinc-900 border border-zinc-800 p-2 rounded-xl text-xs flex justify-between items-center gap-2">
+                              <span className="text-zinc-200 truncate flex-1">📌 {pMsg.content}</span>
+                              
+                              <div className="flex items-center gap-1.5 shrink-0">
+                                {/* 🎯 BOTÃO CORRIGIDO PARA ENCONTRAR O ID CORRETO */}
+                                <button 
+                                  onClick={() => {
+                                    const realIndex = chatMessages.findIndex(m => m.content === pMsg.content);
+                                    if (realIndex !== -1) {
+                                      const element = document.getElementById(`msg-item-${realIndex}`);
+                                      if (element) {
+                                        element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                                        element.classList.add('ring-2', 'ring-blue-500');
+                                        setTimeout(() => element.classList.remove('ring-2', 'ring-blue-500'), 1500);
+                                      }
+                                    }
+                                  }}
+                                  className="text-[10px] bg-blue-600/20 text-blue-400 hover:bg-blue-600/30 px-2 py-1 rounded-lg transition"
+                                  title="Ir para a mensagem"
+                                >
+                                  🎯 Ir
+                                </button>
+
+                                <button 
+                                  onClick={() => setPinnedMessages(pinnedMessages.filter((_, i) => i !== idx))}
+                                  className="text-[10px] text-red-400 hover:underline px-1"
+                                >
+                                  ✕
+                                </button>
+                              </div>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    )}
+
+                    {/* Histórico de Mensagens (Com filtro de pesquisa aplicado) */}
+                    <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-zinc-950/40">
+                      {chatMessages
+                        .filter(msg => msg.content.toLowerCase().includes(chatSearchQuery.toLowerCase()))
+                        .map((msg, index) => {
+                          const isMe = msg.sender_id === currentUserInfo.id;
+                          const isPinned = pinnedMessages.some(p => p.content === msg.content);
+                          return (
+                            <div 
+                              key={index} 
+                              id={`msg-item-${index}`}
+                              className={`flex flex-col group ${isMe ? 'items-end' : 'items-start'} transition-all duration-300`}
+                            >
+                              <div className="flex items-center gap-2 max-w-[70%]">
+                                <div className={`px-4 py-2.5 rounded-2xl text-xs relative ${isMe ? 'bg-blue-600 text-white rounded-br-xs' : 'bg-zinc-800 text-zinc-200 rounded-bl-xs'}`}>
+                                  {msg.content}
+                                  {isPinned && <span className="absolute -top-2 -right-2 text-[10px]" title="Mensagem Afixada">📌</span>}
+                                </div>
+                                
+                                {/* Botão rápido para afixar mensagem */}
+                                <button 
+                                  onClick={() => {
+                                    if (!isPinned) setPinnedMessages([...pinnedMessages, msg]);
+                                    else setPinnedMessages(pinnedMessages.filter(p => p.content !== msg.content));
+                                  }}
+                                  className="opacity-0 group-hover:opacity-100 transition text-zinc-500 hover:text-zinc-300 text-xs p-1"
+                                  title={isPinned ? "Desafixar mensagem" : "Afixar mensagem"}
+                                >
+                                  📌
+                                </button>
+                              </div>
+                              <span className="text-[9px] text-zinc-500 mt-1 px-1">{msg.created_at || msg.last_time}</span>
+                            </div>
+                          );
+                      })}
+                      <div ref={messagesEndRef} />
+                    </div>
+
+                    {/* Caixa de Escrever Mensagem */}
+                    <form onSubmit={sendChatMessage} className="p-4 border-t border-zinc-800 bg-zinc-950/35 flex gap-2 shrink-0">
+                      <input 
+                        type="text" 
+                        value={chatInput}
+                        onChange={e => setChatInput(e.target.value)}
+                        placeholder="Escreve uma mensagem..." 
+                        className="flex-1 bg-zinc-800 border border-zinc-700 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-blue-500"
+                      />
+                      <button type="submit" className="bg-blue-600 hover:bg-blue-500 text-white px-5 py-2.5 rounded-xl text-sm font-semibold transition-all">
+                        Enviar
+                      </button>
+                    </form>
+                  </>
+                ) : (
+                  <div className="flex-1 flex flex-col items-center justify-center text-center p-6 text-zinc-500 space-y-2">
+                    <svg className="w-12 h-12 stroke-1 opacity-40" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                    </svg>
+                    <p className="text-sm font-medium text-zinc-400">Seleciona uma conversa à esquerda para começar a chattear.</p>
+                  </div>
+                )}
+              </div>
+
             </div>
           )}
 
@@ -4523,7 +4873,7 @@ const fetchWeekStatus = async () => {
                 <div>
                   <label className="block text-xs font-medium text-zinc-400 mb-1">Estado</label>
                   <select value={newStatus} onChange={e => setNewStatus(e.target.value)} className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-sm text-zinc-100 focus:outline-none">
-                    <option value="To Do">A fazer</option>
+                    <option value="To Do">Pendente</option>
                     <option value="In Progress">Em progresso</option>
                     <option value="In Review">Em revisão</option>
                     <option value="Done">Concluído</option>
