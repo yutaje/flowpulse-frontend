@@ -31,6 +31,10 @@ export default function App() {
   const canEdit = dailyReport && dailyReport.status === 'Rascunho';
   // Fotografia anexada ao relatório
   const [imagem, setImagem] = useState(null);
+  // Modal de detalhes da tarefa concluída
+  const [selectedTicketDetails, setSelectedTicketDetails] = useState(null);
+  // Controla a abertura da dropdown personalizada de Tipo de Tarefa
+  const [isTaskTypeDropdownOpen, setIsTaskTypeDropdownOpen] = useState(false);
 
   // Função para ir buscar o relatório do dia selecionado
   const fetchDailyReport = async () => {
@@ -147,14 +151,15 @@ export default function App() {
 };
 
   const fetchAdminUsersReports = async () => {
-  try {
-    const headers = { Authorization: `Bearer ${token}` };
-    const res = await axios.get(`${API_URL}/admin/users-reports`, { headers }); // Sem o /tickets pelo meio
-    setAdminUsersReports(res.data);
-  } catch (err) {
-    console.error("Erro ao carregar relatórios:", err);
-  }
-};
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      // ⚠️ Corrigido para incluir /tickets/ no caminho:
+      const res = await axios.get(`${API_URL}/tickets/admin/reports/users-status`, { headers });
+      setAdminUsersReports(res.data);
+    } catch (err) {
+      console.error("Erro ao carregar relatórios:", err);
+    }
+  };
 
   // A função que os botões de atualizar vão chamar
   const handleRefresh = async () => {
@@ -384,6 +389,7 @@ const fetchWeekStatus = async () => {
   // Estados para o Modal de Tarefas do Projeto
   const [showProjectTasksModal, setShowProjectTasksModal] = useState(false);
   const [activeProjectForTasks, setActiveProjectForTasks] = useState(null);
+  const [projectModalTickets, setProjectModalTickets] = useState([]);
   const [auditLogs, setAuditLogs] = useState([]);
 
   // Estados para o Modal de Tarefas da Equipa
@@ -426,6 +432,8 @@ const fetchWeekStatus = async () => {
   const [showPinnedDrawer, setShowPinnedDrawer] = useState(false);
   const [chatSummary, setChatSummary] = useState(null);
   const [loadingAiChat, setLoadingAiChat] = useState(false);
+  const [showAiPromptModal, setShowAiPromptModal] = useState(false);
+  const [customAiPrompt, setCustomAiPrompt] = useState('');
   const chatWsRef = useRef(null);
   const messagesEndRef = useRef(null);
 
@@ -539,10 +547,13 @@ const fetchWeekStatus = async () => {
   const [statusFilter, setStatusFilter] = useState('');
   const [projectFilter, setProjectFilter] = useState('');
   const [priorityFilter, setPriorityFilter] = useState('');
+  const [filterCreatedByMe, setFilterCreatedByMe] = useState(false);
+  const [filterUnassigned, setFilterUnassigned] = useState(false);
   const [sortBy, setSortBy] = useState('newest');
   
   // Filtro de Estatísticas
   const [statsPeriod, setStatsPeriod] = useState('7'); 
+  const [chartHoursData, setChartHoursData] = useState({ labels: [], hours: [] });
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -560,6 +571,7 @@ const fetchWeekStatus = async () => {
   const [newDesc, setNewDesc] = useState('');
   const [newPriority, setNewPriority] = useState('Média');
   const [newTaskType, setNewTaskType] = useState('Geral');
+  const [taskTypes, setTaskTypes] = useState(['Geral', 'Software', 'Hardware', 'Redes']);
   const [typeFilter, setTypeFilter] = useState('');
   const [knowledgeSort, setKnowledgeSort] = useState('newest');
   const [newStatus, setNewStatus] = useState('To Do');
@@ -569,6 +581,11 @@ const fetchWeekStatus = async () => {
   const [newEstimatedHours, setNewEstimatedHours] = useState(0);
   const [newDueDate, setNewDueDate] = useState('');
   const [newStartDate, setNewStartDate] = useState('');
+  const [newBlockedById, setNewBlockedById] = useState('');
+  // --- Subtarefas da tarefa em edição ---
+  const [subtasks, setSubtasks] = useState([]);
+  const [newSubTitle, setNewSubTitle] = useState('');
+  const [returningTicket, setReturningTicket] = useState(false);
 
   // Estados dos Projetos
   const [showProjectModal, setShowProjectModal] = useState(false);
@@ -683,6 +700,40 @@ const fetchWeekStatus = async () => {
     } catch (e) { console.error(e); }
   };
 
+  const fetchTaskTypes = async () => {
+    if (!token) return;
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      // ⚠️ Certifica-te de que tem o /tickets/ aqui:
+      const res = await axios.get(`${API_URL}/tickets/task-types/list`, { headers });
+      setTaskTypes(res.data);
+    } catch (err) {
+      console.error("Erro ao carregar tipos de tarefa", err);
+    }
+  };
+
+  useEffect(() => {
+    if (token) fetchTaskTypes();
+  }, [token]);
+
+  // Carregar dados do gráfico de Horas Registadas na aba de Estatísticas
+  const fetchChartHours = async () => {
+    if (!token) return;
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      const res = await axios.get(`${API_URL}/tickets/statistics/chart-hours?period=${statsPeriod}`, { headers });
+      setChartHoursData(res.data);
+    } catch (err) {
+      console.error("Erro ao carregar dados do gráfico de horas:", err);
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab === 'statistics') {
+      fetchChartHours();
+    }
+  }, [activeTab, statsPeriod, token]);
+
   // Carregar salas de chat do utilizador
   const fetchChatRooms = async () => {
     if (!token || !currentUserInfo.id) return;
@@ -763,6 +814,9 @@ const fetchWeekStatus = async () => {
         if (!showChatModal) {
           setChatUnreadCount(prev => prev + 1);
         }
+
+        // 🔔 Atualiza a lista de conversas para o ícone/badge acender na sidebar
+        fetchChatRooms();
       }
     };
 
@@ -817,23 +871,26 @@ const fetchWeekStatus = async () => {
   };
 
   // Pede à IA um resumo inteligente do histórico da conversa ativa
-  const handleSummarizeChatWithAI = async () => {
+  // Aceita uma prompt personalizada (customPromptText); se vazia, usa a prompt default
+  const handleSummarizeChatWithAI = async (customPromptText = '') => {
     if (!activeChatRoom || chatMessages.length === 0) {
-      alert("Não há mensagens suficientes nesta conversa para resumir.");
+      alert("Não há mensagens suficientes nesta conversa.");
       return;
     }
     
     setLoadingAiChat(true);
     try {
       const headers = { Authorization: `Bearer ${token}` };
-      
       const historyText = chatMessages.map(m => `- ${m.content}`).join('\n');
       
-      // 🎯 PROMPT RIGOROSO DE EXTRAÇÃO DE FACTOS
-      const strictPrompt = `
-      És o assistente executivo da RFS. Analisa estritamente o seguinte histórico de chat e extrai de forma direta e em tópicos claros os pontos principais discutidos (por exemplo: projeto mencionado, prazos alterados, decisões tomadas e ações necessárias que ficaram em aberto). 
-      Evita respostas genéricas. Vai direto ao assunto com base nestas mensagens:
+      const defaultPrompt = `És o assistente executivo da RFS. Analisa estritamente o seguinte histórico de chat e extrai os pontos principais em tópicos claros.`;
       
+      const userInstruction = customPromptText.trim() !== '' ? customPromptText : defaultPrompt;
+
+      const strictPrompt = `
+      Instrução: ${userInstruction}
+      
+      Histórico de mensagens da conversa:
       ${historyText}
       `;
 
@@ -844,10 +901,11 @@ const fetchWeekStatus = async () => {
       }, { headers });
       
       setChatSummary(res.data.summary);
+      setShowAiPromptModal(false);
+      setCustomAiPrompt('');
     } catch (err) {
-      // Exemplo estruturado exato para o que tinhas no chat da imagem:
-      const smartSummary = `• Tópico Principal: Projeto de Brasov (tratamento urgente).\n• Decisão / Prazo: O prazo foi estendido para 20-08.\n• Ação Necessária: É preciso mobilizar alguém para tratar disto.`;
-      setChatSummary(smartSummary);
+      alert("Erro ao comunicar com a IA. Tenta novamente.");
+      setShowAiPromptModal(false);
     } finally {
       setLoadingAiChat(false);
     }
@@ -1021,17 +1079,17 @@ const fetchWeekStatus = async () => {
     try {
       setLoading(true);
       const headers = { Authorization: `Bearer ${token}` };
-      let query = `${API_URL}/tickets/?`;
-      if (search) query += `search=${search}&`;
 
-      try {
-        const ticketsRes = await axios.get(query, { headers });
-        setTickets(ticketsRes.data);
-      } catch (e) { console.error(e); }
+      // Vai primeiro buscar o utilizador logado, para sabermos o role ANTES de filtrar os tickets
+      // (evita usar um role desatualizado vindo do estado de renders anteriores)
+      let loggedRole = currentUserInfo.role;
+      let loggedId = currentUserInfo.id;
 
       try {
         const statsRes = await axios.get(`${API_URL}/tickets/me/stats`, { headers });
         setStats(statsRes.data);
+        loggedRole = statsRes.data.role;
+        loggedId = statsRes.data.user_id;
         setCurrentUserInfo({ id: statsRes.data.user_id, role: statsRes.data.role });
         
         const usersRes = await axios.get(`${API_URL}/users/`, { headers });
@@ -1042,6 +1100,24 @@ const fetchWeekStatus = async () => {
           setSettingsName(me.name || '');
           setSettingsEmail(me.email || '');
         }
+      } catch (e) { console.error(e); }
+
+      let query = `${API_URL}/tickets/?`;
+      if (search) query += `search=${search}&`;
+
+      try {
+        const ticketsRes = await axios.get(query, { headers });
+
+        // 🔒 FILTRO DE SEGURANÇA PARA A KANBAN:
+        // Se o user logado for 'Member', guarda apenas os tickets que lhe pertencem na lista principal
+        const userRole = loggedRole?.toLowerCase();
+        let ticketsToSave = ticketsRes.data;
+
+        if (userRole === 'member') {
+          ticketsToSave = ticketsRes.data.filter(t => t.assigned_to_id === loggedId);
+        }
+
+        setTickets(ticketsToSave);
       } catch (e) { console.error(e); }
 
       try {
@@ -1217,9 +1293,18 @@ const fetchWeekStatus = async () => {
     }
   };
 
-  const openProjectTasksModal = (proj) => {
+  const openProjectTasksModal = async (proj) => {
     setActiveProjectForTasks(proj);
     setShowProjectTasksModal(true);
+
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      const res = await axios.get(`${API_URL}/tickets/project/${proj.id}`, { headers });
+      setProjectModalTickets(res.data); // Guarda todos os tickets do projeto (tuos e dos colegas)
+    } catch (err) {
+      console.error("Erro ao carregar tarefas do projeto:", err);
+      setProjectModalTickets([]);
+    }
   };
 
   const openCompleteModal = (ticket) => {
@@ -1477,6 +1562,9 @@ const fetchWeekStatus = async () => {
     setNewStartDate('');
     setNewClientId('');
     setNewProjectId('');
+    setNewBlockedById('');
+    setSubtasks([]);
+    setNewSubTitle('');
     setShowModal(true);
   };
 
@@ -1494,11 +1582,19 @@ const fetchWeekStatus = async () => {
     setNewStartDate(ticket.start_date ? ticket.start_date.split('T')[0] : '');
     setNewProjectId(ticket.project_id || '');
     setNewClientId(ticket.client_id || '');
+    setNewBlockedById(ticket.blocked_by_id || '');
+    setSubtasks([]);
+    setNewSubTitle('');
     setShowModal(true);
+    fetchSubtasks(ticket.id);
   };
 
   const handleSaveTicket = async (e) => {
     e.preventDefault();
+    if (!newDesc.trim()) {
+      alert('A descrição é um campo obrigatório!');
+      return;
+    }
     try {
       const headers = { Authorization: `Bearer ${token}` };
       const payload = {
@@ -1512,7 +1608,8 @@ const fetchWeekStatus = async () => {
         assigned_to_id: newAssignedTo ? Number(newAssignedTo) : null,
         estimated_hours: Number(newEstimatedHours),
         due_date: newDueDate ? newDueDate : null,
-        start_date: newStartDate ? newStartDate : null
+        start_date: newStartDate ? newStartDate : null,
+        blocked_by_id: newBlockedById ? Number(newBlockedById) : null
       };
       if (editMode) {
         await axios.put(`${API_URL}/tickets/${currentTicketId}`, payload, { headers });
@@ -1522,7 +1619,65 @@ const fetchWeekStatus = async () => {
       setShowModal(false);
       fetchData();
     } catch (err) {
-      alert('Erro ao guardar a tarefa.');
+      alert(err.response?.data?.detail || 'Erro ao guardar a tarefa.');
+    }
+  };
+
+  // --- Gestão de Subtarefas ---
+  const fetchSubtasks = async (ticketId) => {
+    if (!ticketId) return;
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      const res = await axios.get(`${API_URL}/tickets/${ticketId}/subtasks`, { headers });
+      setSubtasks(res.data);
+    } catch (err) {
+      console.error("Erro ao carregar subtarefas", err);
+    }
+  };
+
+  const handleAddSubtask = async (e) => {
+    e.preventDefault();
+    if (!newSubTitle.trim() || !currentTicketId) return;
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      await axios.post(`${API_URL}/tickets/${currentTicketId}/subtasks`, { title: newSubTitle }, { headers });
+      setNewSubTitle('');
+      fetchSubtasks(currentTicketId);
+    } catch (err) {
+      alert(err.response?.data?.detail || 'Erro ao criar subtarefa.');
+    }
+  };
+
+  const handleToggleSubtask = async (subId, currentStatus) => {
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      await axios.put(`${API_URL}/tickets/subtasks/${subId}`, { is_completed: !currentStatus }, { headers });
+      fetchSubtasks(currentTicketId);
+    } catch (err) {
+      alert(err.response?.data?.detail || 'Erro ao atualizar subtarefa.');
+    }
+  };
+
+  // --- Devolução de Tarefa (com motivo obrigatório) ---
+  const handleReturnTicket = async () => {
+    if (!currentTicketId) return;
+    const reason = window.prompt("⚠️ Indica obrigatoriamente o motivo/descrição para devolver esta tarefa:");
+    if (!reason || !reason.trim()) {
+      alert("A devolução foi cancelada. O motivo é obrigatório.");
+      return;
+    }
+    try {
+      setReturningTicket(true);
+      const headers = { Authorization: `Bearer ${token}` };
+      await axios.post(`${API_URL}/tickets/${currentTicketId}/return`, { reason }, { headers });
+      alert("Tarefa devolvida com sucesso ao estado inicial.");
+      setShowModal(false);
+      fetchData();
+      fetchActiveWorkers();
+    } catch (err) {
+      alert(err.response?.data?.detail || 'Erro ao devolver tarefa.');
+    } finally {
+      setReturningTicket(false);
     }
   };
 
@@ -1545,7 +1700,7 @@ const fetchWeekStatus = async () => {
       fetchData();
       fetchActiveWorkers();
     } catch (err) {
-      alert('Erro ao alterar o estado.');
+      alert(err.response?.data?.detail || 'Erro ao alterar o estado.');
     }
   };
 
@@ -1688,6 +1843,14 @@ const fetchWeekStatus = async () => {
   const filteredTickets = availableTickets.filter(ticket => {
     if (projectFilter && ticket.project_id !== Number(projectFilter)) return false;
     if (priorityFilter && ticket.priority !== priorityFilter) return false;
+    if (typeFilter && ticket.task_type !== typeFilter) return false;
+
+    // 🔧 NOVO: Filtro "Criadas por mim"
+    if (filterCreatedByMe && ticket.creator_id !== currentUserInfo.id) return false;
+
+    // 🔧 NOVO: Filtro "Não atribuídas" (para managers/admins distribuírem)
+    if (filterUnassigned && ticket.assigned_to_id !== null) return false;
+
     if (taskViewMode === 'list') {
       if (statusFilter) {
         if (ticket.status !== statusFilter) return false;
@@ -1695,11 +1858,43 @@ const fetchWeekStatus = async () => {
         if (ticket.status && ['done', 'concluído', 'concluido'].includes(ticket.status.toLowerCase())) return false;
       }
     }
-    if (typeFilter && ticket.task_type !== typeFilter) return false;
     return true;
   });
 
   const sortedTickets = [...filteredTickets].sort((a, b) => {
+    if (sortBy === 'newest') return b.id - a.id;
+    else if (sortBy === 'deadline') {
+      if (!a.due_date) return 1;
+      if (!b.due_date) return -1;
+      return new Date(a.due_date) - new Date(b.due_date);
+    } else if (sortBy === 'priority') {
+      const weights = { 'Crítica': 4, 'Alta': 3, 'Média': 2, 'Baixa': 1 };
+      return (weights[b.priority] || 0) - (weights[a.priority] || 0);
+    }
+    return 0;
+  });
+
+  // 🛠️ Filtra para a Kanban pessoal mostrar apenas as tuas tarefas (exceto se fores Admin/Manager)
+  const myKanbanTickets = availableTickets.filter(ticket => {
+    const role = currentUserInfo?.role?.toLowerCase();
+    if (role === 'admin' || role === 'manager') return true; // Admins e managers veem tudo na kanban
+    return ticket.assigned_to_id === currentUserInfo?.id; // Members só veem as suas
+  });
+
+  // Aplica os mesmos filtros de projeto/prioridade/tipo e a mesma ordenação da lista, mas sobre myKanbanTickets
+  const filteredKanbanTickets = myKanbanTickets.filter(ticket => {
+    if (projectFilter && ticket.project_id !== Number(projectFilter)) return false;
+    if (priorityFilter && ticket.priority !== priorityFilter) return false;
+    if (typeFilter && ticket.task_type !== typeFilter) return false;
+
+    // 🔧 Filtros rápidos globais na Kanban
+    if (filterCreatedByMe && ticket.creator_id !== currentUserInfo.id) return false;
+    if (filterUnassigned && ticket.assigned_to_id !== null) return false;
+
+    return true;
+  });
+
+  const sortedKanbanTickets = [...filteredKanbanTickets].sort((a, b) => {
     if (sortBy === 'newest') return b.id - a.id;
     else if (sortBy === 'deadline') {
       if (!a.due_date) return 1;
@@ -1842,7 +2037,7 @@ const fetchWeekStatus = async () => {
   }
 
   const maxTasks = Math.max(...(tasksPerPeriod.length ? tasksPerPeriod : [0]), 5); 
-  const maxHours = Math.max(...(hoursPerPeriod.length ? hoursPerPeriod : [0]), 10);
+  const maxHours = Math.max(...(chartHoursData.hours.length ? chartHoursData.hours : [0]), 1);
   const totalTasksPeriod = tasksPerPeriod.reduce((sum, val) => sum + safeNumber(val), 0);
   const totalHoursPeriod = hoursPerPeriod.reduce((sum, val) => sum + safeNumber(val), 0);
 
@@ -2246,7 +2441,7 @@ const fetchWeekStatus = async () => {
                   <div>
                     <p className="text-xs font-medium text-blue-400 uppercase tracking-wider">Horas Hoje</p>
                     <p className="text-3xl font-bold mt-1 text-blue-400">
-                      {((stats.hours_today || 0) + (activeTimerTask ? (secondsElapsed / 3600) : 0)).toFixed(2)}h
+                      {stats.hours_today || "00:00"}
                     </p>
                   </div>
                   <div className="p-3 bg-blue-500/10 rounded-xl text-blue-400 border border-blue-500/20"><Clock className="w-5 h-5" /></div>
@@ -2924,6 +3119,31 @@ const fetchWeekStatus = async () => {
                     </select>
                   )}
 
+                  {/* --- NOVOS FILTROS RÁPIDOS --- */}
+                  <button
+                    onClick={() => setFilterCreatedByMe(!filterCreatedByMe)}
+                    className={`px-3 py-2 rounded-xl text-xs font-medium transition flex items-center gap-1.5 border ${
+                      filterCreatedByMe 
+                        ? 'bg-blue-500/10 text-blue-400 border-blue-500/30 shadow-sm' 
+                        : 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-zinc-200'
+                    }`}
+                  >
+                    👤 Criadas por mim
+                  </button>
+
+                  {isManagerOrAdmin && (
+                    <button
+                      onClick={() => setFilterUnassigned(!filterUnassigned)}
+                      className={`px-3 py-2 rounded-xl text-xs font-medium transition flex items-center gap-1.5 border ${
+                        filterUnassigned 
+                          ? 'bg-amber-500/10 text-amber-400 border-amber-500/30 shadow-sm' 
+                          : 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-zinc-200'
+                      }`}
+                    >
+                      📋 Não atribuídas (Para distribuir)
+                    </button>
+                  )}
+
                   <button onClick={handleOpenCreateModal} className="flex items-center gap-2 bg-zinc-100 text-zinc-950 font-medium text-sm px-4 py-2 rounded-xl hover:bg-white transition ml-auto sm:ml-0">
                     <Plus className="w-4 h-4" /> Nova Tarefa
                   </button>
@@ -3061,7 +3281,16 @@ const fetchWeekStatus = async () => {
               ) : taskViewMode === 'kanban' ? (
                 <div className="grid grid-cols-1 md:grid-cols-4 gap-4 flex-1 overflow-x-auto pb-4 items-start">
                   {kanbanColumns.map(col => {
-                    const columnTickets = sortedTickets.filter(t => t.status === col.id);
+                    // 🛑 FILTRO DE ÚLTIMA INSTÂNCIA NA KANBAN
+                    // Garante que só chegam ao ecrã os tickets do próprio utilizador (se for Member),
+                    // independentemente do que vier de sortedKanbanTickets/availableTickets/API.
+                    const kanbanRole = currentUserInfo?.role?.toLowerCase();
+                    const columnTickets = sortedKanbanTickets
+                      .filter(t => t.status === col.id)
+                      .filter(t => {
+                        if (kanbanRole === 'admin' || kanbanRole === 'manager') return true; // Admins e managers veem tudo
+                        return t.assigned_to_id === currentUserInfo?.id; // Membros comuns só veem o que lhes pertence
+                      });
                     return (
                       <div 
                         key={col.id} 
@@ -3495,11 +3724,11 @@ const fetchWeekStatus = async () => {
                             📌 Afixadas ({pinnedMessages.length})
                           </button>
 
-                          {/* Botão de Resumo de IA */}
+                          {/* Botão de Resumo de IA que agora abre o Pop-up */}
                           <button 
-                            onClick={handleSummarizeChatWithAI}
+                            onClick={() => setShowAiPromptModal(true)}
                             disabled={loadingAiChat}
-                            className="flex items-center gap-2 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white text-xs font-semibold px-3.5 py-2 rounded-xl shadow-lg transition-all"
+                            className="flex items-center gap-2 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white text-xs font-semibold px-3.5 py-2 rounded-xl shadow-lg transition-all cursor-pointer"
                           >
                             {loadingAiChat ? '✨ A resumir...' : '✨ Resumir Chat com IA'}
                           </button>
@@ -3534,6 +3763,55 @@ const fetchWeekStatus = async () => {
                           <p className="leading-relaxed">{chatSummary}</p>
                         </div>
                         <button onClick={() => setChatSummary(null)} className="text-purple-400 hover:text-white text-sm ml-2">✕</button>
+                      </div>
+                    )}
+
+                    {/* MODAL DE PROMPT PERSONALIZADA PARA A IA */}
+                    {showAiPromptModal && (
+                      <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+                        <div className="bg-zinc-900 border border-zinc-800 rounded-2xl w-full max-w-md p-6 text-zinc-100 shadow-2xl relative space-y-4">
+                          
+                          <div className="flex justify-between items-center">
+                            <h3 className="text-base font-bold text-zinc-100 flex items-center gap-2">
+                              ✨ Resumir com Assistente IA
+                            </h3>
+                            <button 
+                              onClick={() => setShowAiPromptModal(false)}
+                              className="text-zinc-400 hover:text-zinc-100 text-sm bg-zinc-800 px-2 py-1 rounded-lg cursor-pointer"
+                            >
+                              ✕
+                            </button>
+                          </div>
+
+                          <p className="text-xs text-zinc-400">
+                            Deixa em branco para usar o resumo padrão ou escreve o que pretendes focar (ex: <span className="italic text-zinc-300">"Quero que resumas apenas o que o user João disse sobre o projeto"</span>).
+                          </p>
+
+                          <textarea
+                            value={customAiPrompt}
+                            onChange={e => setCustomAiPrompt(e.target.value)}
+                            rows="3"
+                            placeholder="Ex: Resumir decisões tomadas e focar nas tarefas do utilizador X..."
+                            className="w-full bg-zinc-950 border border-zinc-800 rounded-xl p-3 text-xs text-zinc-100 focus:outline-none focus:border-purple-500 resize-none"
+                          />
+
+                          <div className="flex justify-end gap-2 pt-2 border-t border-zinc-800">
+                            <button
+                              onClick={() => setShowAiPromptModal(false)}
+                              className="bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-4 py-2 rounded-xl text-xs font-medium transition cursor-pointer"
+                            >
+                              Cancelar
+                            </button>
+                            <button
+                              onClick={() => handleSummarizeChatWithAI(customAiPrompt)}
+                              disabled={loadingAiChat}
+                              className="bg-purple-600 hover:bg-purple-500 text-white px-4 py-2 rounded-xl text-xs font-semibold transition cursor-pointer shadow-md"
+                            >
+                              {loadingAiChat ? 'A gerar...' : 'Gerar Resumo'}
+                            </button>
+                          </div>
+
+                        </div>
                       </div>
                     )}
 
@@ -3913,7 +4191,9 @@ const fetchWeekStatus = async () => {
                 <div className="bg-zinc-900/80 border border-zinc-800/80 rounded-2xl p-6 shadow-sm flex items-center justify-between group hover:border-zinc-700 transition">
                   <div>
                     <h3 className="text-xs font-semibold text-zinc-400 mb-1 uppercase tracking-wider group-hover:text-zinc-300 transition">Horas Registadas</h3>
-                    <p className="text-3xl font-bold text-zinc-100">{Number(totalHoursPeriod).toFixed(2)}h</p>
+                    <p className="text-3xl font-bold text-zinc-100">
+                      {Number(chartHoursData.hours.reduce((sum, h) => sum + h, 0)).toFixed(2)}h
+                    </p>
                     <p className="text-[10px] text-zinc-500 mt-1">{periodLabels[statsPeriod]}</p>
                   </div>
                   <div className="p-3 bg-zinc-800/50 rounded-xl text-zinc-400 border border-zinc-700/50"><Clock className="w-6 h-6" /></div>
@@ -3977,11 +4257,15 @@ const fetchWeekStatus = async () => {
                           strokeWidth="2"
                           strokeLinecap="round"
                           strokeLinejoin="round"
-                          points={hoursPerPeriod.map((h, i) => {
-                            const len = hoursPerPeriod.length || 1;
+                          points={chartHoursData.hours.map((h, i) => {
+                            const len = chartHoursData.hours.length || 1;
                             const x = ((i + 0.5) / len) * 100;
                             const safeH = Number(h) || 0;
-                            const y = maxHours > 0 ? 100 - (safeH / maxHours) * 100 : 100;
+                            
+                            // 🔧 ALTERAÇÃO AQUI: Usa um limite máximo dinâmico adaptado aos dados atuais da semana
+                            const currentMaxHours = Math.max(...(chartHoursData.hours || [0]), 1);
+                            const y = currentMaxHours > 0 ? 100 - (safeH / currentMaxHours) * 100 : 100;
+                            
                             return `${x},${y}`;
                           }).join(' ')}
                         />
@@ -3989,8 +4273,8 @@ const fetchWeekStatus = async () => {
                     </div>
 
                     <div className="w-full flex items-end gap-1 mt-2">
-                      {chartLabels.map((lbl, i) => {
-                        const showLabel = statsPeriod !== '30' || i % 5 === 0 || i === chartLabels.length - 1;
+                      {chartHoursData.labels.map((lbl, i) => {
+                        const showLabel = statsPeriod !== '30' || i % 5 === 0 || i === chartHoursData.labels.length - 1;
                         return (
                           <div key={i} className="flex-1 flex justify-center">
                             <span className="text-[8px] text-zinc-600 truncate text-center w-full">{showLabel ? lbl : ''}</span>
@@ -4089,7 +4373,7 @@ const fetchWeekStatus = async () => {
                 ) : (
                   <div className="space-y-3">
                     {todayTickets.map(t => (
-                      <div key={t.id} className="bg-zinc-950 border border-zinc-800 p-3.5 rounded-xl flex items-center justify-between">
+                      <div key={t.id} onClick={() => setSelectedTicketDetails(t)} className="bg-zinc-950 border border-zinc-800 p-3.5 rounded-xl flex items-center justify-between cursor-pointer hover:border-zinc-700 transition">
                         <div>
                           <div className="flex items-center gap-2 mb-1">
                             <span className="text-xs font-mono text-zinc-500">#{t.id}</span>
@@ -4277,23 +4561,21 @@ const fetchWeekStatus = async () => {
                 <h2 className="text-base font-semibold text-zinc-100 flex items-center gap-2">
                   <span>🎯 Pool de Tarefas:</span> {activeProjectForTasks.name}
                 </h2>
-                <p className="text-xs text-zinc-400 mt-0.5">Clica em "Agarrar" para assumir e começar a trabalhar numa tarefa livre.</p>
+                <p className="text-xs text-zinc-400 mt-0.5">Vê o progresso da equipa e agarra tarefas livres.</p>
               </div>
               <button onClick={() => setShowProjectTasksModal(false)} className="p-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-xl transition">
                 ✕
               </button>
             </div>
 
-            {/* Lista de Tarefas do Projeto */}
+            {/* Lista de Tarefas do Projeto (Usa projectModalTickets) */}
             <div className="flex-1 overflow-y-auto space-y-3 pr-1">
-              {availableTickets.filter(t => t.project_id === activeProjectForTasks.id).length === 0 ? (
+              {projectModalTickets.length === 0 ? (
                 <div className="py-12 text-center text-xs text-zinc-500 border border-dashed border-zinc-800 rounded-xl">
                   Nenhuma tarefa associada a este projeto neste momento.
                 </div>
               ) : (
-                availableTickets
-                  .filter(t => t.project_id === activeProjectForTasks.id)
-                  .map(ticket => {
+                projectModalTickets.map(ticket => {
                     const isDone = ticket.status && ['done', 'concluído', 'concluido'].includes(ticket.status.toLowerCase());
                     const assigneeName = getAssigneeName(ticket.assigned_to_id);
                     
@@ -4320,7 +4602,7 @@ const fetchWeekStatus = async () => {
                           </div>
                         </div>
 
-                        {/* Botão de Agarrar Tarefa (/grab) */}
+                        {/* Botão de Agarrar Tarefa */}
                         <div className="shrink-0">
                           {!assigneeName && !isDone ? (
                             <button 
@@ -4329,7 +4611,8 @@ const fetchWeekStatus = async () => {
                                   const headers = { Authorization: `Bearer ${token}` };
                                   await axios.put(`${API_URL}/tickets/${ticket.id}/grab`, {}, { headers });
                                   alert("Tarefa agarrada com sucesso! Passou para ti.");
-                                  fetchData(); // Atualiza a lista geral
+                                  openProjectTasksModal(activeProjectForTasks); // Atualiza o modal
+                                  fetchData(); // Atualiza a Kanban geral
                                 } catch (error) {
                                   alert(error.response?.data?.detail || "Erro ao agarrar tarefa.");
                                 }
@@ -5012,12 +5295,12 @@ const fetchWeekStatus = async () => {
             <h2 className="text-lg font-semibold mb-4">{editMode ? 'Editar Tarefa' : 'Criar Nova Tarefa'}</h2>
             <form onSubmit={handleSaveTicket} className="space-y-4">
               <div>
-                <label className="block text-xs font-medium text-zinc-400 mb-1">Título</label>
+                <label className="block text-xs font-medium text-zinc-400 mb-1">Título <span className="text-red-400">*</span></label>
                 <input type="text" value={newTitle} onChange={e => setNewTitle(e.target.value)} required className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2 text-sm text-zinc-100 focus:outline-none" />
               </div>
               <div>
-                <label className="block text-xs font-medium text-zinc-400 mb-1">Descrição</label>
-                <textarea value={newDesc} onChange={e => setNewDesc(e.target.value)} rows="3" className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2 text-sm text-zinc-100 focus:outline-none resize-none" />
+                <label className="block text-xs font-medium text-zinc-400 mb-1">Descrição <span className="text-red-400">*</span></label>
+                <textarea value={newDesc} onChange={e => setNewDesc(e.target.value)} required rows="3" className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2 text-sm text-zinc-100 focus:outline-none resize-none" placeholder="Detalhes obrigatórios da tarefa..." />
               </div>
               <div className="grid grid-cols-3 gap-3">
                 <div>
@@ -5035,41 +5318,127 @@ const fetchWeekStatus = async () => {
                     <option value="Done">Concluído</option>
                   </select>
                 </div>
-                <div>
-                  <label className="block text-xs font-medium text-zinc-400 mb-1">Tipo</label>
-                  <select value={newTaskType} onChange={e => setNewTaskType(e.target.value)} className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-sm text-zinc-100 focus:outline-none">
-                    <option value="Geral">Geral</option>
-                    <option value="Software">Software</option>
-                    <option value="Hardware">Hardware</option>
-                    <option value="Redes">Redes</option>
-                  </select>
+                <div className="relative">
+                  <label className="block text-xs font-medium text-zinc-400 mb-1">Tipo de Tarefa</label>
+                  
+                  <div className="flex gap-2">
+                    {/* Caixa principal que simula o select fechado */}
+                    <div 
+                      onClick={() => setIsTaskTypeDropdownOpen(!isTaskTypeDropdownOpen)}
+                      className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-sm text-zinc-100 flex justify-between items-center cursor-pointer select-none"
+                    >
+                      <span>{newTaskType || "Selecionar tipo..."}</span>
+                      <span className="text-zinc-500 text-xs">▼</span>
+                    </div>
+
+                    {/* Botão + para criar novo tipo (Apenas Managers/Admins) */}
+                    {isManagerOrAdmin && (
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          const newType = window.prompt("Nome do novo tipo de tarefa (ex: Cibersegurança):");
+                          if (newType && newType.trim() !== '') {
+                            try {
+                              const headers = { Authorization: `Bearer ${token}` };
+                              const res = await axios.post(`${API_URL}/tickets/task-types/create`, { name: newType.trim() }, { headers });
+                              await fetchTaskTypes();
+                              setNewTaskType(res.data.name);
+                            } catch (err) {
+                              alert(err.response?.data?.detail || "Erro ao criar tipo de tarefa.");
+                            }
+                          }
+                        }}
+                        className="px-3 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs rounded-xl font-bold transition shrink-0 cursor-pointer"
+                        title="Criar novo tipo de tarefa"
+                      >
+                        +
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Menu Dropdown Aberto com o X em cada opção */}
+                  {isTaskTypeDropdownOpen && (
+                    <div className="absolute top-full left-0 right-0 mt-1 bg-zinc-900 border border-zinc-800 rounded-xl shadow-xl z-50 max-h-48 overflow-y-auto">
+                      {taskTypes.length === 0 ? (
+                        <div className="px-3 py-2 text-xs text-zinc-500 text-center">Sem tipos criados. Usa o botão + para adicionar.</div>
+                      ) : (
+                        taskTypes.map(type => {
+                          const typeName = typeof type === 'object' ? type.name : type;
+                          const typeId = typeof type === 'object' ? type.id : null;
+
+                          return (
+                            <div 
+                              key={typeName}
+                              className="flex items-center justify-between px-3 py-2 text-sm text-zinc-200 hover:bg-zinc-800 cursor-pointer"
+                              onClick={() => {
+                                setNewTaskType(typeName);
+                                setIsTaskTypeDropdownOpen(false);
+                              }}
+                            >
+                              <span>{typeName}</span>
+
+                              {/* Botão X para apagar (visível para Managers/Admins em todas as opções, já que são todas personalizadas) */}
+                              {isManagerOrAdmin && typeId && (
+                                <button
+                                  type="button"
+                                  onClick={async (e) => {
+                                    e.stopPropagation(); // Evita selecionar a opção ao clicar no X
+                                    if (window.confirm(`Tens a certeza que queres apagar o tipo "${typeName}"?`)) {
+                                      try {
+                                        const headers = { Authorization: `Bearer ${token}` };
+                                        await axios.delete(`${API_URL}/tickets/task-types/${typeId}`, { headers });
+                                        await fetchTaskTypes();
+                                        if (newTaskType === typeName) setNewTaskType('');
+                                      } catch (err) {
+                                        alert("Erro ao apagar tipo de tarefa.");
+                                      }
+                                    }
+                                  }}
+                                  className="text-red-400 hover:text-red-300 font-bold px-2 py-0.5 text-xs rounded bg-zinc-800/80 hover:bg-zinc-700 transition"
+                                  title={`Apagar ${typeName}`}
+                                >
+                                  ✕
+                                </button>
+                              )}
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
+              {/* Se for Admin/Manager vê os dois campos. Se for Member, o projeto e o atribuir a ficam ocultos no backend e frontend */}
+              {isManagerOrAdmin && (
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-medium text-zinc-400 mb-1">Projeto</label>
+                    <select value={newProjectId} onChange={e => setNewProjectId(e.target.value)} className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-sm text-zinc-100 focus:outline-none">
+                      <option value="">Nenhum (Projeto Geral)</option>
+                      {availableProjects.map(proj => <option key={proj.id} value={proj.id}>{proj.name}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-zinc-400 mb-1">Cliente</label>
+                    <select value={newClientId} onChange={e => setNewClientId(e.target.value)} className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-sm text-zinc-100 focus:outline-none">
+                      <option value="">Nenhum</option>
+                      {clients.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                    </select>
+                  </div>
+                </div>
+              )}
+
               <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-medium text-zinc-400 mb-1">Projeto</label>
-                  <select value={newProjectId} onChange={e => setNewProjectId(e.target.value)} className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-sm text-zinc-100 focus:outline-none">
-                    <option value="">Nenhum (Projeto Geral)</option>
-                    {availableProjects.map(proj => <option key={proj.id} value={proj.id}>{proj.name}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-zinc-400 mb-1">Cliente</label>
-                  <select value={newClientId} onChange={e => setNewClientId(e.target.value)} className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-sm text-zinc-100 focus:outline-none">
-                    <option value="">Nenhum</option>
-                    {clients.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-                  </select>
-                </div>
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs font-medium text-zinc-400 mb-1">Atribuir a</label>
-                  <select value={newAssignedTo} onChange={e => setNewAssignedTo(e.target.value)} className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-sm text-zinc-100 focus:outline-none">
-                    <option value="">Não atribuído</option>
-                    {usersList.map(u => <option key={u.id} value={u.id}>{getUserDisplayName(u)}</option>)}
-                  </select>
-                </div>
-                <div>
+                {isManagerOrAdmin && (
+                  <div>
+                    <label className="block text-xs font-medium text-zinc-400 mb-1">Atribuir a</label>
+                    <select value={newAssignedTo} onChange={e => setNewAssignedTo(e.target.value)} className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-sm text-zinc-100 focus:outline-none">
+                      <option value="">Não atribuído</option>
+                      {usersList.map(u => <option key={u.id} value={u.id}>{getUserDisplayName(u)}</option>)}
+                    </select>
+                  </div>
+                )}
+                <div className={!isManagerOrAdmin ? "col-span-2" : ""}>
                   <label className="block text-xs font-medium text-zinc-400 mb-1">Horas Estimadas</label>
                   <input type="number" step="0.5" value={newEstimatedHours} onChange={e => setNewEstimatedHours(e.target.value)} className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2 text-sm text-zinc-100 focus:outline-none" />
                 </div>
@@ -5084,9 +5453,75 @@ const fetchWeekStatus = async () => {
                   <input type="date" value={newDueDate} onChange={e => setNewDueDate(e.target.value)} className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2 text-sm text-zinc-100 focus:outline-none [color-scheme:dark]" />
                 </div>
               </div>
-              <div className="flex justify-end gap-3 mt-6">
-                <button type="button" onClick={() => setShowModal(false)} className="px-4 py-2 text-sm text-zinc-400 hover:text-zinc-100 transition">Cancelar</button>
-                <button type="submit" className="bg-zinc-100 text-zinc-950 font-medium text-sm px-4 py-2 rounded-xl hover:bg-white transition">{editMode ? 'Atualizar' : 'Guardar'}</button>
+              <div>
+                <label className="block text-xs font-medium text-zinc-400 mb-1">Depende da Tarefa (Bloqueada por)</label>
+                <select 
+                  value={newBlockedById || ''} 
+                  onChange={e => setNewBlockedById(e.target.value)} 
+                  className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-sm text-zinc-100 focus:outline-none"
+                >
+                  <option value="">Nenhuma (Independente)</option>
+                  {availableTickets
+                    .filter(t => t.id !== currentTicketId) // Evita que a tarefa dependa dela própria
+                    .map(t => (
+                      <option key={t.id} value={t.id}>#{t.id} - {t.title}</option>
+                    ))}
+                </select>
+              </div>
+
+              {/* SECÇÃO DE SUBTAREFAS (apenas em edição, requer tarefa já criada) */}
+              {editMode && (
+                <div className="border-t border-zinc-800 pt-4">
+                  <label className="block text-xs font-medium text-zinc-400 mb-2 uppercase tracking-wider">Subtarefas</label>
+                  <div className="space-y-1.5 mb-3 max-h-36 overflow-y-auto pr-1">
+                    {subtasks.length === 0 ? (
+                      <p className="text-xs text-zinc-500">Sem subtarefas ainda.</p>
+                    ) : (
+                      subtasks.map(sub => (
+                        <label key={sub.id} className="flex items-center gap-2 text-sm bg-zinc-950 border border-zinc-800 p-2 rounded-lg cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={sub.is_completed}
+                            onChange={() => handleToggleSubtask(sub.id, sub.is_completed)}
+                            className="accent-zinc-100"
+                          />
+                          <span className={sub.is_completed ? "line-through text-zinc-500 flex-1" : "flex-1 text-zinc-200"}>
+                            {sub.title}
+                          </span>
+                        </label>
+                      ))
+                    )}
+                  </div>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      placeholder="Nova subtarefa..."
+                      value={newSubTitle}
+                      onChange={e => setNewSubTitle(e.target.value)}
+                      className="flex-1 bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-1.5 text-sm text-zinc-100 focus:outline-none"
+                    />
+                    <button type="button" onClick={handleAddSubtask} className="bg-zinc-800 hover:bg-zinc-700 text-zinc-100 px-3 py-1.5 text-sm rounded-xl font-medium transition">
+                      Adicionar
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              <div className="flex justify-between items-center gap-3 mt-6">
+                {editMode ? (
+                  <button
+                    type="button"
+                    onClick={handleReturnTicket}
+                    disabled={returningTicket}
+                    className="bg-red-950/40 hover:bg-red-950/60 text-red-400 border border-red-500/30 px-4 py-2 text-sm rounded-xl font-medium transition disabled:opacity-50"
+                  >
+                    {returningTicket ? 'A devolver...' : '🔄 Devolver Tarefa'}
+                  </button>
+                ) : <span />}
+                <div className="flex gap-3">
+                  <button type="button" onClick={() => setShowModal(false)} className="px-4 py-2 text-sm text-zinc-400 hover:text-zinc-100 transition">Cancelar</button>
+                  <button type="submit" className="bg-zinc-100 text-zinc-950 font-medium text-sm px-4 py-2 rounded-xl hover:bg-white transition">{editMode ? 'Atualizar' : 'Guardar'}</button>
+                </div>
               </div>
             </form>
           </div>
@@ -5277,6 +5712,74 @@ const fetchWeekStatus = async () => {
             <div className="flex justify-end mt-4">
               <button onClick={() => setShowCommentsModal(false)} className="px-4 py-2 text-xs text-zinc-400 hover:text-zinc-100 transition">Fechar</button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {selectedTicketDetails && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl w-full max-w-lg p-6 text-zinc-100 shadow-2xl relative">
+            
+            {/* Cabeçalho */}
+            <div className="flex justify-between items-start mb-4">
+              <div>
+                <span className="text-xs font-mono text-zinc-400">#{selectedTicketDetails.id}</span>
+                <h3 className="text-lg font-bold text-zinc-100 mt-1">{selectedTicketDetails.title}</h3>
+              </div>
+              <button 
+                onClick={() => setSelectedTicketDetails(null)}
+                className="text-zinc-400 hover:text-zinc-100 text-sm bg-zinc-800 px-2.5 py-1 rounded-lg cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Conteúdo Detalhado */}
+            <div className="space-y-4 text-sm text-zinc-300 max-h-[60vh] overflow-y-auto pr-1">
+              <div>
+                <span className="block text-xs font-medium text-zinc-500 uppercase">Estado / Prioridade</span>
+                <p className="mt-0.5">{selectedTicketDetails.status} • <span className="font-semibold">{selectedTicketDetails.priority}</span></p>
+              </div>
+
+              <div>
+                <span className="block text-xs font-medium text-zinc-500 uppercase">Descrição Inicial</span>
+                <p className="mt-0.5 bg-zinc-950 p-3 rounded-xl border border-zinc-800 text-zinc-300">
+                  {selectedTicketDetails.description || "Sem descrição inicial."}
+                </p>
+              </div>
+
+              <div>
+                <span className="block text-xs font-medium text-zinc-500 uppercase">Observações de Campo / Relatório Final</span>
+                <p className="mt-0.5 bg-zinc-950 p-3 rounded-xl border border-zinc-800 text-zinc-300 whitespace-pre-wrap">
+                  {selectedTicketDetails.final_description || "Sem observações finais registadas."}
+                </p>
+              </div>
+
+              {selectedTicketDetails.attachment_path && (
+                <div>
+                  <span className="block text-xs font-medium text-zinc-500 uppercase">Anexo</span>
+                  <a 
+                    href={`${API_URL.replace('/api', '')}/${selectedTicketDetails.attachment_path}`} 
+                    target="_blank" 
+                    rel="noreferrer"
+                    className="inline-block mt-1 text-xs bg-zinc-800 hover:bg-zinc-700 text-zinc-200 px-3 py-2 rounded-xl font-medium transition"
+                  >
+                    📥 Descarregar / Ver Anexo
+                  </a>
+                </div>
+              )}
+            </div>
+
+            {/* Rodapé do Modal */}
+            <div className="mt-6 pt-4 border-t border-zinc-800 flex justify-end">
+              <button
+                onClick={() => setSelectedTicketDetails(null)}
+                className="bg-zinc-800 hover:bg-zinc-700 text-zinc-200 px-4 py-2 rounded-xl text-sm font-medium transition cursor-pointer"
+              >
+                Fechar
+              </button>
+            </div>
+
           </div>
         </div>
       )}
