@@ -33,6 +33,9 @@ export default function App() {
   const [imagem, setImagem] = useState(null);
   // Modal de detalhes da tarefa concluída
   const [selectedTicketDetails, setSelectedTicketDetails] = useState(null);
+  const [ticketHistoryLogs, setTicketHistoryLogs] = useState([]);
+  // Histórico da tarefa no modal de edição
+  const [ticketLogs, setTicketLogs] = useState([]);
   // Controla a abertura da dropdown personalizada de Tipo de Tarefa
   const [isTaskTypeDropdownOpen, setIsTaskTypeDropdownOpen] = useState(false);
 
@@ -582,9 +585,13 @@ const fetchWeekStatus = async () => {
   const [newDueDate, setNewDueDate] = useState('');
   const [newStartDate, setNewStartDate] = useState('');
   const [newBlockedById, setNewBlockedById] = useState('');
+  // --- Autocomplete da dependência (Bloqueada por) ---
+  const [dependencySearch, setDependencySearch] = useState('');
+  const [showDependencyDropdown, setShowDependencyDropdown] = useState(false);
   // --- Subtarefas da tarefa em edição ---
   const [subtasks, setSubtasks] = useState([]);
   const [newSubTitle, setNewSubTitle] = useState('');
+  const [newSubAssignee, setNewSubAssignee] = useState('');
   const [returningTicket, setReturningTicket] = useState(false);
 
   // Estados dos Projetos
@@ -1011,7 +1018,8 @@ const fetchWeekStatus = async () => {
       fetchActiveWorkers();
       if (updatePayload.assigned_to_id) fetchData();
     } catch (err) {
-      alert('Erro ao iniciar o cronómetro no servidor.');
+      // Captura mensagens de dependência do backend (ex.: "⚠️ Esta tarefa depende da conclusão da tarefa antecedente...")
+      alert(err.response?.data?.detail || 'Erro ao iniciar o cronómetro no servidor.');
     }
   };
 
@@ -1114,7 +1122,7 @@ const fetchWeekStatus = async () => {
         let ticketsToSave = ticketsRes.data;
 
         if (userRole === 'member') {
-          ticketsToSave = ticketsRes.data.filter(t => t.assigned_to_id === loggedId);
+          ticketsToSave = ticketsRes.data.filter(t => t.assigned_to_id === loggedId || t.creator_id === loggedId);
         }
 
         setTickets(ticketsToSave);
@@ -1367,6 +1375,17 @@ const fetchWeekStatus = async () => {
       } else {
         await axios.post(`${API_URL}/projects/`, payload, { headers });
       }
+
+      // Propaga automaticamente o cliente do projeto para todas as tarefas associadas
+      if (projectClientId && projectTicketIds.length > 0) {
+        await Promise.all(
+          projectTicketIds.map(ticketId =>
+            axios.put(`${API_URL}/tickets/${ticketId}`, { client_id: Number(projectClientId) }, { headers })
+              .catch(err => console.error(`Erro ao propagar cliente para a tarefa #${ticketId}`, err))
+          )
+        );
+      }
+
       setShowProjectModal(false);
       setProjectName('');
       setProjectDesc('');
@@ -1563,8 +1582,12 @@ const fetchWeekStatus = async () => {
     setNewClientId('');
     setNewProjectId('');
     setNewBlockedById('');
+    setDependencySearch('');
+    setShowDependencyDropdown(false);
     setSubtasks([]);
     setNewSubTitle('');
+    setNewSubAssignee('');
+    setTicketHistoryLogs([]);
     setShowModal(true);
   };
 
@@ -1583,8 +1606,14 @@ const fetchWeekStatus = async () => {
     setNewProjectId(ticket.project_id || '');
     setNewClientId(ticket.client_id || '');
     setNewBlockedById(ticket.blocked_by_id || '');
+    const blockingTicket = ticket.blocked_by_id ? tickets.find(t => t.id === ticket.blocked_by_id) : null;
+    setDependencySearch(blockingTicket ? `#${blockingTicket.id} - ${blockingTicket.title}` : '');
+    setShowDependencyDropdown(false);
     setSubtasks([]);
     setNewSubTitle('');
+    setNewSubAssignee('');
+    fetchTicketHistory(ticket.id);
+    fetchTicketLogs(ticket.id);
     setShowModal(true);
     fetchSubtasks(ticket.id);
   };
@@ -1640,8 +1669,12 @@ const fetchWeekStatus = async () => {
     if (!newSubTitle.trim() || !currentTicketId) return;
     try {
       const headers = { Authorization: `Bearer ${token}` };
-      await axios.post(`${API_URL}/tickets/${currentTicketId}/subtasks`, { title: newSubTitle }, { headers });
+      await axios.post(`${API_URL}/tickets/${currentTicketId}/subtasks`, {
+        title: newSubTitle,
+        assigned_to_id: newSubAssignee ? Number(newSubAssignee) : null
+      }, { headers });
       setNewSubTitle('');
+      setNewSubAssignee('');
       fetchSubtasks(currentTicketId);
     } catch (err) {
       alert(err.response?.data?.detail || 'Erro ao criar subtarefa.');
@@ -1693,10 +1726,25 @@ const fetchWeekStatus = async () => {
       }
     }
 
+    // Observação obrigatória para o histórico em qualquer outra mudança de estado
+    const observation = window.prompt(`📝 Vais mudar o estado para "${newStat}". Introduz a observação obrigatória para o histórico:`);
+    if (!observation || !observation.trim()) {
+      alert("A alteração de estado foi cancelada porque a observação é obrigatória.");
+      return;
+    }
+
     try {
       const headers = { Authorization: `Bearer ${token}` };
       let updatePayload = { status: newStat };
       await axios.put(`${API_URL}/tickets/${ticketId}`, updatePayload, { headers });
+
+      // Grava a observação como comentário/log associado à tarefa
+      await axios.post(
+        `${API_URL}/tickets/${ticketId}/comments?author_id=${currentUserInfo.id}`,
+        { text: `[Mudança de Estado para ${newStat}]: ${observation.trim()}` },
+        { headers }
+      );
+
       fetchData();
       fetchActiveWorkers();
     } catch (err) {
@@ -1778,7 +1826,14 @@ const fetchWeekStatus = async () => {
   const availableTeamIds = availableTeams.map(t => t.id);
   const availableProjects = isAdmin ? projects : projects.filter(p => !p.team_id || availableTeamIds.includes(p.team_id));
   const availableProjectIds = availableProjects.map(p => p.id);
-  const availableTickets = isAdmin ? tickets : tickets.filter(t => t.assigned_to_id === currentUserInfo.id || availableProjectIds.includes(t.project_id));
+
+  // Líder de Equipa = dono (owner_id) de pelo menos uma das suas equipas
+  const isTeamLeader = availableTeams.some(t => t.owner_id === currentUserInfo.id);
+  // Admin, Manager e Líder de Equipa veem todas as tarefas dos projetos a que têm acesso; um membro normal só vê as suas
+  const canSeeProjectTickets = isManagerOrAdmin || isTeamLeader;
+  const availableTickets = isAdmin
+    ? tickets
+    : tickets.filter(t => t.assigned_to_id === currentUserInfo.id || t.creator_id === currentUserInfo.id || (canSeeProjectTickets && availableProjectIds.includes(t.project_id)));
 
   const now = new Date();
   const year = now.getFullYear();
@@ -1805,6 +1860,18 @@ const fetchWeekStatus = async () => {
     t.title.toLowerCase().includes(quickSearchQuery.toLowerCase()) || 
     (t.description && t.description.toLowerCase().includes(quickSearchQuery.toLowerCase()))
   ).slice(0, 5);
+
+  // 🔧 CORRIGIDO: este useEffect estava depois do "if (!token) return", o que
+  // violava as Regras dos Hooks (deixava de ser chamado quando não há token
+  // e o número/ordem de hooks mudava entre renders). Agora fica sempre antes
+  // de qualquer return condicional.
+  useEffect(() => {
+    if (selectedTicketDetails) {
+      fetchTicketHistory(selectedTicketDetails.id);
+    } else {
+      setTicketHistoryLogs([]);
+    }
+  }, [selectedTicketDetails]);
 
   if (!token) {
     return (
@@ -1878,7 +1945,7 @@ const fetchWeekStatus = async () => {
   const myKanbanTickets = availableTickets.filter(ticket => {
     const role = currentUserInfo?.role?.toLowerCase();
     if (role === 'admin' || role === 'manager') return true; // Admins e managers veem tudo na kanban
-    return ticket.assigned_to_id === currentUserInfo?.id; // Members só veem as suas
+    return ticket.assigned_to_id === currentUserInfo?.id || ticket.creator_id === currentUserInfo?.id; // Members veem as suas ou as que criaram
   });
 
   // Aplica os mesmos filtros de projeto/prioridade/tipo e a mesma ordenação da lista, mas sobre myKanbanTickets
@@ -1990,6 +2057,31 @@ const fetchWeekStatus = async () => {
     return { badge: action, text: `Ação na área: ${area}` };
   };
 
+  // Histórico de atividade de uma tarefa específica (endpoint dedicado no backend)
+  const fetchTicketHistory = async (ticketId) => {
+    if (!ticketId || !isAdmin) { setTicketHistoryLogs([]); return; }
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      const res = await axios.get(`${API_URL}/tickets/${ticketId}/audit-logs`, { headers });
+      setTicketHistoryLogs(res.data);
+    } catch (err) {
+      console.error("Erro ao carregar o histórico da tarefa", err);
+      setTicketHistoryLogs([]);
+    }
+  };
+
+  // Histórico da tarefa mostrado no modal de edição
+  const fetchTicketLogs = async (ticketId) => {
+    try {
+      const res = await axios.get(`${API_URL}/tickets/${ticketId}/audit-logs`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      setTicketLogs(res.data || []);
+    } catch (err) {
+      console.error("Erro ao carregar histórico", err);
+      setTicketLogs([]);
+    }
+  };
 
   const kanbanColumns = [
     { id: 'To Do', title: 'Pendente', color: 'bg-zinc-500' },
@@ -3289,7 +3381,7 @@ const fetchWeekStatus = async () => {
                       .filter(t => t.status === col.id)
                       .filter(t => {
                         if (kanbanRole === 'admin' || kanbanRole === 'manager') return true; // Admins e managers veem tudo
-                        return t.assigned_to_id === currentUserInfo?.id; // Membros comuns só veem o que lhes pertence
+                        return t.assigned_to_id === currentUserInfo?.id || t.creator_id === currentUserInfo?.id; // Membros comuns veem o que lhes pertence ou que criaram
                       });
                     return (
                       <div 
@@ -4782,7 +4874,8 @@ const fetchWeekStatus = async () => {
                 setCompletionFile(null);
                 fetchData();
               } catch (err) {
-                alert('Erro ao concluir tarefa.');
+                // Apanha mensagens do backend, ex.: "⚠️ Não podes concluir esta tarefa principal! Ainda existem X subtarefas..."
+                alert(err.response?.data?.detail || 'Erro ao concluir tarefa.');
               }
             }} className="space-y-4">
               
@@ -5178,12 +5271,12 @@ const fetchWeekStatus = async () => {
             <h2 className="text-lg font-semibold mb-4">Novo Cliente</h2>
             <form onSubmit={handleSaveClient} className="space-y-4">
               <div>
-                <label className="block text-xs font-medium text-zinc-400 mb-1">Nome / Designação</label>
+                <label className="block text-xs font-medium text-zinc-400 mb-1">Nome / Designação <span className="text-red-400">*</span></label>
                 <input type="text" value={clientName} onChange={e => setClientName(e.target.value)} required className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2 text-sm text-zinc-100 focus:outline-none" />
               </div>
               <div>
-                <label className="block text-xs font-medium text-zinc-400 mb-1">Empresa</label>
-                <input type="text" value={clientCompany} onChange={e => setClientCompany(e.target.value)} className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2 text-sm text-zinc-100 focus:outline-none" />
+                <label className="block text-xs font-medium text-zinc-400 mb-1">Empresa <span className="text-red-400">*</span></label>
+                <input type="text" value={clientCompany} onChange={e => setClientCompany(e.target.value)} required className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2 text-sm text-zinc-100 focus:outline-none" />
               </div>
               <div>
                 <label className="block text-xs font-medium text-zinc-400 mb-1">Email</label>
@@ -5209,12 +5302,12 @@ const fetchWeekStatus = async () => {
             <h2 className="text-lg font-semibold mb-4">Editar Cliente</h2>
             <form onSubmit={handleUpdateClient} className="space-y-4">
               <div>
-                <label className="block text-xs font-medium text-zinc-400 mb-1">Nome / Designação</label>
+                <label className="block text-xs font-medium text-zinc-400 mb-1">Nome / Designação <span className="text-red-400">*</span></label>
                 <input type="text" value={editClientName} onChange={e => setEditClientName(e.target.value)} required className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2 text-sm text-zinc-100 focus:outline-none" />
               </div>
               <div>
-                <label className="block text-xs font-medium text-zinc-400 mb-1">Empresa</label>
-                <input type="text" value={editClientCompany} onChange={e => setEditClientCompany(e.target.value)} className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2 text-sm text-zinc-100 focus:outline-none" />
+                <label className="block text-xs font-medium text-zinc-400 mb-1">Empresa <span className="text-red-400">*</span></label>
+                <input type="text" value={editClientCompany} onChange={e => setEditClientCompany(e.target.value)} required className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2 text-sm text-zinc-100 focus:outline-none" />
               </div>
               <div>
                 <label className="block text-xs font-medium text-zinc-400 mb-1">Email</label>
@@ -5453,20 +5546,44 @@ const fetchWeekStatus = async () => {
                   <input type="date" value={newDueDate} onChange={e => setNewDueDate(e.target.value)} className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2 text-sm text-zinc-100 focus:outline-none [color-scheme:dark]" />
                 </div>
               </div>
-              <div>
+              <div className="relative">
                 <label className="block text-xs font-medium text-zinc-400 mb-1">Depende da Tarefa (Bloqueada por)</label>
-                <select 
-                  value={newBlockedById || ''} 
-                  onChange={e => setNewBlockedById(e.target.value)} 
-                  className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-sm text-zinc-100 focus:outline-none"
-                >
-                  <option value="">Nenhuma (Independente)</option>
-                  {availableTickets
-                    .filter(t => t.id !== currentTicketId) // Evita que a tarefa dependa dela própria
-                    .map(t => (
-                      <option key={t.id} value={t.id}>#{t.id} - {t.title}</option>
-                    ))}
-                </select>
+                <input
+                  type="text"
+                  placeholder="Começa a escrever o nome da tarefa antecedente..."
+                  value={dependencySearch}
+                  onChange={e => {
+                    setDependencySearch(e.target.value);
+                    setShowDependencyDropdown(true);
+                    if (!e.target.value) setNewBlockedById('');
+                  }}
+                  onFocus={() => setShowDependencyDropdown(true)}
+                  className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2 text-sm text-zinc-100 focus:outline-none"
+                />
+                {showDependencyDropdown && dependencySearch && (
+                  <div className="absolute z-10 w-full bg-zinc-900 border border-zinc-800 mt-1 rounded-xl shadow-xl max-h-40 overflow-y-auto">
+                    {availableTickets
+                      .filter(t => t.id !== currentTicketId)
+                      .filter(t => t.title.toLowerCase().includes(dependencySearch.toLowerCase()) || String(t.id).includes(dependencySearch))
+                      .slice(0, 20)
+                      .map(t => (
+                        <div
+                          key={t.id}
+                          onClick={() => {
+                            setNewBlockedById(t.id);
+                            setDependencySearch(`#${t.id} - ${t.title}`);
+                            setShowDependencyDropdown(false);
+                          }}
+                          className="px-3 py-2 text-sm text-zinc-200 hover:bg-zinc-800 cursor-pointer border-b border-zinc-800 last:border-b-0"
+                        >
+                          #{t.id} - {t.title}
+                        </div>
+                      ))}
+                    {availableTickets.filter(t => t.id !== currentTicketId && (t.title.toLowerCase().includes(dependencySearch.toLowerCase()) || String(t.id).includes(dependencySearch))).length === 0 && (
+                      <div className="px-3 py-2 text-xs text-zinc-500 text-center">Nenhuma tarefa encontrada.</div>
+                    )}
+                  </div>
+                )}
               </div>
 
               {/* SECÇÃO DE SUBTAREFAS (apenas em edição, requer tarefa já criada) */}
@@ -5478,17 +5595,22 @@ const fetchWeekStatus = async () => {
                       <p className="text-xs text-zinc-500">Sem subtarefas ainda.</p>
                     ) : (
                       subtasks.map(sub => (
-                        <label key={sub.id} className="flex items-center gap-2 text-sm bg-zinc-950 border border-zinc-800 p-2 rounded-lg cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked={sub.is_completed}
-                            onChange={() => handleToggleSubtask(sub.id, sub.is_completed)}
-                            className="accent-zinc-100"
-                          />
-                          <span className={sub.is_completed ? "line-through text-zinc-500 flex-1" : "flex-1 text-zinc-200"}>
-                            {sub.title}
+                        <div key={sub.id} className="flex items-center justify-between gap-2 text-sm bg-zinc-950 border border-zinc-800 p-2 rounded-lg">
+                          <label className="flex items-center gap-2 cursor-pointer flex-1 min-w-0">
+                            <input
+                              type="checkbox"
+                              checked={sub.is_completed}
+                              onChange={() => handleToggleSubtask(sub.id, sub.is_completed)}
+                              className="accent-zinc-100 shrink-0"
+                            />
+                            <span className={sub.is_completed ? "line-through text-zinc-500 truncate" : "text-zinc-200 truncate"}>
+                              {sub.title}
+                            </span>
+                          </label>
+                          <span className="text-[10px] bg-blue-500/20 text-blue-300 px-2 py-0.5 rounded shrink-0">
+                            {usersList.find(u => u.id === sub.assigned_to_id) ? getUserDisplayName(usersList.find(u => u.id === sub.assigned_to_id)) : 'Não atribuído'}
                           </span>
-                        </label>
+                        </div>
                       ))
                     )}
                   </div>
@@ -5500,9 +5622,66 @@ const fetchWeekStatus = async () => {
                       onChange={e => setNewSubTitle(e.target.value)}
                       className="flex-1 bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-1.5 text-sm text-zinc-100 focus:outline-none"
                     />
+                    <select
+                      value={newSubAssignee}
+                      onChange={e => setNewSubAssignee(e.target.value)}
+                      className="bg-zinc-950 border border-zinc-800 rounded-xl px-2 py-1.5 text-xs text-zinc-100 focus:outline-none"
+                    >
+                      <option value="">Atribuir a...</option>
+                      {usersList.map(u => <option key={u.id} value={u.id}>{getUserDisplayName(u)}</option>)}
+                    </select>
                     <button type="button" onClick={handleAddSubtask} className="bg-zinc-800 hover:bg-zinc-700 text-zinc-100 px-3 py-1.5 text-sm rounded-xl font-medium transition">
                       Adicionar
                     </button>
+                  </div>
+                </div>
+              )}
+
+              {/* HISTÓRICO / AUDIT LOGS DA TAREFA (apenas em edição, apenas Admin) */}
+              {editMode && isAdmin && (
+                <div className="mb-2 border-t border-zinc-800 pt-4">
+                  <h3 className="font-semibold text-xs mb-2 text-zinc-400 uppercase tracking-wider">📜 Histórico da Tarefa</h3>
+                  <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1 text-xs">
+                    {ticketHistoryLogs.length === 0 ? (
+                      <p className="text-zinc-500 italic">Sem registos de histórico para esta tarefa ainda.</p>
+                    ) : (
+                      ticketHistoryLogs.map(log => (
+                        <div key={log.id} className="bg-zinc-950 p-2.5 rounded-lg border border-zinc-800 flex flex-col gap-1">
+                          <div className="flex justify-between items-center text-zinc-500">
+                            <span className="font-bold text-blue-400">{log.action}</span>
+                            <span className="text-[10px] text-zinc-500">
+                              {log.created_at ? new Date(log.created_at).toLocaleString('pt-PT') : ''}
+                            </span>
+                          </div>
+                          <div className="text-zinc-200 font-medium">{log.details}</div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* SECÇÃO DO HISTÓRICO DA TAREFA */}
+              {editMode && (
+                <div className="mb-6 border-t border-gray-700 pt-4 mt-4">
+                  <h3 className="font-semibold text-sm mb-2 text-gray-300">📜 Histórico da Tarefa (Por onde andou)</h3>
+                  <div className="space-y-2 max-h-40 overflow-y-auto text-xs bg-gray-950 p-3 rounded border border-gray-800">
+                    {(!ticketLogs || ticketLogs.length === 0) ? (
+                      <p className="text-gray-500 italic">Sem registos de histórico para esta tarefa ainda.</p>
+                    ) : (
+                      ticketLogs.map(log => (
+                        <div key={log.id} className="bg-gray-900 p-2.5 rounded border border-gray-700 flex flex-col gap-1">
+                          <div className="flex justify-between items-center text-gray-400">
+                            <span className="font-bold text-blue-400">{log.username || "Sistema"}</span>
+                            <span className="text-[10px] text-gray-400">
+                              {log.created_at ? new Date(log.created_at).toLocaleString() : ''}
+                            </span>
+                          </div>
+                          <div className="text-blue-300 font-semibold text-[11px]">{log.action}</div>
+                          <div className="text-gray-200">{log.details}</div>
+                        </div>
+                      ))
+                    )}
                   </div>
                 </div>
               )}
@@ -5550,10 +5729,10 @@ const fetchWeekStatus = async () => {
                   </select>
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-zinc-400 mb-1">Cliente</label>
-                  <select value={projectClientId} onChange={e => setProjectClientId(e.target.value)} className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-sm text-zinc-100 focus:outline-none">
-                    <option value="">Nenhum</option>
-                    {clients.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                  <label className="block text-xs font-medium text-zinc-400 mb-1">Cliente do Projeto <span className="text-red-400">*</span></label>
+                  <select required value={projectClientId} onChange={e => setProjectClientId(e.target.value)} className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-sm text-zinc-100 focus:outline-none">
+                    <option value="">Seleciona o cliente obrigatório...</option>
+                    {clients.map(c => <option key={c.id} value={c.id}>{c.name}{c.company ? ` (${c.company})` : ''}</option>)}
                   </select>
                 </div>
               </div>
@@ -5766,6 +5945,28 @@ const fetchWeekStatus = async () => {
                   >
                     📥 Descarregar / Ver Anexo
                   </a>
+                </div>
+              )}
+
+              {/* Histórico de Passagens / Atividade da Tarefa (apenas Admin, tal como o /audit-logs/) */}
+              {isAdmin && (
+                <div className="border-t border-zinc-800 pt-4">
+                  <span className="block text-xs font-medium text-zinc-500 uppercase mb-2">📜 Histórico de Passagens / Atividade</span>
+                  <div className="space-y-2 max-h-40 overflow-y-auto pr-1">
+                    {ticketHistoryLogs.length === 0 ? (
+                      <p className="text-xs text-zinc-500 italic">Sem registos de histórico para esta tarefa ainda.</p>
+                    ) : (
+                      ticketHistoryLogs.map(log => (
+                        <div key={log.id} className="bg-zinc-950 border border-zinc-800 p-2.5 rounded-xl flex flex-col gap-1">
+                          <div className="flex justify-between items-center text-[11px] text-zinc-500">
+                            <span className="font-bold text-blue-400">{log.action}</span>
+                            <span>{log.created_at ? new Date(log.created_at).toLocaleString('pt-PT') : ''}</span>
+                          </div>
+                          <div className="text-xs font-medium text-zinc-200">{log.details}</div>
+                        </div>
+                      ))
+                    )}
+                  </div>
                 </div>
               )}
             </div>
