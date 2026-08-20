@@ -1116,13 +1116,17 @@ const fetchWeekStatus = async () => {
       try {
         const ticketsRes = await axios.get(query, { headers });
 
-        // 🔒 FILTRO DE SEGURANÇA PARA A KANBAN:
-        // Se o user logado for 'Member', guarda apenas os tickets que lhe pertencem na lista principal
+        // 🔒 FILTRO DE SEGURANÇA PARA A LISTAGEM GERAL:
+        // Inclui tarefas onde o utilizador é o responsável, o criador OU tem uma subtarefa atribuída
         const userRole = loggedRole?.toLowerCase();
         let ticketsToSave = ticketsRes.data;
 
         if (userRole === 'member') {
-          ticketsToSave = ticketsRes.data.filter(t => t.assigned_to_id === loggedId || t.creator_id === loggedId);
+          ticketsToSave = ticketsRes.data.filter(t => 
+            t.assigned_to_id === loggedId || 
+            t.creator_id === loggedId ||
+            t.sub_tasks?.some(sub => sub.assigned_to_id === loggedId)
+          );
         }
 
         setTickets(ticketsToSave);
@@ -1676,6 +1680,7 @@ const fetchWeekStatus = async () => {
       setNewSubTitle('');
       setNewSubAssignee('');
       fetchSubtasks(currentTicketId);
+      fetchData(); // 🔄 Atualiza logo a lista geral e a Kanban
     } catch (err) {
       alert(err.response?.data?.detail || 'Erro ao criar subtarefa.');
     }
@@ -1686,6 +1691,7 @@ const fetchWeekStatus = async () => {
       const headers = { Authorization: `Bearer ${token}` };
       await axios.put(`${API_URL}/tickets/subtasks/${subId}`, { is_completed: !currentStatus }, { headers });
       fetchSubtasks(currentTicketId);
+      fetchData(); // 🔄 Atualiza logo a lista geral e a Kanban
     } catch (err) {
       alert(err.response?.data?.detail || 'Erro ao atualizar subtarefa.');
     }
@@ -1831,9 +1837,15 @@ const fetchWeekStatus = async () => {
   const isTeamLeader = availableTeams.some(t => t.owner_id === currentUserInfo.id);
   // Admin, Manager e Líder de Equipa veem todas as tarefas dos projetos a que têm acesso; um membro normal só vê as suas
   const canSeeProjectTickets = isManagerOrAdmin || isTeamLeader;
+  // 🔍 Inclui tickets onde o colaborador tem subtarefas atribuídas
   const availableTickets = isAdmin
     ? tickets
-    : tickets.filter(t => t.assigned_to_id === currentUserInfo.id || t.creator_id === currentUserInfo.id || (canSeeProjectTickets && availableProjectIds.includes(t.project_id)));
+    : tickets.filter(t => 
+        t.assigned_to_id === currentUserInfo.id || 
+        t.creator_id === currentUserInfo.id || 
+        t.sub_tasks?.some(sub => sub.assigned_to_id === currentUserInfo.id) ||
+        (canSeeProjectTickets && availableProjectIds.includes(t.project_id))
+      );
 
   const now = new Date();
   const year = now.getFullYear();
@@ -1941,11 +1953,15 @@ const fetchWeekStatus = async () => {
     return 0;
   });
 
-  // 🛠️ Filtra para a Kanban pessoal mostrar apenas as tuas tarefas (exceto se fores Admin/Manager)
+  // 🛠️ Filtro da Kanban pessoal (mostra apenas as tuas tarefas, exceto se fores Admin/Manager)
   const myKanbanTickets = availableTickets.filter(ticket => {
     const role = currentUserInfo?.role?.toLowerCase();
-    if (role === 'admin' || role === 'manager') return true; // Admins e managers veem tudo na kanban
-    return ticket.assigned_to_id === currentUserInfo?.id || ticket.creator_id === currentUserInfo?.id; // Members veem as suas ou as que criaram
+    if (role === 'admin' || role === 'manager') return true;
+    return (
+      ticket.assigned_to_id === currentUserInfo?.id || 
+      ticket.creator_id === currentUserInfo?.id ||
+      ticket.sub_tasks?.some(sub => sub.assigned_to_id === currentUserInfo?.id)
+    );
   });
 
   // Aplica os mesmos filtros de projeto/prioridade/tipo e a mesma ordenação da lista, mas sobre myKanbanTickets
@@ -3380,8 +3396,12 @@ const fetchWeekStatus = async () => {
                     const columnTickets = sortedKanbanTickets
                       .filter(t => t.status === col.id)
                       .filter(t => {
-                        if (kanbanRole === 'admin' || kanbanRole === 'manager') return true; // Admins e managers veem tudo
-                        return t.assigned_to_id === currentUserInfo?.id || t.creator_id === currentUserInfo?.id; // Membros comuns veem o que lhes pertence ou que criaram
+                        if (kanbanRole === 'admin' || kanbanRole === 'manager') return true;
+                        return (
+                          t.assigned_to_id === currentUserInfo?.id || 
+                          t.creator_id === currentUserInfo?.id ||
+                          t.sub_tasks?.some(sub => sub.assigned_to_id === currentUserInfo?.id)
+                        );
                       });
                     return (
                       <div 
@@ -3463,6 +3483,33 @@ const fetchWeekStatus = async () => {
                                     <p className="text-xs text-zinc-400 mt-1 line-clamp-2">{ticket.description || 'Sem descrição'}</p>
                                   </div>
 
+                                  {/* 🎯 MOSTRA AS SUBTAREFAS ATRIBUÍDAS DIRETAMENTE NO CARTÃO */}
+                                  {ticket.sub_tasks && ticket.sub_tasks.some(s => s.assigned_to_id === currentUserInfo?.id) && (
+                                    <div className="bg-indigo-950/40 border border-indigo-500/30 rounded-xl p-2.5 space-y-1.5">
+                                      <p className="text-[10px] font-bold text-indigo-300 uppercase tracking-wider flex items-center gap-1">
+                                        📌 As Tuas Subtarefas:
+                                      </p>
+                                      {ticket.sub_tasks
+                                        .filter(s => s.assigned_to_id === currentUserInfo?.id)
+                                        .map(sub => (
+                                          <label key={sub.id} className="flex items-center gap-2 text-xs cursor-pointer select-none">
+                                            <input
+                                              type="checkbox"
+                                              checked={sub.is_completed}
+                                              onChange={(e) => {
+                                                e.stopPropagation();
+                                                handleToggleSubtask(sub.id, sub.is_completed);
+                                              }}
+                                              className="accent-indigo-500 rounded cursor-pointer shrink-0"
+                                            />
+                                            <span className={sub.is_completed ? "line-through text-zinc-500" : "text-zinc-200"}>
+                                              {sub.title}
+                                            </span>
+                                          </label>
+                                        ))}
+                                    </div>
+                                  )}
+
                                   <div className="flex flex-wrap items-center justify-between text-[11px] pt-2 border-t border-zinc-900 gap-1">
                                     <span className="bg-zinc-900 text-zinc-400 px-2 py-0.5 rounded border border-zinc-800">📁 {getProjectName(ticket.project_id)}</span>
                                     {clientNameStr && <span className="bg-blue-950/40 text-blue-300 px-2 py-0.5 rounded border border-blue-500/30">🏢 {clientNameStr}</span>}
@@ -3510,6 +3557,29 @@ const fetchWeekStatus = async () => {
                                 {isRunning && <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-400 border border-blue-500/30 animate-pulse">ATIVO</span>}
                               </div>
                               <p className="text-xs text-zinc-400 pl-7">{ticket.description || 'Sem descrição'}</p>
+
+                              {/* Subtarefas na Vista de Lista */}
+                              {ticket.sub_tasks && ticket.sub_tasks.some(s => s.assigned_to_id === currentUserInfo?.id) && (
+                                <div className="ml-7 mt-2 bg-indigo-950/30 border border-indigo-500/20 rounded-lg p-2 space-y-1 max-w-md">
+                                  <span className="text-[10px] font-semibold text-indigo-400 uppercase tracking-wider block">
+                                    Subtarefas atribuídas a ti:
+                                  </span>
+                                  {ticket.sub_tasks
+                                    .filter(s => s.assigned_to_id === currentUserInfo?.id)
+                                    .map(sub => (
+                                      <label key={sub.id} className="flex items-center gap-2 text-xs text-zinc-300 cursor-pointer">
+                                        <input
+                                          type="checkbox"
+                                          checked={sub.is_completed}
+                                          onChange={() => handleToggleSubtask(sub.id, sub.is_completed)}
+                                          className="accent-indigo-500 rounded cursor-pointer"
+                                        />
+                                        <span className={sub.is_completed ? "line-through text-zinc-500" : ""}>{sub.title}</span>
+                                      </label>
+                                    ))}
+                                </div>
+                              )}
+
                               <div className="text-[11px] text-zinc-500 pl-7 flex items-center gap-3">
                                 <span>⏱️ <strong>{ticket.tracked_hours || 0}h</strong> / 🎯 <strong>{ticket.estimated_hours || 0}h</strong></span>
                                 {ticket.due_date && <span>📅 <strong>{ticket.due_date.split('T')[0]}</strong></span>}
