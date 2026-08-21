@@ -566,6 +566,7 @@ const fetchWeekStatus = async () => {
   // Filtro de Estatísticas
   const [statsPeriod, setStatsPeriod] = useState('7'); 
   const [chartHoursData, setChartHoursData] = useState({ labels: [], hours: [] });
+  const [isRefreshingStats, setIsRefreshingStats] = useState(false);
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -769,6 +770,27 @@ const fetchWeekStatus = async () => {
       fetchChartHours();
     }
   }, [activeTab, statsPeriod, token]);
+
+  // Atualiza contadores/horas de hoje e o gráfico de horas em simultâneo
+  const handleRefreshStats = async () => {
+    if (!token) return;
+    try {
+      setIsRefreshingStats(true);
+      const headers = { Authorization: `Bearer ${token}` };
+
+      const [statsRes, chartRes] = await Promise.all([
+        axios.get(`${API_URL}/tickets/me/stats`, { headers }),
+        axios.get(`${API_URL}/tickets/statistics/chart-hours?period=${statsPeriod || "7"}`, { headers })
+      ]);
+
+      setStats(statsRes.data);
+      setChartHoursData(chartRes.data);
+    } catch (error) {
+      console.error("Erro ao atualizar estatísticas:", error);
+    } finally {
+      setIsRefreshingStats(false);
+    }
+  };
 
   // Carregar salas de chat do utilizador
   const fetchChatRooms = async () => {
@@ -4719,8 +4741,13 @@ const fetchWeekStatus = async () => {
                     <option value="30">Último mês</option>
                     <option value="180">Últimos 6 meses</option>
                   </select>
-                  <button onClick={() => fetchData()} className="p-2 bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-zinc-100 rounded-xl transition">
-                    <RefreshCw className="w-4 h-4" />
+                  <button
+                    type="button"
+                    onClick={handleRefreshStats}
+                    className="flex items-center gap-2 px-3.5 py-1.5 bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-300 hover:text-white rounded-xl text-xs font-medium transition cursor-pointer"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${isRefreshingStats ? "animate-spin" : ""}`} />
+                    <span>Atualizar</span>
                   </button>
                 </div>
               </div>
