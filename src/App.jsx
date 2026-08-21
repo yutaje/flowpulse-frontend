@@ -9,6 +9,15 @@ import {
 
 const API_URL = 'http://127.0.0.1:8000'; 
 
+// Lista centralizada de cargos disponíveis na aplicação
+const ROLES_LIST = [
+  { value: "Admin", label: "Administrador", color: "text-red-400 bg-red-500/10 border-red-500/30" },
+  { value: "Gestor de Operações", label: "Gestor de Operações", color: "text-purple-400 bg-purple-500/10 border-purple-500/30" },
+  { value: "Gestor de Projeto", label: "Gestor de Projeto", color: "text-blue-400 bg-blue-500/10 border-blue-500/30" },
+  { value: "Líder de Equipa", label: "Líder de Equipa", color: "text-amber-400 bg-amber-500/10 border-amber-500/30" },
+  { value: "Técnico", label: "Técnico / Colaborador", color: "text-emerald-400 bg-emerald-500/10 border-emerald-500/30" }
+];
+
 export default function App() {
   const [token, setToken] = useState(localStorage.getItem('token') || '');
   const [email, setEmail] = useState('');
@@ -533,7 +542,7 @@ const fetchWeekStatus = async () => {
   const dashboardCardsData = getSelectedDayDashboard();
 
   const [activeWorkers, setActiveWorkers] = useState([]);
-  const [currentUserInfo, setCurrentUserInfo] = useState({ id: null, role: 'Member', name: '', email: '' });
+  const [currentUserInfo, setCurrentUserInfo] = useState({ id: null, role: 'Técnico', name: '', email: '' });
 
   // Estados do Perfil / Definições
   const [settingsName, setSettingsName] = useState('');
@@ -565,6 +574,26 @@ const fetchWeekStatus = async () => {
   const [secondsElapsed, setSecondsElapsed] = useState(0);
   // Guarda a hora exata (ISO) em que o cronómetro foi iniciado — "Horário da Escola"
   const [timerStartTime, setTimerStartTime] = useState(null);
+
+  // Estados para controlo de inatividade do cronómetro
+  const [showIdleModal, setShowIdleModal] = useState(false);
+  const [idleCountdown, setIdleCountdown] = useState(60);
+  const IDLE_LIMIT_MS = 15 * 60 * 1000; // 15 minutos em milissegundos
+
+  // Estados de Feedback
+  const [pendingFeedbacks, setPendingFeedbacks] = useState([]);
+  const [showFeedbackModal, setShowFeedbackModal] = useState(false);
+  const [selectedFeedbackReq, setSelectedFeedbackReq] = useState(null);
+  const [feedbackRating, setFeedbackRating] = useState(5);
+  const [feedbackComment, setFeedbackComment] = useState("");
+
+  // Estados para criar pedido de feedback
+  const [showCreateFeedbackModal, setShowCreateFeedbackModal] = useState(false);
+  const [feedbackTargetTicket, setFeedbackTargetTicket] = useState(null);
+  const [newFeedbackTitle, setNewFeedbackTitle] = useState("");
+  const [newFeedbackDesc, setNewFeedbackDesc] = useState("");
+  const [newFeedbackDeadline, setNewFeedbackDeadline] = useState("");
+  const [newFeedbackUsers, setNewFeedbackUsers] = useState([]);
 
   // Estados Modais de Tarefa
   const [showModal, setShowModal] = useState(false);
@@ -639,7 +668,7 @@ const fetchWeekStatus = async () => {
   const [newUserName, setNewUserName] = useState('');
   const [newUserEmail, setNewUserEmail] = useState('');
   const [newUserPassword, setNewUserPassword] = useState('');
-  const [newUserRole, setNewUserRole] = useState('Member');
+  const [newUserRole, setNewUserRole] = useState('Técnico');
 
   const [showCommentsModal, setShowCommentsModal] = useState(false);
   const [activeTaskForComments, setActiveTaskForComments] = useState(null);
@@ -953,6 +982,13 @@ const fetchWeekStatus = async () => {
     }
   }, [token]);
 
+  // Carrega os pedidos de feedback pendentes
+  useEffect(() => {
+    if (token) {
+      fetchPendingFeedbacks();
+    }
+  }, [token]);
+
   const markNotifAsRead = async (id) => {
     try {
       const headers = { Authorization: `Bearer ${token}` };
@@ -1050,6 +1086,152 @@ const fetchWeekStatus = async () => {
     }
   };
 
+  // 1. O utilizador confirmou que ainda está presente
+  const handleKeepWorking = () => {
+    setShowIdleModal(false);
+    setIdleCountdown(60);
+  };
+
+  // 2. Parar cronómetro descontando o tempo inativo
+  const handleAutoStopIdleTimer = async () => {
+    setShowIdleModal(false);
+    if (!activeTimerTask) return;
+
+    try {
+      const idleHours = 15 / 60; // 15 minutos em formato de horas decimais (0.25h)
+      const totalSessionHours = Math.max(0, (secondsElapsed / 3600) - idleHours);
+
+      const now = new Date();
+      const adjustedEndTime = new Date(now.getTime() - (15 * 60 * 1000)); // Termina no momento em que ficou inativo
+
+      const payload = {
+        tracked_hours: Number(((activeTimerTask.tracked_hours || 0) + totalSessionHours).toFixed(2)),
+        session_hours: Number(totalSessionHours.toFixed(2)),
+        start_time: timerStartTime,
+        end_time: adjustedEndTime.toISOString()
+      };
+
+      const headers = { Authorization: `Bearer ${token}` };
+      await axios.post(`${API_URL}/tickets/${activeTimerTask.id}/stop-timer`, payload, { headers });
+
+      const idleTaskId = activeTimerTask.id;
+      setActiveTimerTask(null);
+      setSecondsElapsed(0);
+      setTimerStartTime(null);
+      fetchData();
+      fetchActiveWorkers();
+      alert(`⏱️ O cronómetro da tarefa #${idleTaskId} foi pausado por inatividade. Foram descontados 15 minutos.`);
+    } catch (err) {
+      console.error("Erro ao pausar cronómetro por inatividade:", err);
+    }
+  };
+
+  // Função para procurar feedbacks pendentes
+  const fetchPendingFeedbacks = async () => {
+    if (!token) return;
+    try {
+      const res = await axios.get(`${API_URL}/feedback/my-pending`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      setPendingFeedbacks(res.data.filter(f => !f.has_responded));
+    } catch (err) {
+      console.error("Erro ao carregar feedbacks:", err);
+    }
+  };
+
+  // Submeter resposta de feedback
+  const handleSubmitFeedback = async (e) => {
+    e.preventDefault();
+    try {
+      await axios.post(
+        `${API_URL}/feedback/requests/${selectedFeedbackReq.id}/respond`,
+        { rating: feedbackRating, comment: feedbackComment },
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      alert("Feedback enviado com sucesso! Obrigado pela colaboração.");
+      setShowFeedbackModal(false);
+      setSelectedFeedbackReq(null);
+      setFeedbackComment("");
+      fetchPendingFeedbacks();
+    } catch (err) {
+      alert(err.response?.data?.detail || "Erro ao enviar feedback.");
+    }
+  };
+
+  // Submeter pedido de feedback (Gestor/Admin)
+  const handleCreateFeedbackRequest = async (e) => {
+    e.preventDefault();
+    if (!newFeedbackTitle.trim() || !newFeedbackDeadline) {
+      alert("Indica o título e a data/hora limite.");
+      return;
+    }
+
+    try {
+      const payload = {
+        title: newFeedbackTitle.trim(),
+        description: newFeedbackDesc.trim() || null,
+        ticket_id: feedbackTargetTicket?.id || null,
+        project_id: feedbackTargetTicket?.project_id || null,
+        target_user_ids: newFeedbackUsers,
+        deadline: new Date(newFeedbackDeadline).toISOString()
+      };
+
+      const headers = { Authorization: `Bearer ${token}` };
+      await axios.post(`${API_URL}/feedback/requests`, payload, { headers });
+
+      alert("✅ Pedido de feedback enviado com sucesso! Os colaboradores foram notificados.");
+      setShowCreateFeedbackModal(false);
+      setFeedbackTargetTicket(null);
+    } catch (err) {
+      alert(err.response?.data?.detail || "Erro ao criar pedido de feedback.");
+    }
+  };
+
+  // Deteta inatividade do utilizador apenas quando há um cronómetro ativo
+  useEffect(() => {
+    // Só monitoriza se houver um cronómetro ativo
+    if (!activeTimerTask) {
+      setShowIdleModal(false);
+      return;
+    }
+
+    let idleTimeout;
+
+    const resetIdleTimer = () => {
+      if (showIdleModal) return; // Não reinicia se o modal de aviso já estiver aberto
+      clearTimeout(idleTimeout);
+      idleTimeout = setTimeout(() => {
+        setShowIdleModal(true);
+        setIdleCountdown(60);
+      }, IDLE_LIMIT_MS);
+    };
+
+    // Eventos do browser para detetar atividade do utilizador
+    const activityEvents = ['mousemove', 'keydown', 'mousedown', 'touchstart', 'scroll'];
+    activityEvents.forEach(evt => window.addEventListener(evt, resetIdleTimer));
+
+    resetIdleTimer();
+
+    return () => {
+      clearTimeout(idleTimeout);
+      activityEvents.forEach(evt => window.removeEventListener(evt, resetIdleTimer));
+    };
+  }, [activeTimerTask, showIdleModal]);
+
+  // Contagem decrescente do Modal de Aviso (60 segundos)
+  useEffect(() => {
+    let timer;
+    if (showIdleModal && idleCountdown > 0) {
+      timer = setInterval(() => {
+        setIdleCountdown(prev => prev - 1);
+      }, 1000);
+    } else if (showIdleModal && idleCountdown <= 0) {
+      // Tempo esgotado -> Parar cronómetro automaticamente e descontar os 15 min de inatividade
+      handleAutoStopIdleTimer();
+    }
+    return () => clearInterval(timer);
+  }, [showIdleModal, idleCountdown]);
+
   // Agarrar uma tarefa que ainda não tem dono, sem precisar de arrancar o cronómetro
   const handleGrabTask = async (ticket) => {
     try {
@@ -1121,7 +1303,11 @@ const fetchWeekStatus = async () => {
         const userRole = loggedRole?.toLowerCase();
         let ticketsToSave = ticketsRes.data;
 
-        if (userRole === 'member') {
+        // 🔒 Só os cargos de gestão global veem todos os tickets à partida;
+        // os restantes cargos (Técnico, Gestor de Projeto, Líder de Equipa) ficam
+        // limitados aqui às suas próprias tarefas — a visibilidade extra de
+        // projeto/equipa é tratada depois em `canSeeProjectTickets`.
+        if (!["admin", "gestor de operações", "manager"].includes(userRole)) {
           ticketsToSave = ticketsRes.data.filter(t => 
             t.assigned_to_id === loggedId || 
             t.creator_id === loggedId ||
@@ -1178,7 +1364,7 @@ const fetchWeekStatus = async () => {
     setNewUserName('');
     setNewUserEmail('');
     setNewUserPassword('');
-    setNewUserRole('Member');
+    setNewUserRole('Técnico');
     setShowUserModal(true);
   };
 
@@ -1686,14 +1872,41 @@ const fetchWeekStatus = async () => {
     }
   };
 
-  const handleToggleSubtask = async (subId, currentStatus) => {
+  // 1. O Técnico submete para aprovação
+  const handleSubmitSubtaskForApproval = async (subId) => {
     try {
       const headers = { Authorization: `Bearer ${token}` };
-      await axios.put(`${API_URL}/tickets/subtasks/${subId}`, { is_completed: !currentStatus }, { headers });
+      await axios.put(`${API_URL}/tickets/subtasks/${subId}/submit`, {}, { headers });
       fetchSubtasks(currentTicketId);
-      fetchData(); // 🔄 Atualiza logo a lista geral e a Kanban
+      fetchData();
     } catch (err) {
-      alert(err.response?.data?.detail || 'Erro ao atualizar subtarefa.');
+      alert(err.response?.data?.detail || 'Erro ao submeter subtarefa para aprovação.');
+    }
+  };
+
+  // 2. O Criador aprova
+  const handleApproveSubtask = async (subId) => {
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      await axios.put(`${API_URL}/tickets/subtasks/${subId}/approve`, {}, { headers });
+      fetchSubtasks(currentTicketId);
+      fetchData();
+    } catch (err) {
+      alert(err.response?.data?.detail || 'Erro ao aprovar subtarefa.');
+    }
+  };
+
+  // 3. O Criador recusa com motivo
+  const handleRejectSubtask = async (subId) => {
+    const reason = window.prompt("Indica o motivo da recusa para o técnico corrigir:");
+    if (!reason || !reason.trim()) return;
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      await axios.put(`${API_URL}/tickets/subtasks/${subId}/reject`, { reason: reason.trim() }, { headers });
+      fetchSubtasks(currentTicketId);
+      fetchData();
+    } catch (err) {
+      alert(err.response?.data?.detail || 'Erro ao recusar subtarefa.');
     }
   };
 
@@ -1825,16 +2038,41 @@ const fetchWeekStatus = async () => {
     }
   };
 
-  const isAdmin = currentUserInfo.role === 'Admin';
-  const isManagerOrAdmin = isAdmin || currentUserInfo.role === 'Manager';
+  const userRole = (currentUserInfo?.role || "").toLowerCase();
+
+  const isAdmin = userRole === "admin";
+  const isManagerOrAdmin = ["admin", "gestor de operações", "manager"].includes(userRole);
+  const isProjectManagerRole = userRole === "gestor de projeto" || isManagerOrAdmin;
+  const isTeamLeaderRole = userRole === "líder de equipa" || isManagerOrAdmin;
+
+  // Função auxiliar de permissões no frontend
+  const canManageTicket = (ticket) => {
+    if (!ticket || !currentUserInfo) return false;
+
+    if (isManagerOrAdmin) return true;
+    if (ticket.creator_id === currentUserInfo.id) return true;
+    if (ticket.assigned_to_id === currentUserInfo.id) return true;
+
+    // Se o utilizador for gestor do projeto (cargo global ou gestor específico deste projeto)
+    const project = projects.find(p => p.id === ticket.project_id);
+    if (isProjectManagerRole && project) return true;
+    if (project && project.manager_id === currentUserInfo.id) return true;
+
+    // Se o utilizador for líder da equipa (cargo global ou líder específico desta equipa)
+    const team = teams.find(t => t.id === ticket.team_id);
+    if (isTeamLeaderRole && team) return true;
+    if (team && (team.leader_id === currentUserInfo.id || team.manager_id === currentUserInfo.id)) return true;
+
+    return false;
+  };
 
   const availableTeams = isAdmin ? teams : teams.filter(t => t.members?.some(m => m.id === currentUserInfo.id) || t.owner_id === currentUserInfo.id);
   const availableTeamIds = availableTeams.map(t => t.id);
   const availableProjects = isAdmin ? projects : projects.filter(p => !p.team_id || availableTeamIds.includes(p.team_id));
   const availableProjectIds = availableProjects.map(p => p.id);
 
-  // Líder de Equipa = dono (owner_id) de pelo menos uma das suas equipas
-  const isTeamLeader = availableTeams.some(t => t.owner_id === currentUserInfo.id);
+  // Líder de Equipa = dono (owner_id) de pelo menos uma das suas equipas, ou tem o cargo global de Líder de Equipa
+  const isTeamLeader = isTeamLeaderRole || availableTeams.some(t => t.owner_id === currentUserInfo.id);
   // Admin, Manager e Líder de Equipa veem todas as tarefas dos projetos a que têm acesso; um membro normal só vê as suas
   const canSeeProjectTickets = isManagerOrAdmin || isTeamLeader;
   // 🔍 Inclui tickets onde o colaborador tem subtarefas atribuídas
@@ -1955,8 +2193,7 @@ const fetchWeekStatus = async () => {
 
   // 🛠️ Filtro da Kanban pessoal (mostra apenas as tuas tarefas, exceto se fores Admin/Manager)
   const myKanbanTickets = availableTickets.filter(ticket => {
-    const role = currentUserInfo?.role?.toLowerCase();
-    if (role === 'admin' || role === 'manager') return true;
+    if (isManagerOrAdmin) return true;
     return (
       ticket.assigned_to_id === currentUserInfo?.id || 
       ticket.creator_id === currentUserInfo?.id ||
@@ -2148,6 +2385,11 @@ const fetchWeekStatus = async () => {
   const maxHours = Math.max(...(chartHoursData.hours.length ? chartHoursData.hours : [0]), 1);
   const totalTasksPeriod = tasksPerPeriod.reduce((sum, val) => sum + safeNumber(val), 0);
   const totalHoursPeriod = hoursPerPeriod.reduce((sum, val) => sum + safeNumber(val), 0);
+
+  // 🔒 Verifica se o utilizador apenas tem uma subtarefa nesta tarefa (modal de edição)
+  const editingTicketObj = tickets.find(t => t.id === currentTicketId);
+  const isOwnerOrCreator = canManageTicket(editingTicketObj);
+  const isSubtaskCollaborator = !isOwnerOrCreator && subtasks.some(s => s.assigned_to_id === currentUserInfo?.id);
 
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 flex overflow-hidden">
@@ -2484,6 +2726,25 @@ const fetchWeekStatus = async () => {
                 </button>
               </div>
 
+              {/* BANNER DE FEEDBACKS PENDENTES */}
+              {pendingFeedbacks.length > 0 && (
+                <div className="bg-amber-500/10 border border-amber-500/30 p-3 rounded-2xl mb-4 flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2 text-amber-400 text-xs font-medium">
+                    <span className="text-base animate-bounce">📋</span>
+                    <span>Tens <strong>{pendingFeedbacks.length}</strong> pedido(s) de feedback a aguardar a tua resposta.</span>
+                  </div>
+                  <button
+                    onClick={() => {
+                      setSelectedFeedbackReq(pendingFeedbacks[0]);
+                      setShowFeedbackModal(true);
+                    }}
+                    className="bg-amber-500 hover:bg-amber-400 text-zinc-950 text-xs font-bold px-3 py-1.5 rounded-xl transition cursor-pointer"
+                  >
+                    Responder Agora
+                  </button>
+                </div>
+              )}
+
               {/* CARTÃO DE RECOMENDAÇÃO INTELIGENTE DA IA */}
               <div className="bg-gradient-to-r from-purple-950/40 via-zinc-900 to-zinc-900 border border-purple-500/30 rounded-2xl p-6 mb-6 shadow-xl">
                 <div className="flex items-center justify-between mb-3">
@@ -2660,7 +2921,7 @@ const fetchWeekStatus = async () => {
                             <button onClick={() => openComments(ticket)} className="p-2 text-zinc-400 hover:text-zinc-100 bg-zinc-900 border border-zinc-800 rounded-lg transition" title="Comentários">
                               <MessageSquare className="w-3.5 h-3.5" />
                             </button>
-                            {(isManagerOrAdmin || ticket.creator_id === currentUserInfo.id) && (
+                            {canManageTicket(ticket) && (
                               <button onClick={() => handleOpenEditModal(ticket)} className="p-2 text-zinc-400 hover:text-zinc-100 bg-zinc-900 border border-zinc-800 rounded-lg transition" title="Editar">
                                 <Edit3 className="w-3.5 h-3.5" />
                               </button>
@@ -2710,14 +2971,23 @@ const fetchWeekStatus = async () => {
                 <div className="divide-y divide-zinc-800/60">
                   {usersList.map(user => {
                     const isMe = user.id === currentUserInfo.id;
+                    const roleObj = ROLES_LIST.find(r => r.value.toLowerCase() === (user.role || "").toLowerCase()) || {
+                      label: user.role || "Técnico",
+                      color: "text-zinc-400 bg-zinc-800 border-zinc-700"
+                    };
                     return (
                       <div key={user.id} className="grid grid-cols-12 gap-4 px-6 py-4 items-center hover:bg-zinc-850/50 transition">
                         <div className="col-span-1 text-xs font-mono text-zinc-500">#{user.id}</div>
                         <div className="col-span-3 flex items-center gap-3">
-                          <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold ${user.role === 'Admin' ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20' : 'bg-zinc-800 text-zinc-300 border border-zinc-700'}`}>
+                          <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold border ${roleObj.color}`}>
                             {user.name ? user.name.charAt(0).toUpperCase() : 'U'}
                           </div>
-                          <span className="text-sm font-medium text-zinc-200 truncate">{user.name || 'Sem nome'}</span>
+                          <div className="flex flex-col gap-1">
+                            <span className="text-sm font-medium text-zinc-200 truncate">{user.name || 'Sem nome'}</span>
+                            <span className={`w-fit text-[10px] font-semibold px-2 py-0.5 rounded-full border ${roleObj.color}`}>
+                              {roleObj.label}
+                            </span>
+                          </div>
                         </div>
                         <div className="col-span-4 text-sm text-zinc-400 truncate">{user.email}</div>
                         <div className="col-span-2">
@@ -2725,11 +2995,13 @@ const fetchWeekStatus = async () => {
                             value={user.role} 
                             onChange={(e) => handleRoleChange(user.id, e.target.value)}
                             disabled={isMe}
-                            className={`w-full bg-zinc-950 border text-xs rounded-xl px-3 py-1.5 focus:outline-none transition ${user.role === 'Admin' ? 'border-amber-500/30 text-amber-400' : 'border-zinc-800 text-zinc-300'} ${isMe ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:border-zinc-600'}`}
+                            className={`w-full bg-zinc-950 border text-xs rounded-xl px-3 py-1.5 focus:outline-none transition ${roleObj.color} ${isMe ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:border-zinc-600'}`}
                           >
-                            <option value="Member">Member</option>
-                            <option value="Manager">Manager</option>
-                            <option value="Admin">Admin</option>
+                            {ROLES_LIST.map((r) => (
+                              <option key={r.value} value={r.value} className="bg-zinc-900 text-zinc-200">
+                                {r.label}
+                              </option>
+                            ))}
                           </select>
                         </div>
                         <div className="col-span-2 flex justify-end gap-2">
@@ -3392,11 +3664,10 @@ const fetchWeekStatus = async () => {
                     // 🛑 FILTRO DE ÚLTIMA INSTÂNCIA NA KANBAN
                     // Garante que só chegam ao ecrã os tickets do próprio utilizador (se for Member),
                     // independentemente do que vier de sortedKanbanTickets/availableTickets/API.
-                    const kanbanRole = currentUserInfo?.role?.toLowerCase();
                     const columnTickets = sortedKanbanTickets
                       .filter(t => t.status === col.id)
                       .filter(t => {
-                        if (kanbanRole === 'admin' || kanbanRole === 'manager') return true;
+                        if (isManagerOrAdmin) return true;
                         return (
                           t.assigned_to_id === currentUserInfo?.id || 
                           t.creator_id === currentUserInfo?.id ||
@@ -3429,12 +3700,15 @@ const fetchWeekStatus = async () => {
                               const isDone = ticket.status === 'Done';
                               const assignee = getAssigneeName(ticket.assigned_to_id);
                               const clientNameStr = getClientName(ticket.client_id);
+                              const isOwnerOrCreator = canManageTicket(ticket);
+                              const isSubtaskOnly = !isOwnerOrCreator && ticket.sub_tasks?.some(s => s.assigned_to_id === currentUserInfo?.id);
                               return (
                                 <div 
                                   key={ticket.id}
                                   draggable
                                   onDragStart={(e) => handleDragStart(e, ticket.id)}
-                                  className="bg-zinc-950 border border-zinc-800/90 hover:border-zinc-700 p-4 rounded-xl cursor-grab active:cursor-grabbing transition space-y-3 shadow-sm group"
+                                  onClick={() => handleOpenEditModal(ticket)}
+                                  className="bg-zinc-900/90 border border-zinc-800 hover:border-zinc-700 p-3.5 rounded-2xl shadow-sm transition-all duration-200 cursor-pointer flex flex-col gap-3 group relative hover:shadow-md"
                                 >
                                   <div className="flex items-start justify-between gap-2">
                                     <div className="flex items-center gap-2">
@@ -3451,30 +3725,98 @@ const fetchWeekStatus = async () => {
                                       )}
                                     </div>
                                     <div className="flex items-center gap-1 opacity-80 group-hover:opacity-100 transition">
-                                      {!isDone && (
-                                        <button onClick={() => openCompleteModal(ticket)} title="Concluir com Relatório" className="p-1.5 bg-zinc-900 border border-zinc-800 text-emerald-400 hover:text-emerald-300 rounded-md transition">
+                                      {/* 👁️ Botão de Ver / Abrir Detalhes da Tarefa (Disponível para TODOS) */}
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          handleOpenEditModal(ticket);
+                                        }}
+                                        title={isOwnerOrCreator ? "Editar Tarefa" : "Ver Detalhes da Tarefa"}
+                                        className="p-1.5 bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-blue-400 hover:border-blue-500/30 rounded-md transition cursor-pointer"
+                                      >
+                                        <Edit3 className="w-3.5 h-3.5" />
+                                      </button>
+
+                                      {/* Botão de Concluir Tarefa Principal: Só para o dono ou gestão */}
+                                      {(isOwnerOrCreator || isManagerOrAdmin) && !isDone && (
+                                        <button
+                                          type="button"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            openCompleteModal(ticket);
+                                          }}
+                                          title="Concluir com Relatório"
+                                          className="p-1.5 bg-zinc-900 border border-zinc-800 text-emerald-400 hover:text-emerald-300 rounded-md transition cursor-pointer"
+                                        >
                                           <Check className="w-3.5 h-3.5" />
                                         </button>
                                       )}
-                                      {!ticket.assigned_to_id && (
-                                        <button onClick={() => handleGrabTask(ticket)} title="Agarrar Tarefa" className="p-1.5 bg-zinc-900 border border-amber-500/30 text-amber-400 hover:text-amber-300 rounded-md transition">
+
+                                      {/* Botão de Agarrar: Apenas se for livre e o user não estiver em subtarefa */}
+                                      {!ticket.assigned_to_id && !isSubtaskOnly && (
+                                        <button
+                                          type="button"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            handleGrabTask(ticket);
+                                          }}
+                                          title="Agarrar Tarefa"
+                                          className="p-1.5 bg-zinc-900 border border-amber-500/30 text-amber-400 hover:text-amber-300 rounded-md transition cursor-pointer"
+                                        >
                                           ✋
                                         </button>
                                       )}
-                                      <button onClick={() => startTimer(ticket)} title="Iniciar Cronómetro" className={`p-1.5 rounded-md border transition ${isRunning ? 'bg-blue-500 text-zinc-950 border-blue-400 animate-pulse' : 'bg-zinc-900 text-zinc-400 hover:text-zinc-100 border-zinc-800'}`}>
-                                        <Play className="w-3 h-3 fill-current" />
+
+                                      {/* Botão de Comentários */}
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          openComments(ticket);
+                                        }}
+                                        title="Comentários"
+                                        className="p-1.5 bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-zinc-100 rounded-md transition cursor-pointer"
+                                      >
+                                        <MessageSquare className="w-3.5 h-3.5" />
                                       </button>
-                                      <button onClick={() => openComments(ticket)} title="Comentários" className="p-1.5 bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-zinc-100 rounded-md transition">
-                                        <MessageSquare className="w-3 h-3" />
-                                      </button>
-                                      {(isManagerOrAdmin || ticket.creator_id === currentUserInfo.id) && (
-                                        <button onClick={() => handleOpenEditModal(ticket)} title="Editar" className="p-1.5 bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-zinc-100 rounded-md transition">
-                                          <Edit3 className="w-3 h-3" />
+
+                                      {/* ⭐ Botão Pedir Feedback (Apenas Gestão / Admins) */}
+                                      {isManagerOrAdmin && (
+                                        <button
+                                          type="button"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            setFeedbackTargetTicket(ticket);
+                                            setNewFeedbackTitle(`Feedback da Tarefa #${ticket.id}: ${ticket.title}`);
+                                            setNewFeedbackDesc("");
+                                            // Define por defeito o prazo para daqui a 2 horas
+                                            const defaultDate = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString().slice(0, 16);
+                                            setNewFeedbackDeadline(defaultDate);
+                                            setNewFeedbackUsers(ticket.assigned_to_id ? [ticket.assigned_to_id] : []);
+                                            setShowCreateFeedbackModal(true);
+                                          }}
+                                          title="Pedir Feedback desta Tarefa"
+                                          className="p-1.5 bg-zinc-900 border border-zinc-800 text-amber-400 hover:text-amber-300 hover:border-amber-500/30 rounded-md transition cursor-pointer"
+                                        >
+                                          ⭐
                                         </button>
                                       )}
-                                      <button onClick={() => handleDeleteTicket(ticket.id)} title="Apagar" className="p-1.5 bg-zinc-900 border border-zinc-800 text-red-400 hover:text-red-300 rounded-md transition">
-                                        <Trash2 className="w-3 h-3" />
-                                      </button>
+
+                                      {/* Botão de Apagar: Apenas para quem gere a tarefa */}
+                                      {canManageTicket(ticket) && (
+                                        <button
+                                          type="button"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            handleDeleteTicket(ticket.id);
+                                          }}
+                                          title="Apagar"
+                                          className="p-1.5 bg-zinc-900 border border-zinc-800 text-red-400 hover:text-red-300 rounded-md transition cursor-pointer"
+                                        >
+                                          <Trash2 className="w-3.5 h-3.5" />
+                                        </button>
+                                      )}
                                     </div>
                                   </div>
 
@@ -3491,22 +3833,37 @@ const fetchWeekStatus = async () => {
                                       </p>
                                       {ticket.sub_tasks
                                         .filter(s => s.assigned_to_id === currentUserInfo?.id)
-                                        .map(sub => (
-                                          <label key={sub.id} className="flex items-center gap-2 text-xs cursor-pointer select-none">
-                                            <input
-                                              type="checkbox"
-                                              checked={sub.is_completed}
-                                              onChange={(e) => {
-                                                e.stopPropagation();
-                                                handleToggleSubtask(sub.id, sub.is_completed);
-                                              }}
-                                              className="accent-indigo-500 rounded cursor-pointer shrink-0"
-                                            />
-                                            <span className={sub.is_completed ? "line-through text-zinc-500" : "text-zinc-200"}>
-                                              {sub.title}
-                                            </span>
-                                          </label>
-                                        ))}
+                                        .map(sub => {
+                                          const subStatus = sub.status || "Pendente";
+                                          return (
+                                            <div key={sub.id} className="flex items-center justify-between gap-2 text-xs">
+                                              <div className="flex items-center gap-1.5 min-w-0">
+                                                <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold border shrink-0 ${
+                                                  subStatus === 'Aprovada' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' :
+                                                  subStatus === 'Aguardar Aprovação' ? 'bg-amber-500/10 text-amber-400 border-amber-500/30' :
+                                                  'bg-zinc-900 text-zinc-400 border-zinc-800'
+                                                }`}>
+                                                  {subStatus}
+                                                </span>
+                                                <span className={sub.is_completed ? "line-through text-zinc-500 truncate" : "text-zinc-200 truncate"}>
+                                                  {sub.title}
+                                                </span>
+                                              </div>
+                                              {subStatus === 'Pendente' && (
+                                                <button
+                                                  type="button"
+                                                  onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    handleSubmitSubtaskForApproval(sub.id);
+                                                  }}
+                                                  className="bg-blue-600/20 hover:bg-blue-600/30 text-blue-400 border border-blue-500/30 text-[9px] font-medium px-1.5 py-0.5 rounded-lg transition shrink-0"
+                                                >
+                                                  Submeter
+                                                </button>
+                                              )}
+                                            </div>
+                                          );
+                                        })}
                                     </div>
                                   )}
 
@@ -3566,17 +3923,32 @@ const fetchWeekStatus = async () => {
                                   </span>
                                   {ticket.sub_tasks
                                     .filter(s => s.assigned_to_id === currentUserInfo?.id)
-                                    .map(sub => (
-                                      <label key={sub.id} className="flex items-center gap-2 text-xs text-zinc-300 cursor-pointer">
-                                        <input
-                                          type="checkbox"
-                                          checked={sub.is_completed}
-                                          onChange={() => handleToggleSubtask(sub.id, sub.is_completed)}
-                                          className="accent-indigo-500 rounded cursor-pointer"
-                                        />
-                                        <span className={sub.is_completed ? "line-through text-zinc-500" : ""}>{sub.title}</span>
-                                      </label>
-                                    ))}
+                                    .map(sub => {
+                                      const subStatus = sub.status || "Pendente";
+                                      return (
+                                        <div key={sub.id} className="flex items-center justify-between gap-2 text-xs text-zinc-300">
+                                          <div className="flex items-center gap-1.5 min-w-0">
+                                            <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold border shrink-0 ${
+                                              subStatus === 'Aprovada' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' :
+                                              subStatus === 'Aguardar Aprovação' ? 'bg-amber-500/10 text-amber-400 border-amber-500/30' :
+                                              'bg-zinc-900 text-zinc-400 border-zinc-800'
+                                            }`}>
+                                              {subStatus}
+                                            </span>
+                                            <span className={sub.is_completed ? "line-through text-zinc-500 truncate" : "truncate"}>{sub.title}</span>
+                                          </div>
+                                          {subStatus === 'Pendente' && (
+                                            <button
+                                              type="button"
+                                              onClick={() => handleSubmitSubtaskForApproval(sub.id)}
+                                              className="bg-blue-600/20 hover:bg-blue-600/30 text-blue-400 border border-blue-500/30 text-[9px] font-medium px-1.5 py-0.5 rounded-lg transition shrink-0"
+                                            >
+                                              Submeter
+                                            </button>
+                                          )}
+                                        </div>
+                                      );
+                                    })}
                                 </div>
                               )}
 
@@ -3613,14 +3985,16 @@ const fetchWeekStatus = async () => {
                               <button onClick={() => openComments(ticket)} className="p-2 text-zinc-400 hover:text-zinc-100 bg-zinc-950 border border-zinc-800 rounded-lg transition" title="Comentários">
                                 <MessageSquare className="w-4 h-4" />
                               </button>
-                              {(isManagerOrAdmin || ticket.creator_id === currentUserInfo.id) && (
+                              {canManageTicket(ticket) && (
                                 <button onClick={() => handleOpenEditModal(ticket)} className="p-2 text-zinc-400 hover:text-zinc-100 bg-zinc-950 border border-zinc-800 rounded-lg transition" title="Editar">
                                   <Edit3 className="w-4 h-4" />
                                 </button>
                               )}
-                              <button onClick={() => handleDeleteTicket(ticket.id)} className="p-2 text-red-400 hover:text-red-300 bg-zinc-950 border border-zinc-800 rounded-lg transition" title="Apagar">
-                                <Trash2 className="w-4 h-4" />
-                              </button>
+                              {canManageTicket(ticket) && (
+                                <button onClick={() => handleDeleteTicket(ticket.id)} className="p-2 text-red-400 hover:text-red-300 bg-zinc-950 border border-zinc-800 rounded-lg transition" title="Apagar">
+                                  <Trash2 className="w-4 h-4" />
+                                </button>
+                              )}
                             </div>
                           </div>
                         );
@@ -4238,7 +4612,18 @@ const fetchWeekStatus = async () => {
                     </div>
                     <div>
                       <p className="text-sm font-semibold text-zinc-100">{currentUserInfo.name || 'Utilizador'}</p>
-                      <p className="text-xs text-zinc-400">{currentUserInfo.email}</p>
+                      <p className="text-xs text-zinc-400 mb-1.5">{currentUserInfo.email}</p>
+                      {(() => {
+                        const roleObj = ROLES_LIST.find(r => r.value.toLowerCase() === (currentUserInfo.role || "").toLowerCase()) || {
+                          label: currentUserInfo.role || "Técnico",
+                          color: "text-zinc-400 bg-zinc-800 border-zinc-700"
+                        };
+                        return (
+                          <span className={`text-[11px] font-semibold px-2.5 py-0.5 rounded-full border ${roleObj.color}`}>
+                            {roleObj.label}
+                          </span>
+                        );
+                      })()}
                     </div>
                   </div>
 
@@ -5317,11 +5702,18 @@ const fetchWeekStatus = async () => {
                 <input type="password" value={newUserPassword} onChange={e => setNewUserPassword(e.target.value)} required className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2 text-sm text-zinc-100 focus:outline-none" />
               </div>
               <div>
-                <label className="block text-xs font-medium text-zinc-400 mb-1">Cargo</label>
-                <select value={newUserRole} onChange={e => setNewUserRole(e.target.value)} className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2 text-sm text-zinc-100 focus:outline-none">
-                  <option value="Member">Member (Acesso Base)</option>
-                  <option value="Manager">Manager (Gestor de Equipas)</option>
-                  <option value="Admin">Admin (Acesso Total)</option>
+                <label className="block text-xs font-medium text-zinc-400 mb-1">Cargo / Função *</label>
+                <select
+                  value={newUserRole || "Técnico"}
+                  onChange={(e) => setNewUserRole(e.target.value)}
+                  className="w-full bg-zinc-950 border border-zinc-800 rounded-xl p-2.5 text-xs text-zinc-200 outline-none focus:border-blue-500 transition cursor-pointer"
+                  required
+                >
+                  {ROLES_LIST.map((r) => (
+                    <option key={r.value} value={r.value} className="bg-zinc-900 text-zinc-200">
+                      {r.label}
+                    </option>
+                  ))}
                 </select>
               </div>
               
@@ -5454,27 +5846,66 @@ const fetchWeekStatus = async () => {
 
       {showModal && (
         <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl max-w-md w-full p-6 shadow-2xl">
-            <h2 className="text-lg font-semibold mb-4">{editMode ? 'Editar Tarefa' : 'Criar Nova Tarefa'}</h2>
-            <form onSubmit={handleSaveTicket} className="space-y-4">
+          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl max-w-lg w-full p-6 shadow-2xl max-h-[90vh] flex flex-col">
+            {/* Cabeçalho fixo */}
+            <div className="flex items-center justify-between pb-3 mb-3 border-b border-zinc-800 shrink-0">
+              <h2 className="text-lg font-semibold">{editMode ? 'Editar Tarefa' : 'Criar Nova Tarefa'}</h2>
+              <button type="button" onClick={() => setShowModal(false)} className="text-zinc-500 hover:text-zinc-300 text-sm">✕</button>
+            </div>
+
+            {/* Formulário com scroll vertical */}
+            <form onSubmit={handleSaveTicket} className="space-y-4 overflow-y-auto pr-1 flex-1">
               <div>
                 <label className="block text-xs font-medium text-zinc-400 mb-1">Título <span className="text-red-400">*</span></label>
-                <input type="text" value={newTitle} onChange={e => setNewTitle(e.target.value)} required className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2 text-sm text-zinc-100 focus:outline-none" />
+                <input
+                  type="text"
+                  value={newTitle}
+                  onChange={e => setNewTitle(e.target.value)}
+                  required
+                  disabled={isSubtaskCollaborator}
+                  className={`w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2 text-sm text-zinc-100 outline-none transition ${
+                    isSubtaskCollaborator ? 'opacity-70 cursor-not-allowed bg-zinc-900/50' : 'focus:border-blue-500'
+                  }`}
+                />
               </div>
               <div>
                 <label className="block text-xs font-medium text-zinc-400 mb-1">Descrição <span className="text-red-400">*</span></label>
-                <textarea value={newDesc} onChange={e => setNewDesc(e.target.value)} required rows="3" className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2 text-sm text-zinc-100 focus:outline-none resize-none" placeholder="Detalhes obrigatórios da tarefa..." />
+                <textarea
+                  value={newDesc}
+                  onChange={e => setNewDesc(e.target.value)}
+                  required
+                  rows="3"
+                  disabled={isSubtaskCollaborator}
+                  className={`w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2 text-sm text-zinc-100 outline-none resize-none transition ${
+                    isSubtaskCollaborator ? 'opacity-70 cursor-not-allowed bg-zinc-900/50' : 'focus:border-blue-500'
+                  }`}
+                  placeholder="Detalhes obrigatórios da tarefa..."
+                />
               </div>
               <div className="grid grid-cols-3 gap-3">
                 <div>
                   <label className="block text-xs font-medium text-zinc-400 mb-1">Prioridade</label>
-                  <select value={newPriority} onChange={e => setNewPriority(e.target.value)} className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-sm text-zinc-100 focus:outline-none">
+                  <select
+                    value={newPriority}
+                    onChange={e => setNewPriority(e.target.value)}
+                    disabled={isSubtaskCollaborator}
+                    className={`w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-sm text-zinc-100 outline-none transition ${
+                      isSubtaskCollaborator ? 'opacity-70 cursor-not-allowed bg-zinc-900/50' : 'focus:border-blue-500'
+                    }`}
+                  >
                     <option value="Baixa">Baixa</option><option value="Média">Média</option><option value="Alta">Alta</option><option value="Crítica">Crítica</option>
                   </select>
                 </div>
                 <div>
                   <label className="block text-xs font-medium text-zinc-400 mb-1">Estado</label>
-                  <select value={newStatus} onChange={e => setNewStatus(e.target.value)} className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-sm text-zinc-100 focus:outline-none">
+                  <select
+                    value={newStatus}
+                    onChange={e => setNewStatus(e.target.value)}
+                    disabled={isSubtaskCollaborator}
+                    className={`w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-sm text-zinc-100 outline-none transition ${
+                      isSubtaskCollaborator ? 'opacity-70 cursor-not-allowed bg-zinc-900/50' : 'focus:border-blue-500'
+                    }`}
+                  >
                     <option value="To Do">Pendente</option>
                     <option value="In Progress">Em progresso</option>
                     <option value="In Review">Em revisão</option>
@@ -5487,8 +5918,10 @@ const fetchWeekStatus = async () => {
                   <div className="flex gap-2">
                     {/* Caixa principal que simula o select fechado */}
                     <div 
-                      onClick={() => setIsTaskTypeDropdownOpen(!isTaskTypeDropdownOpen)}
-                      className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-sm text-zinc-100 flex justify-between items-center cursor-pointer select-none"
+                      onClick={() => !isSubtaskCollaborator && setIsTaskTypeDropdownOpen(!isTaskTypeDropdownOpen)}
+                      className={`w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-sm text-zinc-100 flex justify-between items-center select-none transition ${
+                        isSubtaskCollaborator ? 'opacity-70 cursor-not-allowed bg-zinc-900/50' : 'cursor-pointer'
+                      }`}
                     >
                       <span>{newTaskType || "Selecionar tipo..."}</span>
                       <span className="text-zinc-500 text-xs">▼</span>
@@ -5603,17 +6036,42 @@ const fetchWeekStatus = async () => {
                 )}
                 <div className={!isManagerOrAdmin ? "col-span-2" : ""}>
                   <label className="block text-xs font-medium text-zinc-400 mb-1">Horas Estimadas</label>
-                  <input type="number" step="0.5" value={newEstimatedHours} onChange={e => setNewEstimatedHours(e.target.value)} className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2 text-sm text-zinc-100 focus:outline-none" />
+                  <input
+                    type="number"
+                    step="0.5"
+                    value={newEstimatedHours}
+                    onChange={e => setNewEstimatedHours(e.target.value)}
+                    disabled={isSubtaskCollaborator}
+                    className={`w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2 text-sm text-zinc-100 outline-none transition ${
+                      isSubtaskCollaborator ? 'opacity-70 cursor-not-allowed bg-zinc-900/50' : 'focus:border-blue-500'
+                    }`}
+                  />
                 </div>
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block text-xs font-medium text-zinc-400 mb-1">Data de Início</label>
-                  <input type="date" value={newStartDate} onChange={e => setNewStartDate(e.target.value)} className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2 text-sm text-zinc-100 focus:outline-none [color-scheme:dark]" />
+                  <input
+                    type="date"
+                    value={newStartDate}
+                    onChange={e => setNewStartDate(e.target.value)}
+                    disabled={isSubtaskCollaborator}
+                    className={`w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2 text-sm text-zinc-100 outline-none [color-scheme:dark] transition ${
+                      isSubtaskCollaborator ? 'opacity-70 cursor-not-allowed bg-zinc-900/50' : 'focus:border-blue-500'
+                    }`}
+                  />
                 </div>
                 <div>
                   <label className="block text-xs font-medium text-zinc-400 mb-1">Data Limite</label>
-                  <input type="date" value={newDueDate} onChange={e => setNewDueDate(e.target.value)} className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2 text-sm text-zinc-100 focus:outline-none [color-scheme:dark]" />
+                  <input
+                    type="date"
+                    value={newDueDate}
+                    onChange={e => setNewDueDate(e.target.value)}
+                    disabled={isSubtaskCollaborator}
+                    className={`w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2 text-sm text-zinc-100 outline-none [color-scheme:dark] transition ${
+                      isSubtaskCollaborator ? 'opacity-70 cursor-not-allowed bg-zinc-900/50' : 'focus:border-blue-500'
+                    }`}
+                  />
                 </div>
               </div>
               <div className="relative">
@@ -5628,7 +6086,10 @@ const fetchWeekStatus = async () => {
                     if (!e.target.value) setNewBlockedById('');
                   }}
                   onFocus={() => setShowDependencyDropdown(true)}
-                  className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2 text-sm text-zinc-100 focus:outline-none"
+                  disabled={isSubtaskCollaborator}
+                  className={`w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2 text-sm text-zinc-100 outline-none transition ${
+                    isSubtaskCollaborator ? 'opacity-70 cursor-not-allowed bg-zinc-900/50' : 'focus:border-blue-500'
+                  }`}
                 />
                 {showDependencyDropdown && dependencySearch && (
                   <div className="absolute z-10 w-full bg-zinc-900 border border-zinc-800 mt-1 rounded-xl shadow-xl max-h-40 overflow-y-auto">
@@ -5659,29 +6120,81 @@ const fetchWeekStatus = async () => {
               {/* SECÇÃO DE SUBTAREFAS (apenas em edição, requer tarefa já criada) */}
               {editMode && (
                 <div className="border-t border-zinc-800 pt-4">
-                  <label className="block text-xs font-medium text-zinc-400 mb-2 uppercase tracking-wider">Subtarefas</label>
-                  <div className="space-y-1.5 mb-3 max-h-36 overflow-y-auto pr-1">
+                  <label className="block text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-2">
+                    Subtarefas da Tarefa
+                  </label>
+
+                  <div className="space-y-2 mb-3 max-h-56 overflow-y-auto pr-1">
                     {subtasks.length === 0 ? (
                       <p className="text-xs text-zinc-500">Sem subtarefas ainda.</p>
                     ) : (
-                      subtasks.map(sub => (
-                        <div key={sub.id} className="flex items-center justify-between gap-2 text-sm bg-zinc-950 border border-zinc-800 p-2 rounded-lg">
-                          <label className="flex items-center gap-2 cursor-pointer flex-1 min-w-0">
-                            <input
-                              type="checkbox"
-                              checked={sub.is_completed}
-                              onChange={() => handleToggleSubtask(sub.id, sub.is_completed)}
-                              className="accent-zinc-100 shrink-0"
-                            />
-                            <span className={sub.is_completed ? "line-through text-zinc-500 truncate" : "text-zinc-200 truncate"}>
-                              {sub.title}
-                            </span>
-                          </label>
-                          <span className="text-[10px] bg-blue-500/20 text-blue-300 px-2 py-0.5 rounded shrink-0">
-                            {usersList.find(u => u.id === sub.assigned_to_id) ? getUserDisplayName(usersList.find(u => u.id === sub.assigned_to_id)) : 'Não atribuído'}
-                          </span>
-                        </div>
-                      ))
+                      subtasks.map(sub => {
+                        const isMySubtask = sub.assigned_to_id === currentUserInfo?.id;
+                        const subStatus = sub.status || "Pendente";
+
+                        return (
+                          <div
+                            key={sub.id}
+                            className={`p-3 rounded-xl border transition flex items-center justify-between gap-3 ${
+                              isMySubtask
+                                ? 'bg-blue-950/20 border-blue-500/40 shadow-sm'
+                                : 'bg-zinc-950/60 border-zinc-850 opacity-60'
+                            }`}
+                          >
+                            <div className="flex flex-col min-w-0 flex-1">
+                              <div className="flex items-center gap-2">
+                                <span className={`text-[10px] px-2 py-0.5 rounded font-bold border ${
+                                  subStatus === 'Aprovada' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' :
+                                  subStatus === 'Aguardar Aprovação' ? 'bg-amber-500/10 text-amber-400 border-amber-500/30' :
+                                  'bg-zinc-900 text-zinc-400 border-zinc-800'
+                                }`}>
+                                  {subStatus}
+                                </span>
+                                <span className="text-xs font-medium text-zinc-200 truncate">{sub.title}</span>
+                              </div>
+                              {isMySubtask && (
+                                <span className="text-[10px] text-blue-400 font-semibold mt-1">📌 Atribuída a ti</span>
+                              )}
+                              {sub.rejection_reason && subStatus === 'Pendente' && isMySubtask && (
+                                <p className="text-[11px] text-red-400 mt-1.5 bg-red-950/30 border border-red-500/20 px-2 py-1 rounded-lg">
+                                  ⚠️ <strong>Correção:</strong> {sub.rejection_reason}
+                                </p>
+                              )}
+                            </div>
+
+                            {/* Botão de Ação para o Colaborador */}
+                            {isMySubtask && subStatus === 'Pendente' && (
+                              <button
+                                type="button"
+                                onClick={() => handleSubmitSubtaskForApproval(sub.id)}
+                                className="bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium px-3 py-1.5 rounded-lg transition shrink-0 cursor-pointer shadow"
+                              >
+                                Concluir & Submeter
+                              </button>
+                            )}
+
+                            {/* Botões para o Criador/Admin validar */}
+                            {isOwnerOrCreator && subStatus === 'Aguardar Aprovação' && (
+                              <div className="flex items-center gap-1.5 shrink-0">
+                                <button
+                                  type="button"
+                                  onClick={() => handleApproveSubtask(sub.id)}
+                                  className="bg-emerald-600/20 hover:bg-emerald-600/40 text-emerald-400 border border-emerald-500/30 text-xs px-2.5 py-1 rounded-lg transition cursor-pointer"
+                                >
+                                  ✓ Aprovar
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleRejectSubtask(sub.id)}
+                                  className="bg-red-600/20 hover:bg-red-600/40 text-red-400 border border-red-500/30 text-xs px-2.5 py-1 rounded-lg transition cursor-pointer"
+                                >
+                                  ✕ Recusar
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })
                     )}
                   </div>
                   <div className="flex gap-2">
@@ -5707,70 +6220,58 @@ const fetchWeekStatus = async () => {
                 </div>
               )}
 
-              {/* HISTÓRICO / AUDIT LOGS DA TAREFA (apenas em edição, apenas Admin) */}
-              {editMode && isAdmin && (
-                <div className="mb-2 border-t border-zinc-800 pt-4">
-                  <h3 className="font-semibold text-xs mb-2 text-zinc-400 uppercase tracking-wider">📜 Histórico da Tarefa</h3>
-                  <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1 text-xs">
-                    {ticketHistoryLogs.length === 0 ? (
-                      <p className="text-zinc-500 italic">Sem registos de histórico para esta tarefa ainda.</p>
-                    ) : (
-                      ticketHistoryLogs.map(log => (
-                        <div key={log.id} className="bg-zinc-950 p-2.5 rounded-lg border border-zinc-800 flex flex-col gap-1">
-                          <div className="flex justify-between items-center text-zinc-500">
-                            <span className="font-bold text-blue-400">{log.action}</span>
-                            <span className="text-[10px] text-zinc-500">
-                              {log.created_at ? new Date(log.created_at).toLocaleString('pt-PT') : ''}
-                            </span>
-                          </div>
-                          <div className="text-zinc-200 font-medium">{log.details}</div>
+              {/* SECÇÃO ÚNICA DE HISTÓRICO */}
+              {editMode && ticketLogs && ticketLogs.length > 0 && (
+                <div className="border-t border-zinc-800 pt-3 mt-3">
+                  <h3 className="font-semibold text-xs mb-2 text-zinc-400 uppercase tracking-wider">📜 Histórico de Alterações</h3>
+                  <div className="space-y-1.5 max-h-32 overflow-y-auto pr-1 text-xs bg-zinc-950 p-2.5 rounded-xl border border-zinc-800">
+                    {ticketLogs.map(log => (
+                      <div key={log.id} className="bg-zinc-900 p-2 rounded-lg border border-zinc-800 flex flex-col gap-0.5">
+                        <div className="flex justify-between items-center text-zinc-500 text-[10px]">
+                          <span className="font-bold text-blue-400">{log.username || "Sistema"}</span>
+                          <span>{log.created_at ? new Date(log.created_at).toLocaleString('pt-PT') : ''}</span>
                         </div>
-                      ))
-                    )}
+                        <div className="text-zinc-300 text-xs">{log.details}</div>
+                      </div>
+                    ))}
                   </div>
                 </div>
               )}
 
-              {/* SECÇÃO DO HISTÓRICO DA TAREFA */}
-              {editMode && (
-                <div className="mb-6 border-t border-gray-700 pt-4 mt-4">
-                  <h3 className="font-semibold text-sm mb-2 text-gray-300">📜 Histórico da Tarefa (Por onde andou)</h3>
-                  <div className="space-y-2 max-h-40 overflow-y-auto text-xs bg-gray-950 p-3 rounded border border-gray-800">
-                    {(!ticketLogs || ticketLogs.length === 0) ? (
-                      <p className="text-gray-500 italic">Sem registos de histórico para esta tarefa ainda.</p>
-                    ) : (
-                      ticketLogs.map(log => (
-                        <div key={log.id} className="bg-gray-900 p-2.5 rounded border border-gray-700 flex flex-col gap-1">
-                          <div className="flex justify-between items-center text-gray-400">
-                            <span className="font-bold text-blue-400">{log.username || "Sistema"}</span>
-                            <span className="text-[10px] text-gray-400">
-                              {log.created_at ? new Date(log.created_at).toLocaleString() : ''}
-                            </span>
-                          </div>
-                          <div className="text-blue-300 font-semibold text-[11px]">{log.action}</div>
-                          <div className="text-gray-200">{log.details}</div>
-                        </div>
-                      ))
-                    )}
+              <div className="flex justify-between items-center gap-3 pt-3 border-t border-zinc-800 shrink-0 mt-4">
+                {isSubtaskCollaborator ? (
+                  <div className="flex justify-end w-full">
+                    <button
+                      type="button"
+                      onClick={() => setShowModal(false)}
+                      className="bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-medium px-4 py-2 rounded-xl transition cursor-pointer"
+                    >
+                      Fechar
+                    </button>
                   </div>
-                </div>
-              )}
+                ) : (
+                  <>
+                    {editMode ? (
+                      <button
+                        type="button"
+                        onClick={handleReturnTicket}
+                        disabled={returningTicket}
+                        className="bg-red-950/40 hover:bg-red-950/60 text-red-400 border border-red-500/30 px-3 py-2 text-xs rounded-xl font-medium transition cursor-pointer"
+                      >
+                        {returningTicket ? 'A devolver...' : '🔄 Devolver Tarefa'}
+                      </button>
+                    ) : <span />}
 
-              <div className="flex justify-between items-center gap-3 mt-6">
-                {editMode ? (
-                  <button
-                    type="button"
-                    onClick={handleReturnTicket}
-                    disabled={returningTicket}
-                    className="bg-red-950/40 hover:bg-red-950/60 text-red-400 border border-red-500/30 px-4 py-2 text-sm rounded-xl font-medium transition disabled:opacity-50"
-                  >
-                    {returningTicket ? 'A devolver...' : '🔄 Devolver Tarefa'}
-                  </button>
-                ) : <span />}
-                <div className="flex gap-3">
-                  <button type="button" onClick={() => setShowModal(false)} className="px-4 py-2 text-sm text-zinc-400 hover:text-zinc-100 transition">Cancelar</button>
-                  <button type="submit" className="bg-zinc-100 text-zinc-950 font-medium text-sm px-4 py-2 rounded-xl hover:bg-white transition">{editMode ? 'Atualizar' : 'Guardar'}</button>
-                </div>
+                    <div className="flex gap-2">
+                      <button type="button" onClick={() => setShowModal(false)} className="px-4 py-2 text-xs text-zinc-400 hover:text-zinc-100 transition cursor-pointer">
+                        Cancelar
+                      </button>
+                      <button type="submit" className="bg-zinc-100 text-zinc-950 font-medium text-xs px-4 py-2 rounded-xl hover:bg-white transition shadow-sm cursor-pointer">
+                        {editMode ? 'Atualizar' : 'Guardar'}
+                      </button>
+                    </div>
+                  </>
+                )}
               </div>
             </form>
           </div>
@@ -6051,6 +6552,197 @@ const fetchWeekStatus = async () => {
               </button>
             </div>
 
+          </div>
+        </div>
+      )}
+
+      {/* MODAL DE ALERTA DE INATIVIDADE */}
+      {showIdleModal && activeTimerTask && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-zinc-900 border border-amber-500/40 p-6 rounded-2xl max-w-md w-full shadow-2xl text-center space-y-4 animate-in fade-in zoom-in-95 duration-200">
+            <div className="w-12 h-12 bg-amber-500/10 text-amber-400 border border-amber-500/20 rounded-full flex items-center justify-center mx-auto text-2xl animate-pulse">
+              ⏱️
+            </div>
+
+            <div className="space-y-1">
+              <h3 className="text-lg font-bold text-zinc-100">Ainda estás a trabalhar?</h3>
+              <p className="text-xs text-zinc-400">
+                Não detetámos atividade há 15 minutos na tarefa <strong className="text-zinc-200">#{activeTimerTask.id} - {activeTimerTask.title}</strong>.
+              </p>
+            </div>
+
+            <div className="bg-zinc-950 border border-zinc-800 p-3 rounded-xl">
+              <p className="text-xs text-zinc-400">
+                O cronómetro será pausado automaticamente em:
+              </p>
+              <p className="text-2xl font-black text-amber-400 mt-1">
+                {idleCountdown}s
+              </p>
+            </div>
+
+            <div className="flex gap-2 pt-2">
+              <button
+                type="button"
+                onClick={handleAutoStopIdleTimer}
+                className="flex-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-medium py-2.5 rounded-xl transition cursor-pointer"
+              >
+                Pausar Agora
+              </button>
+              <button
+                type="button"
+                onClick={handleKeepWorking}
+                className="flex-1 bg-amber-500 hover:bg-amber-400 text-zinc-950 text-xs font-bold py-2.5 rounded-xl transition cursor-pointer shadow-lg shadow-amber-500/20"
+              >
+                Continuar a Trabalhar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL DE RESPOSTA DE FEEDBACK */}
+      {showFeedbackModal && selectedFeedbackReq && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4">
+            <div className="flex justify-between items-start">
+              <div>
+                <span className="text-[10px] text-blue-400 font-bold uppercase tracking-wider">Pedido de Feedback</span>
+                <h3 className="text-base font-bold text-zinc-100">{selectedFeedbackReq.title}</h3>
+              </div>
+              <button 
+                onClick={() => setShowFeedbackModal(false)} 
+                className="text-zinc-500 hover:text-zinc-300 text-sm"
+              >
+                ✕
+              </button>
+            </div>
+
+            {selectedFeedbackReq.description && (
+              <p className="text-xs text-zinc-400 bg-zinc-950 p-2.5 rounded-xl border border-zinc-800">
+                {selectedFeedbackReq.description}
+              </p>
+            )}
+
+            <form onSubmit={handleSubmitFeedback} className="space-y-4">
+              {/* Avaliação em Estrelas */}
+              <div>
+                <label className="block text-xs font-medium text-zinc-400 mb-1.5 text-center">Classificação Geral</label>
+                <div className="flex justify-center gap-2">
+                  {[1, 2, 3, 4, 5].map((star) => (
+                    <button
+                      key={star}
+                      type="button"
+                      onClick={() => setFeedbackRating(star)}
+                      className={`text-2xl transition cursor-pointer transform hover:scale-110 ${
+                        star <= feedbackRating ? 'text-amber-400' : 'text-zinc-700'
+                      }`}
+                    >
+                      ★
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Comentário */}
+              <div>
+                <label className="block text-xs font-medium text-zinc-400 mb-1">Comentários / Sugestões</label>
+                <textarea
+                  value={feedbackComment}
+                  onChange={(e) => setFeedbackComment(e.target.value)}
+                  placeholder="Escreve aqui a tua avaliação honesta..."
+                  className="w-full bg-zinc-950 border border-zinc-800 rounded-xl p-3 text-xs text-zinc-200 outline-none focus:border-amber-500 transition"
+                  rows={3}
+                />
+              </div>
+
+              <div className="flex gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowFeedbackModal(false)}
+                  className="flex-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-medium py-2.5 rounded-xl transition cursor-pointer"
+                >
+                  Mais tarde
+                </button>
+                <button
+                  type="submit"
+                  className="flex-1 bg-amber-500 hover:bg-amber-400 text-zinc-950 text-xs font-bold py-2.5 rounded-xl transition cursor-pointer shadow-lg shadow-amber-500/20"
+                >
+                  Submeter Feedback
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL CRIAR PEDIDO DE FEEDBACK (GESTOR) */}
+      {showCreateFeedbackModal && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4">
+            <div className="flex justify-between items-center pb-2 border-b border-zinc-800">
+              <div>
+                <span className="text-[10px] text-amber-400 font-bold uppercase tracking-wider">Qualidade & Avaliação</span>
+                <h3 className="text-base font-bold text-zinc-100">Solicitar Feedback</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowCreateFeedbackModal(false)}
+                className="text-zinc-500 hover:text-zinc-300 text-sm cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handleCreateFeedbackRequest} className="space-y-3.5">
+              <div>
+                <label className="block text-xs font-medium text-zinc-400 mb-1">Título do Pedido *</label>
+                <input
+                  type="text"
+                  value={newFeedbackTitle}
+                  onChange={(e) => setNewFeedbackTitle(e.target.value)}
+                  className="w-full bg-zinc-950 border border-zinc-800 rounded-xl p-2.5 text-xs text-zinc-200 outline-none focus:border-amber-500"
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-zinc-400 mb-1">Instruções / O que avaliar?</label>
+                <textarea
+                  value={newFeedbackDesc}
+                  onChange={(e) => setNewFeedbackDesc(e.target.value)}
+                  placeholder="Ex: Como correu a instalação no cliente? Houve imprevistos técnicos?"
+                  className="w-full bg-zinc-950 border border-zinc-800 rounded-xl p-2.5 text-xs text-zinc-200 outline-none focus:border-amber-500"
+                  rows={2}
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-zinc-400 mb-1">Prazo Limite *</label>
+                <input
+                  type="datetime-local"
+                  value={newFeedbackDeadline}
+                  onChange={(e) => setNewFeedbackDeadline(e.target.value)}
+                  className="w-full bg-zinc-950 border border-zinc-800 rounded-xl p-2.5 text-xs text-zinc-200 outline-none focus:border-amber-500"
+                  required
+                />
+              </div>
+
+              <div className="flex gap-2 pt-2 border-t border-zinc-800">
+                <button
+                  type="button"
+                  onClick={() => setShowCreateFeedbackModal(false)}
+                  className="flex-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-medium py-2.5 rounded-xl transition cursor-pointer"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  className="flex-1 bg-amber-500 hover:bg-amber-400 text-zinc-950 text-xs font-bold py-2.5 rounded-xl transition cursor-pointer shadow-lg shadow-amber-500/20"
+                >
+                  Enviar Pedido
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}
