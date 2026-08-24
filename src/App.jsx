@@ -4,7 +4,7 @@ import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { 
   CheckCircle2, Clock, AlertCircle, Plus, Search, 
-  LogOut, ShieldAlert, LayoutDashboard, Ticket as TicketIcon, Trash2, Edit3, Play, Square, MessageSquare, FolderPlus, RefreshCw, Calendar, Users, Crown, Folder, UserCheck, Kanban, ListFilter, ArrowUpDown, ChevronLeft, ChevronRight, Settings, BarChart3, Bell, Check, Download, Building2, Phone, Mail, BarChart, X, Upload, Paperclip 
+  LogOut, ShieldAlert, LayoutDashboard, Ticket as TicketIcon, Trash2, Edit3, Play, Pause, Square, MessageSquare, FolderPlus, RefreshCw, Calendar, Users, Crown, Folder, UserCheck, Kanban, ListFilter, ArrowUpDown, ChevronLeft, ChevronRight, Settings, BarChart3, Bell, Check, Download, Building2, Phone, Mail, BarChart, X, Upload, Paperclip, Star 
 } from 'lucide-react';
 
 const API_URL = 'http://127.0.0.1:8000'; 
@@ -465,6 +465,8 @@ const fetchWeekStatus = async () => {
   const [filterMonth, setFilterMonth] = useState("");
   const [filterYear, setFilterYear] = useState(new Date().getFullYear().toString());
   const [filterStatus, setFilterStatus] = useState("");
+  // Filtro por dia específico na lista de relatórios do colaborador selecionado (vazio = mostra todos)
+  const [selectedApprovalDate, setSelectedApprovalDate] = useState("");
 
   // --- ADMIN: Lógica de Filtragem dos Relatórios (Pesquisa + Mês + Ano + Estado) ---
   const getFilteredUsers = () => {
@@ -1572,13 +1574,23 @@ const fetchWeekStatus = async () => {
 
   const handleSaveProject = async (e) => {
     e.preventDefault();
+
+    if (!projectName.trim()) {
+      alert("O nome do projeto é obrigatório!");
+      return;
+    }
+    if (!projectDesc.trim()) {
+      alert("A descrição do projeto é obrigatória!");
+      return;
+    }
+
     try {
       const headers = { Authorization: `Bearer ${token}` };
       const payload = {
-        name: projectName,
-        description: projectDesc,
+        name: projectName.trim(),
+        description: projectDesc.trim(),
         team_id: projectTeamId ? Number(projectTeamId) : null,
-        client_id: projectClientId ? Number(projectClientId) : null,
+        client_id: projectClientId ? Number(projectClientId) : null, // Permite null (cliente opcional)
         ticket_ids: projectTicketIds
       };
 
@@ -2937,15 +2949,43 @@ const fetchWeekStatus = async () => {
                                 ✋
                               </button>
                             )}
-                            <button onClick={() => startTimer(ticket)} className={`p-2 rounded-lg border transition ${isRunning ? 'bg-blue-500 text-zinc-950 border-blue-400' : 'bg-zinc-900 text-zinc-400 hover:text-zinc-100 border-zinc-800'}`} title="Iniciar Cronómetro">
-                              <Play className="w-3.5 h-3.5 fill-current" />
-                            </button>
+                            {!isDone && (
+                              <button
+                                onClick={() => (isRunning ? stopTimer() : startTimer(ticket))}
+                                className={`p-2 rounded-lg border transition ${isRunning ? 'bg-amber-500/20 border-amber-500/40 text-amber-400 hover:bg-amber-500/30' : 'bg-zinc-900 text-zinc-400 hover:text-zinc-100 border-zinc-800'}`}
+                                title={isRunning ? "Parar Cronómetro" : "Iniciar Cronómetro"}
+                              >
+                                {isRunning ? <Pause className="w-3.5 h-3.5 fill-current" /> : <Play className="w-3.5 h-3.5 fill-current" />}
+                              </button>
+                            )}
                             <button onClick={() => openComments(ticket)} className="p-2 text-zinc-400 hover:text-zinc-100 bg-zinc-900 border border-zinc-800 rounded-lg transition" title="Comentários">
                               <MessageSquare className="w-3.5 h-3.5" />
                             </button>
+                            {isManagerOrAdmin && (
+                              <button
+                                onClick={() => {
+                                  setFeedbackTargetTicket(ticket);
+                                  setNewFeedbackTitle(`Feedback da Tarefa #${ticket.id}: ${ticket.title}`);
+                                  setNewFeedbackDesc("");
+                                  const defaultDate = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString().slice(0, 16);
+                                  setNewFeedbackDeadline(defaultDate);
+                                  setNewFeedbackUsers(ticket.assigned_to_id ? [ticket.assigned_to_id] : []);
+                                  setShowCreateFeedbackModal(true);
+                                }}
+                                className="p-2 text-amber-400 hover:text-amber-300 bg-zinc-900 border border-zinc-800 rounded-lg transition"
+                                title="Pedir Feedback desta Tarefa"
+                              >
+                                <Star className="w-3.5 h-3.5 fill-current" />
+                              </button>
+                            )}
                             {canManageTicket(ticket) && (
                               <button onClick={() => handleOpenEditModal(ticket)} className="p-2 text-zinc-400 hover:text-zinc-100 bg-zinc-900 border border-zinc-800 rounded-lg transition" title="Editar">
                                 <Edit3 className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                            {canManageTicket(ticket) && (
+                              <button onClick={() => handleDeleteTicket(ticket.id)} className="p-2 text-rose-500/80 hover:text-rose-400 bg-zinc-900 border border-zinc-800 rounded-lg transition" title="Apagar">
+                                <Trash2 className="w-3.5 h-3.5" />
                               </button>
                             )}
                           </div>
@@ -3207,12 +3247,49 @@ const fetchWeekStatus = async () => {
                       </div>
                     ) : (
                       <div className="space-y-4">
-                        <div className="pb-3 border-b border-zinc-800 flex items-center justify-between">
-                          <h3 className="text-sm font-bold text-zinc-100">Relatórios de: {selectedAdminUser.name}</h3>
-                          <span className="text-xs font-mono text-zinc-500">{selectedAdminUser.email}</span>
+                        <div className="pb-3 border-b border-zinc-800 flex items-center justify-between flex-wrap gap-2">
+                          <div>
+                            <h3 className="text-sm font-bold text-zinc-100">Relatórios de: {selectedAdminUser.name}</h3>
+                            <span className="text-xs font-mono text-zinc-500">{selectedAdminUser.email}</span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="date"
+                              value={selectedApprovalDate}
+                              onChange={(e) => setSelectedApprovalDate(e.target.value)}
+                              className="bg-zinc-900 border border-zinc-800 text-zinc-300 text-xs rounded-lg px-3 py-1.5 focus:outline-none focus:border-zinc-600 cursor-pointer"
+                            />
+                            {selectedApprovalDate && (
+                              <button
+                                type="button"
+                                onClick={() => setSelectedApprovalDate("")}
+                                className="text-xs text-zinc-500 hover:text-zinc-300 transition"
+                                title="Limpar filtro de data"
+                              >
+                                Limpar
+                              </button>
+                            )}
+                          </div>
                         </div>
 
-                        {selectedAdminUser.reports.map(rep => (
+                        {(() => {
+                          const relatoriosFiltradosPorData = selectedAdminUser.reports.filter((rep) => {
+                            // Se não houver data selecionada no calendário, mostra todos
+                            if (!selectedApprovalDate) return true;
+                            // Normaliza a data do relatório (YYYY-MM-DD)
+                            const repDateStr = String(rep.date).split("T")[0];
+                            return repDateStr === selectedApprovalDate;
+                          });
+
+                          if (relatoriosFiltradosPorData.length === 0) {
+                            return (
+                              <div className="py-10 text-center text-xs text-zinc-500">
+                                Sem relatórios para a data selecionada.
+                              </div>
+                            );
+                          }
+
+                          return relatoriosFiltradosPorData.map(rep => (
                           <div key={rep.id} className={`bg-zinc-900 border ${rep.status === 'Submetido' ? 'border-amber-500/30 shadow-[0_0_10px_rgba(245,158,11,0.05)]' : 'border-zinc-800'} rounded-xl p-5 space-y-4 transition`}>
                             <div className="flex items-center justify-between flex-wrap gap-2 pb-3 border-b border-zinc-800/60">
                               <span className="text-sm font-mono font-bold text-blue-400">📅 Data: {rep.date.split('T')[0]}</span>
@@ -3266,7 +3343,8 @@ const fetchWeekStatus = async () => {
                               </div>
                             )}
                           </div>
-                        ))}
+                          ));
+                        })()}
                       </div>
                     )}
                   </div>
@@ -3747,6 +3825,21 @@ const fetchWeekStatus = async () => {
                                       )}
                                     </div>
                                     <div className="flex items-center gap-1 opacity-80 group-hover:opacity-100 transition">
+                                      {/* Botão de Iniciar / Parar Cronómetro */}
+                                      {!isDone && (
+                                        <button
+                                          type="button"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            isRunning ? stopTimer() : startTimer(ticket);
+                                          }}
+                                          title={isRunning ? "Parar Cronómetro" : "Iniciar Cronómetro"}
+                                          className={`p-1.5 rounded-md border transition cursor-pointer ${isRunning ? 'bg-amber-500/20 border-amber-500/40 text-amber-400 hover:bg-amber-500/30' : 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-blue-400 hover:border-blue-500/30'}`}
+                                        >
+                                          {isRunning ? <Pause className="w-3.5 h-3.5 fill-current" /> : <Play className="w-3.5 h-3.5 fill-current" />}
+                                        </button>
+                                      )}
+
                                       {/* 👁️ Botão de Ver / Abrir Detalhes da Tarefa (Disponível para TODOS) */}
                                       <button
                                         type="button"
@@ -3821,7 +3914,7 @@ const fetchWeekStatus = async () => {
                                           title="Pedir Feedback desta Tarefa"
                                           className="p-1.5 bg-zinc-900 border border-zinc-800 text-amber-400 hover:text-amber-300 hover:border-amber-500/30 rounded-md transition cursor-pointer"
                                         >
-                                          ⭐
+                                          <Star className="w-3.5 h-3.5 fill-current" />
                                         </button>
                                       )}
 
@@ -4001,12 +4094,34 @@ const fetchWeekStatus = async () => {
                                   ✋
                                 </button>
                               )}
-                              <button onClick={() => startTimer(ticket)} disabled={isDone} className={`p-2 rounded-lg border transition ${isDone ? 'opacity-40 cursor-not-allowed bg-zinc-950 border-zinc-900 text-zinc-700' : isRunning ? 'bg-blue-500 text-zinc-950 border-blue-400' : 'bg-zinc-950 text-zinc-400 hover:text-zinc-100 border-zinc-800'}`} title="Iniciar Cronómetro">
-                                <Play className="w-4 h-4 fill-current" />
+                              <button
+                                onClick={() => (isRunning ? stopTimer() : startTimer(ticket))}
+                                disabled={isDone}
+                                className={`p-2 rounded-lg border transition ${isDone ? 'opacity-40 cursor-not-allowed bg-zinc-950 border-zinc-900 text-zinc-700' : isRunning ? 'bg-amber-500/20 border-amber-500/40 text-amber-400 hover:bg-amber-500/30' : 'bg-zinc-950 text-zinc-400 hover:text-zinc-100 border-zinc-800'}`}
+                                title={isRunning ? "Parar Cronómetro" : "Iniciar Cronómetro"}
+                              >
+                                {isRunning ? <Pause className="w-4 h-4 fill-current" /> : <Play className="w-4 h-4 fill-current" />}
                               </button>
                               <button onClick={() => openComments(ticket)} className="p-2 text-zinc-400 hover:text-zinc-100 bg-zinc-950 border border-zinc-800 rounded-lg transition" title="Comentários">
                                 <MessageSquare className="w-4 h-4" />
                               </button>
+                              {isManagerOrAdmin && (
+                                <button
+                                  onClick={() => {
+                                    setFeedbackTargetTicket(ticket);
+                                    setNewFeedbackTitle(`Feedback da Tarefa #${ticket.id}: ${ticket.title}`);
+                                    setNewFeedbackDesc("");
+                                    const defaultDate = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString().slice(0, 16);
+                                    setNewFeedbackDeadline(defaultDate);
+                                    setNewFeedbackUsers(ticket.assigned_to_id ? [ticket.assigned_to_id] : []);
+                                    setShowCreateFeedbackModal(true);
+                                  }}
+                                  className="p-2 text-amber-400 hover:text-amber-300 bg-zinc-950 border border-zinc-800 rounded-lg transition"
+                                  title="Pedir Feedback desta Tarefa"
+                                >
+                                  <Star className="w-4 h-4 fill-current" />
+                                </button>
+                              )}
                               {canManageTicket(ticket) && (
                                 <button onClick={() => handleOpenEditModal(ticket)} className="p-2 text-zinc-400 hover:text-zinc-100 bg-zinc-950 border border-zinc-800 rounded-lg transition" title="Editar">
                                   <Edit3 className="w-4 h-4" />
@@ -6311,12 +6426,12 @@ const fetchWeekStatus = async () => {
             <h2 className="text-lg font-semibold mb-4">{editProjectMode ? 'Editar Projeto' : 'Novo Projeto'}</h2>
             <form onSubmit={handleSaveProject} className="space-y-4">
               <div>
-                <label className="block text-xs font-medium text-zinc-400 mb-1">Nome do Projeto</label>
-                <input type="text" value={projectName} onChange={e => setProjectName(e.target.value)} required className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2 text-sm text-zinc-100 focus:outline-none" />
+                <label className="block text-xs font-medium text-zinc-400 mb-1">Nome do Projeto <span className="text-rose-500">*</span></label>
+                <input type="text" value={projectName} onChange={e => setProjectName(e.target.value)} required placeholder="Ex: Redesenho de Infraestrutura" className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2 text-sm text-zinc-100 focus:outline-none" />
               </div>
               <div>
-                <label className="block text-xs font-medium text-zinc-400 mb-1">Descrição</label>
-                <textarea value={projectDesc} onChange={e => setProjectDesc(e.target.value)} rows="2" className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2 text-sm text-zinc-100 focus:outline-none resize-none" />
+                <label className="block text-xs font-medium text-zinc-400 mb-1">Descrição <span className="text-rose-500">*</span></label>
+                <textarea required value={projectDesc} onChange={e => setProjectDesc(e.target.value)} rows="2" className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2 text-sm text-zinc-100 focus:outline-none resize-none" placeholder="Descreve o âmbito do projeto..." />
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div>
@@ -6327,9 +6442,9 @@ const fetchWeekStatus = async () => {
                   </select>
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-zinc-400 mb-1">Cliente do Projeto <span className="text-red-400">*</span></label>
-                  <select required value={projectClientId} onChange={e => setProjectClientId(e.target.value)} className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-sm text-zinc-100 focus:outline-none">
-                    <option value="">Seleciona o cliente obrigatório...</option>
+                  <label className="block text-xs font-medium text-zinc-400 mb-1">Cliente do Projeto (Opcional)</label>
+                  <select value={projectClientId || ""} onChange={e => setProjectClientId(e.target.value)} className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-sm text-zinc-100 focus:outline-none">
+                    <option value="">Nenhum (Sem Cliente)</option>
                     {clients.map(c => <option key={c.id} value={c.id}>{c.name}{c.company ? ` (${c.company})` : ''}</option>)}
                   </select>
                 </div>
