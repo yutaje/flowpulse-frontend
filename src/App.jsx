@@ -9,6 +9,16 @@ import {
 
 const API_URL = 'http://127.0.0.1:8000'; 
 
+// FORMATADOR UNIVERSAL DE HORAS DECIMAIS -> HH:MM
+const formatToHHMM = (hoursFloat) => {
+  const num = Number(hoursFloat);
+  if (isNaN(num) || num <= 0) return "00:00";
+  const totalMinutes = Math.round(num * 60);
+  const h = Math.floor(totalMinutes / 60);
+  const m = totalMinutes % 60;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+};
+
 // Lista centralizada de cargos disponíveis na aplicação
 const ROLES_LIST = [
   { value: "Admin", label: "Administrador", color: "text-red-400 bg-red-500/10 border-red-500/30" },
@@ -45,6 +55,12 @@ export default function App() {
   const [ticketHistoryLogs, setTicketHistoryLogs] = useState([]);
   // Histórico da tarefa no modal de edição
   const [ticketLogs, setTicketLogs] = useState([]);
+  // Filtros de data para os logs da tarefa no modal
+  const [logStartDate, setLogStartDate] = useState('');
+  const [logEndDate, setLogEndDate] = useState('');
+  // Modal dedicado de histórico/logs de auditoria da tarefa
+  const [showTaskLogsModal, setShowTaskLogsModal] = useState(false);
+  const [selectedTaskForLogs, setSelectedTaskForLogs] = useState(null);
   // Controla a abertura da dropdown personalizada de Tipo de Tarefa
   const [isTaskTypeDropdownOpen, setIsTaskTypeDropdownOpen] = useState(false);
 
@@ -573,10 +589,24 @@ const fetchWeekStatus = async () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
-  const [activeTimerTask, setActiveTimerTask] = useState(null);
-  const [secondsElapsed, setSecondsElapsed] = useState(0);
-  // Guarda a hora exata (ISO) em que o cronómetro foi iniciado — "Horário da Escola"
-  const [timerStartTime, setTimerStartTime] = useState(null);
+  const [activeTimerTask, setActiveTimerTask] = useState(() => {
+    const saved = localStorage.getItem('flowpulse_activeTimerTask');
+    return saved ? JSON.parse(saved) : null;
+  });
+
+  const [timerStartTime, setTimerStartTime] = useState(() => {
+    return localStorage.getItem('flowpulse_timerStartTime') || null;
+  });
+
+  const [secondsElapsed, setSecondsElapsed] = useState(() => {
+    const savedStart = localStorage.getItem('flowpulse_timerStartTime');
+    if (savedStart) {
+      const startMs = new Date(savedStart).getTime();
+      const nowMs = Date.now();
+      return Math.max(0, Math.floor((nowMs - startMs) / 1000));
+    }
+    return 0;
+  });
 
   // Estados para controlo de inatividade do cronómetro
   const [showIdleModal, setShowIdleModal] = useState(false);
@@ -613,7 +643,8 @@ const fetchWeekStatus = async () => {
   const [newProjectId, setNewProjectId] = useState('');
   const [newClientId, setNewClientId] = useState(''); 
   const [newAssignedTo, setNewAssignedTo] = useState('');
-  const [newEstimatedHours, setNewEstimatedHours] = useState(0);
+  const [estHours, setEstHours] = useState(1);
+  const [estMinutes, setEstMinutes] = useState(30);
   const [newDueDate, setNewDueDate] = useState('');
   const [newStartDate, setNewStartDate] = useState('');
   const [newBlockedById, setNewBlockedById] = useState('');
@@ -635,6 +666,8 @@ const fetchWeekStatus = async () => {
   const [projectTeamId, setProjectTeamId] = useState('');
   const [projectClientId, setProjectClientId] = useState(''); 
   const [projectTicketIds, setProjectTicketIds] = useState([]); 
+  // Data final do projeto
+  const [projectDueDate, setProjectDueDate] = useState('');
 
   // Estados dos Clientes
   const [showClientModal, setShowClientModal] = useState(false);
@@ -713,13 +746,20 @@ const fetchWeekStatus = async () => {
 
   useEffect(() => {
     let interval = null;
-    if (activeTimerTask) {
-      interval = setInterval(() => setSecondsElapsed(prev => prev + 1), 1000);
+    if (activeTimerTask && timerStartTime) {
+      // Recalcula imediatamente os segundos reais
+      const startMs = new Date(timerStartTime).getTime();
+      setSecondsElapsed(Math.max(0, Math.floor((Date.now() - startMs) / 1000)));
+
+      interval = setInterval(() => {
+        const nowMs = Date.now();
+        setSecondsElapsed(Math.max(0, Math.floor((nowMs - startMs) / 1000)));
+      }, 1000);
     } else {
       clearInterval(interval);
     }
     return () => clearInterval(interval);
-  }, [activeTimerTask]);
+  }, [activeTimerTask, timerStartTime]);
 
   const fetchActiveWorkers = async () => {
     if (!token) return;
@@ -1000,9 +1040,18 @@ const fetchWeekStatus = async () => {
     if (token) {
       fetchActiveWorkers();
       fetchNotifications();
-      const radarWorkers = setInterval(fetchActiveWorkers, 10000); 
+      fetchData();
+
+      // Radar que atualiza tarefas e utilizadores ativos sem precisar de F5
+      const radarWorkers = setInterval(fetchActiveWorkers, 5000); 
+      const radarTasks = setInterval(fetchData, 5000); 
       const radarNotifs = setInterval(fetchNotifications, 15000); 
-      return () => { clearInterval(radarWorkers); clearInterval(radarNotifs); };
+
+      return () => { 
+        clearInterval(radarWorkers); 
+        clearInterval(radarTasks); 
+        clearInterval(radarNotifs); 
+      };
     }
   }, [token]);
 
@@ -1065,20 +1114,19 @@ const fetchWeekStatus = async () => {
     }
     try {
       const headers = { Authorization: `Bearer ${token}` };
-      let updatePayload = { is_running: true };
-      if (!task.assigned_to_id && currentUserInfo.id) {
-        updatePayload.assigned_to_id = currentUserInfo.id;
-        task.assigned_to_id = currentUserInfo.id;
-      }
-      await axios.put(`${API_URL}/tickets/${task.id}`, updatePayload, { headers });
-      const nowIso = new Date().toISOString(); // "Horário da Escola": guarda a hora exata do clique em Play
+      const res = await axios.post(`${API_URL}/tickets/${task.id}/start-timer`, {}, { headers });
+      const nowIso = new Date().toISOString();
+
+      // Guarda no localStorage
+      localStorage.setItem('flowpulse_activeTimerTask', JSON.stringify(res.data));
+      localStorage.setItem('flowpulse_timerStartTime', nowIso);
+
       setTimerStartTime(nowIso);
-      setActiveTimerTask(task);
+      setActiveTimerTask(res.data);
       setSecondsElapsed(0);
       fetchActiveWorkers();
-      if (updatePayload.assigned_to_id) fetchData();
+      fetchData();
     } catch (err) {
-      // Captura mensagens de dependência do backend (ex.: "⚠️ Esta tarefa depende da conclusão da tarefa antecedente...")
       alert(err.response?.data?.detail || 'Erro ao iniciar o cronómetro no servidor.');
     }
   };
@@ -1086,20 +1134,21 @@ const fetchWeekStatus = async () => {
   const stopTimer = async () => {
     if (!activeTimerTask) return;
     const hoursSpent = secondsElapsed / 3600;
-    const updatedTracked = (activeTimerTask.tracked_hours || 0) + hoursSpent;
-    const endTime = new Date().toISOString(); // Hora exata em que parou
+    const endTime = new Date().toISOString();
     
     try {
       const headers = { Authorization: `Bearer ${token}` };
       
-      // Aponta para a nova rota dedicada do Horário da Escola!
       await axios.post(`${API_URL}/tickets/${activeTimerTask.id}/stop-timer`, { 
-        tracked_hours: Number(updatedTracked.toFixed(2)),
         session_hours: hoursSpent,
         start_time: timerStartTime,
         end_time: endTime
       }, { headers });
       
+      // Limpa os dados do localStorage
+      localStorage.removeItem('flowpulse_activeTimerTask');
+      localStorage.removeItem('flowpulse_timerStartTime');
+
       setActiveTimerTask(null);
       setSecondsElapsed(0);
       setTimerStartTime(null);
@@ -1286,6 +1335,8 @@ const fetchWeekStatus = async () => {
   const handleLogout = () => {
     localStorage.removeItem('token');
     localStorage.removeItem('activeTab');
+    localStorage.removeItem('flowpulse_activeTimerTask');
+    localStorage.removeItem('flowpulse_timerStartTime');
     setToken('');
   };
 
@@ -1487,6 +1538,7 @@ const fetchWeekStatus = async () => {
     setProjectDesc('');
     setProjectTeamId('');
     setProjectClientId('');
+    setProjectDueDate('');
     setProjectTicketIds([]);
     setShowProjectModal(true);
   };
@@ -1498,6 +1550,7 @@ const fetchWeekStatus = async () => {
     setProjectDesc(proj.description || '');
     setProjectTeamId(proj.team_id || '');
     setProjectClientId(proj.client_id || '');
+    setProjectDueDate(proj.due_date ? proj.due_date.split('T')[0] : '');
     setShowProjectModal(true);
 
     const projTasks = tickets.filter(t => t.project_id === proj.id).map(t => t.id);
@@ -1591,6 +1644,7 @@ const fetchWeekStatus = async () => {
         description: projectDesc.trim(),
         team_id: projectTeamId ? Number(projectTeamId) : null,
         client_id: projectClientId ? Number(projectClientId) : null, // Permite null (cliente opcional)
+        due_date: projectDueDate || null,
         ticket_ids: projectTicketIds
       };
 
@@ -1615,6 +1669,7 @@ const fetchWeekStatus = async () => {
       setProjectDesc('');
       setProjectTeamId('');
       setProjectClientId('');
+      setProjectDueDate('');
       setProjectTicketIds([]);
       fetchData();
     } catch (err) {
@@ -1800,7 +1855,8 @@ const fetchWeekStatus = async () => {
     setNewTaskType('Geral');
     setNewStatus('To Do');
     setNewAssignedTo('');
-    setNewEstimatedHours(0);
+    setEstHours(1);
+    setEstMinutes(0);
     setNewDueDate('');
     setNewStartDate('');
     setNewClientId('');
@@ -1824,7 +1880,9 @@ const fetchWeekStatus = async () => {
     setNewTaskType(ticket.task_type || 'Geral');
     setNewStatus(ticket.status);
     setNewAssignedTo(ticket.assigned_to_id || '');
-    setNewEstimatedHours(ticket.estimated_hours || 0);
+    const totalMinutes = Math.round((ticket.estimated_hours || 0) * 60);
+    setEstHours(Math.floor(totalMinutes / 60));
+    setEstMinutes(totalMinutes % 60);
     setNewDueDate(ticket.due_date ? ticket.due_date.split('T')[0] : '');
     setNewStartDate(ticket.start_date ? ticket.start_date.split('T')[0] : '');
     setNewProjectId(ticket.project_id || '');
@@ -1837,7 +1895,6 @@ const fetchWeekStatus = async () => {
     setNewSubTitle('');
     setNewSubAssignee('');
     fetchTicketHistory(ticket.id);
-    fetchTicketLogs(ticket.id);
     setShowModal(true);
     fetchSubtasks(ticket.id);
   };
@@ -1859,7 +1916,7 @@ const fetchWeekStatus = async () => {
         project_id: newProjectId ? Number(newProjectId) : null,
         client_id: newClientId ? Number(newClientId) : null,
         assigned_to_id: newAssignedTo ? Number(newAssignedTo) : null,
-        estimated_hours: Number(newEstimatedHours),
+        estimated_hours: Number(estHours) + (Number(estMinutes) / 60),
         due_date: newDueDate ? newDueDate : null,
         start_date: newStartDate ? newStartDate : null,
         blocked_by_id: newBlockedById ? Number(newBlockedById) : null
@@ -2358,9 +2415,13 @@ const fetchWeekStatus = async () => {
   };
 
   // Histórico da tarefa mostrado no modal de edição
-  const fetchTicketLogs = async (ticketId) => {
+  const fetchTicketLogs = async (ticketId, sDate = logStartDate, eDate = logEndDate) => {
     try {
-      const res = await axios.get(`${API_URL}/tickets/${ticketId}/audit-logs`, {
+      let query = `${API_URL}/tickets/${ticketId}/audit-logs?`;
+      if (sDate) query += `start_date=${sDate}&`;
+      if (eDate) query += `end_date=${eDate}&`;
+
+      const res = await axios.get(query, {
         headers: { Authorization: `Bearer ${token}` }
       });
       setTicketLogs(res.data || []);
@@ -2368,6 +2429,15 @@ const fetchWeekStatus = async () => {
       console.error("Erro ao carregar histórico", err);
       setTicketLogs([]);
     }
+  };
+
+  // Abre o modal dedicado de histórico/logs de auditoria de uma tarefa
+  const openTaskLogsModal = (ticket) => {
+    setSelectedTaskForLogs(ticket);
+    setLogStartDate('');
+    setLogEndDate('');
+    fetchTicketLogs(ticket.id, '', '');
+    setShowTaskLogsModal(true);
   };
 
   const kanbanColumns = [
@@ -3514,6 +3584,13 @@ const fetchWeekStatus = async () => {
                               <span className="truncate max-w-[120px]">{clientNameStr}</span>
                             </div>
                           )}
+                          {/* BADGE DA DATA LIMITE DO PROJETO */}
+                          {proj.due_date && (
+                            <div className="flex items-center gap-1.5 bg-zinc-950 border border-zinc-800 px-2.5 py-1 rounded-md text-zinc-300 font-mono">
+                              <Calendar className="w-3.5 h-3.5 text-zinc-500" />
+                              <span>{proj.due_date.split('T')[0]}</span>
+                            </div>
+                          )}
                         </div>
 
                         <div className="mt-6 mb-4">
@@ -3799,34 +3876,42 @@ const fetchWeekStatus = async () => {
                               const isRunning = activeTimerTask?.id === ticket.id;
                               const isDone = ticket.status === 'Done';
                               const assignee = getAssigneeName(ticket.assigned_to_id);
-                              const clientNameStr = getClientName(ticket.client_id);
                               const isOwnerOrCreator = canManageTicket(ticket);
-                              const isSubtaskOnly = !isOwnerOrCreator && ticket.sub_tasks?.some(s => s.assigned_to_id === currentUserInfo?.id);
                               return (
                                 <div 
                                   key={ticket.id}
                                   draggable
                                   onDragStart={(e) => handleDragStart(e, ticket.id)}
                                   onClick={() => handleOpenEditModal(ticket)}
-                                  className="bg-zinc-900/90 border border-zinc-800 hover:border-zinc-700 p-3.5 rounded-2xl shadow-sm transition-all duration-200 cursor-pointer flex flex-col gap-3 group relative hover:shadow-md"
+                                  className={`bg-zinc-900/90 border p-3.5 rounded-2xl shadow-sm transition-all duration-200 cursor-pointer flex flex-col gap-3 group relative hover:shadow-md ${
+                                    ticket.is_running 
+                                      ? 'border-emerald-500/50 shadow-[0_0_12px_rgba(16,185,129,0.15)] ring-1 ring-emerald-500/30' 
+                                      : 'border-zinc-800 hover:border-zinc-700'
+                                  }`}
                                 >
+                                  {/* CABEÇALHO DO CARD COM BADGE SÓ COM O NOME */}
                                   <div className="flex items-start justify-between gap-2">
-                                    <div className="flex items-center gap-2">
+                                    <div className="flex items-center gap-2 flex-wrap">
                                       <span className="text-xs font-mono text-zinc-500">#{ticket.id}</span>
                                       {ticket.priority && (
                                         <span className={`text-[10px] px-2 py-0.5 rounded border font-medium ${getPriorityBadgeStyle(ticket.priority)}`}>
                                           {ticket.priority}
                                         </span>
                                       )}
-                                      {ticket.task_type && ticket.task_type !== 'Geral' && (
-                                        <span className={`text-[10px] px-2 py-0.5 rounded border font-medium ${getTaskTypeBadgeStyle(ticket.task_type)}`}>
-                                          {ticket.task_type === 'Software' ? '💻 ' : ticket.task_type === 'Hardware' ? '🔧 ' : '🌐 '}{ticket.task_type}
+                                      {ticket.is_running && (
+                                        <span className="flex items-center gap-1.5 text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 animate-pulse">
+                                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping"></span>
+                                          <span className="truncate max-w-[90px]">
+                                            {getAssigneeName(ticket.assigned_to_id) || 'Ativo'}
+                                          </span>
                                         </span>
                                       )}
                                     </div>
+
+                                    {/* BOTÕES DE AÇÃO COMPLETOS */}
                                     <div className="flex items-center gap-1 opacity-80 group-hover:opacity-100 transition">
-                                      {/* Botão de Iniciar / Parar Cronómetro */}
-                                      {!isDone && (
+                                      {/* 1. Play / Pause protegido por dono */}
+                                      {!isDone && (!ticket.assigned_to_id || ticket.assigned_to_id === currentUserInfo?.id) && (
                                         <button
                                           type="button"
                                           onClick={(e) => {
@@ -3834,26 +3919,25 @@ const fetchWeekStatus = async () => {
                                             isRunning ? stopTimer() : startTimer(ticket);
                                           }}
                                           title={isRunning ? "Parar Cronómetro" : "Iniciar Cronómetro"}
-                                          className={`p-1.5 rounded-md border transition cursor-pointer ${isRunning ? 'bg-amber-500/20 border-amber-500/40 text-amber-400 hover:bg-amber-500/30' : 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-blue-400 hover:border-blue-500/30'}`}
+                                          className={`p-1.5 rounded-md border transition cursor-pointer ${
+                                            isRunning ? 'bg-amber-500/20 border-amber-500/40 text-amber-400' : 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-emerald-400'
+                                          }`}
                                         >
                                           {isRunning ? <Pause className="w-3.5 h-3.5 fill-current" /> : <Play className="w-3.5 h-3.5 fill-current" />}
                                         </button>
                                       )}
 
-                                      {/* 👁️ Botão de Ver / Abrir Detalhes da Tarefa (Disponível para TODOS) */}
+                                      {/* 2. Editar */}
                                       <button
                                         type="button"
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          handleOpenEditModal(ticket);
-                                        }}
+                                        onClick={(e) => { e.stopPropagation(); handleOpenEditModal(ticket); }}
                                         title={isOwnerOrCreator ? "Editar Tarefa" : "Ver Detalhes da Tarefa"}
-                                        className="p-1.5 bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-blue-400 hover:border-blue-500/30 rounded-md transition cursor-pointer"
+                                        className="p-1.5 bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-blue-400 rounded-md transition cursor-pointer"
                                       >
                                         <Edit3 className="w-3.5 h-3.5" />
                                       </button>
 
-                                      {/* Botão de Concluir Tarefa Principal: Só para o dono ou gestão */}
+                                      {/* 3. Concluir com Relatório (✓) */}
                                       {(isOwnerOrCreator || isManagerOrAdmin) && !isDone && (
                                         <button
                                           type="button"
@@ -3868,22 +3952,7 @@ const fetchWeekStatus = async () => {
                                         </button>
                                       )}
 
-                                      {/* Botão de Agarrar: Apenas se for livre e o user não estiver em subtarefa */}
-                                      {!ticket.assigned_to_id && !isSubtaskOnly && (
-                                        <button
-                                          type="button"
-                                          onClick={(e) => {
-                                            e.stopPropagation();
-                                            handleGrabTask(ticket);
-                                          }}
-                                          title="Agarrar Tarefa"
-                                          className="p-1.5 bg-zinc-900 border border-amber-500/30 text-amber-400 hover:text-amber-300 rounded-md transition cursor-pointer"
-                                        >
-                                          ✋
-                                        </button>
-                                      )}
-
-                                      {/* Botão de Comentários */}
+                                      {/* 4. Comentários (💬) */}
                                       <button
                                         type="button"
                                         onClick={(e) => {
@@ -3896,7 +3965,7 @@ const fetchWeekStatus = async () => {
                                         <MessageSquare className="w-3.5 h-3.5" />
                                       </button>
 
-                                      {/* ⭐ Botão Pedir Feedback (Apenas Gestão / Admins) */}
+                                      {/* 5. Pedir Feedback (⭐) */}
                                       {isManagerOrAdmin && (
                                         <button
                                           type="button"
@@ -3905,7 +3974,6 @@ const fetchWeekStatus = async () => {
                                             setFeedbackTargetTicket(ticket);
                                             setNewFeedbackTitle(`Feedback da Tarefa #${ticket.id}: ${ticket.title}`);
                                             setNewFeedbackDesc("");
-                                            // Define por defeito o prazo para daqui a 2 horas
                                             const defaultDate = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString().slice(0, 16);
                                             setNewFeedbackDeadline(defaultDate);
                                             setNewFeedbackUsers(ticket.assigned_to_id ? [ticket.assigned_to_id] : []);
@@ -3918,15 +3986,25 @@ const fetchWeekStatus = async () => {
                                         </button>
                                       )}
 
-                                      {/* Botão de Apagar: Apenas para quem gere a tarefa */}
+                                      {/* 6. Histórico / Logs (📜) */}
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          openTaskLogsModal(ticket);
+                                        }}
+                                        title="Histórico de Alterações"
+                                        className="p-1.5 bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-amber-400 rounded-md transition cursor-pointer"
+                                      >
+                                        📜
+                                      </button>
+
+                                      {/* 7. Apagar (🗑️) */}
                                       {canManageTicket(ticket) && (
                                         <button
                                           type="button"
-                                          onClick={(e) => {
-                                            e.stopPropagation();
-                                            handleDeleteTicket(ticket.id);
-                                          }}
-                                          title="Apagar"
+                                          onClick={(e) => { e.stopPropagation(); handleDeleteTicket(ticket.id); }}
+                                          title="Apagar Tarefa"
                                           className="p-1.5 bg-zinc-900 border border-zinc-800 text-red-400 hover:text-red-300 rounded-md transition cursor-pointer"
                                         >
                                           <Trash2 className="w-3.5 h-3.5" />
@@ -3935,58 +4013,71 @@ const fetchWeekStatus = async () => {
                                     </div>
                                   </div>
 
+                                  {/* TÍTULO E DESCRIÇÃO */}
                                   <div>
                                     <h4 className="font-medium text-sm text-zinc-100 leading-snug">{ticket.title}</h4>
                                     <p className="text-xs text-zinc-400 mt-1 line-clamp-2">{ticket.description || 'Sem descrição'}</p>
                                   </div>
 
-                                  {/* 🎯 MOSTRA AS SUBTAREFAS ATRIBUÍDAS DIRETAMENTE NO CARTÃO */}
-                                  {ticket.sub_tasks && ticket.sub_tasks.some(s => s.assigned_to_id === currentUserInfo?.id) && (
-                                    <div className="bg-indigo-950/40 border border-indigo-500/30 rounded-xl p-2.5 space-y-1.5">
-                                      <p className="text-[10px] font-bold text-indigo-300 uppercase tracking-wider flex items-center gap-1">
-                                        📌 As Tuas Subtarefas:
-                                      </p>
-                                      {ticket.sub_tasks
-                                        .filter(s => s.assigned_to_id === currentUserInfo?.id)
-                                        .map(sub => {
-                                          const subStatus = sub.status || "Pendente";
-                                          return (
-                                            <div key={sub.id} className="flex items-center justify-between gap-2 text-xs">
-                                              <div className="flex items-center gap-1.5 min-w-0">
-                                                <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold border shrink-0 ${
-                                                  subStatus === 'Aprovada' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' :
-                                                  subStatus === 'Aguardar Aprovação' ? 'bg-amber-500/10 text-amber-400 border-amber-500/30' :
-                                                  'bg-zinc-900 text-zinc-400 border-zinc-800'
-                                                }`}>
-                                                  {subStatus}
-                                                </span>
-                                                <span className={sub.is_completed ? "line-through text-zinc-500 truncate" : "text-zinc-200 truncate"}>
-                                                  {sub.title}
-                                                </span>
-                                              </div>
-                                              {subStatus === 'Pendente' && (
-                                                <button
-                                                  type="button"
-                                                  onClick={(e) => {
-                                                    e.stopPropagation();
-                                                    handleSubmitSubtaskForApproval(sub.id);
-                                                  }}
-                                                  className="bg-blue-600/20 hover:bg-blue-600/30 text-blue-400 border border-blue-500/30 text-[9px] font-medium px-1.5 py-0.5 rounded-lg transition shrink-0"
-                                                >
-                                                  Submeter
-                                                </button>
-                                              )}
-                                            </div>
-                                          );
-                                        })}
-                                    </div>
-                                  )}
+                                  {/* CÁLCULO DINÂMICO COM SEGUNDOS EM TEMPO REAL */}
+                                  {(() => {
+                                    const isCurrentlyActive = activeTimerTask?.id === ticket.id;
+                                    const currentLiveHours = isCurrentlyActive ? (secondsElapsed / 3600) : 0;
+                                    
+                                    const tracked = (Number(ticket.tracked_hours) || 0) + currentLiveHours;
+                                    const estimated = Number(ticket.estimated_hours) || 0;
+                                    const percent = estimated > 0 ? Math.min(Math.round((tracked / estimated) * 100), 100) : 0;
+                                    const isOvertime = estimated > 0 && tracked > estimated;
 
-                                  <div className="flex flex-wrap items-center justify-between text-[11px] pt-2 border-t border-zinc-900 gap-1">
-                                    <span className="bg-zinc-900 text-zinc-400 px-2 py-0.5 rounded border border-zinc-800">📁 {getProjectName(ticket.project_id)}</span>
-                                    {clientNameStr && <span className="bg-blue-950/40 text-blue-300 px-2 py-0.5 rounded border border-blue-500/30">🏢 {clientNameStr}</span>}
-                                    {assignee && <span className="text-emerald-400 font-medium">👤 {assignee}</span>}
-                                  </div>
+                                    return (
+                                      <>
+                                        {/* BARRA DE PROGRESSO EM TEMPO REAL */}
+                                        <div className="w-full bg-zinc-950 rounded-full h-1.5 overflow-hidden border border-zinc-800/80 my-0.5">
+                                          <div 
+                                            className={`h-full rounded-full transition-all duration-300 ease-out ${
+                                              isOvertime 
+                                                ? 'bg-red-500' 
+                                                : ticket.is_running 
+                                                  ? 'bg-emerald-400' 
+                                                  : 'bg-blue-500'
+                                            }`} 
+                                            style={{ width: `${percent}%` }}
+                                          />
+                                        </div>
+
+                                        {/* TEMPO EM HH:MM (Atualiza segundo a segundo enquanto trabalhas) */}
+                                        <div className="flex flex-col gap-2">
+                                          <div className="flex items-center justify-between text-[11px]">
+                                            <span className={`flex items-center gap-1.5 font-mono font-medium ${ticket.is_running ? 'text-emerald-400 font-bold' : 'text-zinc-400'}`}>
+                                              <Clock className={`w-3.5 h-3.5 ${ticket.is_running ? 'animate-spin text-emerald-400' : 'text-zinc-500'}`} />
+                                              <span>{formatToHHMM(tracked)}</span>
+                                              <span className="text-zinc-600">/</span>
+                                              <span className="text-zinc-500">{formatToHHMM(ticket.estimated_hours)}</span>
+                                            </span>
+
+                                            {ticket.due_date ? (
+                                              <span className={`flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-mono font-medium ${
+                                                ticket.due_date.split('T')[0] < todayStr && ticket.status !== 'Done'
+                                                  ? 'bg-red-500/10 text-red-400 border border-red-500/30'
+                                                  : 'bg-zinc-950 text-zinc-300 border border-zinc-800'
+                                              }`}>
+                                                📅 {ticket.due_date.split('T')[0]}
+                                              </span>
+                                            ) : (
+                                              <span className="text-[10px] text-zinc-600 italic">Sem prazo</span>
+                                            )}
+                                          </div>
+
+                                          <div className="flex items-center justify-between text-[11px] pt-1">
+                                            <span className="bg-zinc-950 text-zinc-400 px-2 py-0.5 rounded border border-zinc-800 truncate max-w-[140px]">
+                                              📁 {getProjectName(ticket.project_id)}
+                                            </span>
+                                            {assignee && <span className="text-emerald-400 font-medium">👤 {assignee}</span>}
+                                          </div>
+                                        </div>
+                                      </>
+                                    );
+                                  })()}
                                 </div>
                               );
                             })
@@ -4068,7 +4159,9 @@ const fetchWeekStatus = async () => {
                               )}
 
                               <div className="text-[11px] text-zinc-500 pl-7 flex items-center gap-3">
-                                <span>⏱️ <strong>{ticket.tracked_hours || 0}h</strong> / 🎯 <strong>{ticket.estimated_hours || 0}h</strong></span>
+                                <span className="font-mono">
+                                  ⏱️ <strong>{formatToHHMM(ticket.tracked_hours)}</strong> / 🎯 <strong>{formatToHHMM(ticket.estimated_hours)}</strong>
+                                </span>
                                 {ticket.due_date && <span>📅 <strong>{ticket.due_date.split('T')[0]}</strong></span>}
                                 {assignee && <span className="text-emerald-400">👤 {assignee}</span>}
                               </div>
@@ -4094,14 +4187,20 @@ const fetchWeekStatus = async () => {
                                   ✋
                                 </button>
                               )}
-                              <button
-                                onClick={() => (isRunning ? stopTimer() : startTimer(ticket))}
-                                disabled={isDone}
-                                className={`p-2 rounded-lg border transition ${isDone ? 'opacity-40 cursor-not-allowed bg-zinc-950 border-zinc-900 text-zinc-700' : isRunning ? 'bg-amber-500/20 border-amber-500/40 text-amber-400 hover:bg-amber-500/30' : 'bg-zinc-950 text-zinc-400 hover:text-zinc-100 border-zinc-800'}`}
-                                title={isRunning ? "Parar Cronómetro" : "Iniciar Cronómetro"}
-                              >
-                                {isRunning ? <Pause className="w-4 h-4 fill-current" /> : <Play className="w-4 h-4 fill-current" />}
-                              </button>
+                              {(() => {
+                                const canPlay = !ticket.assigned_to_id || ticket.assigned_to_id === currentUserInfo?.id;
+                                const disabled = isDone || !canPlay;
+                                return (
+                                  <button
+                                    onClick={() => (isRunning ? stopTimer() : startTimer(ticket))}
+                                    disabled={disabled}
+                                    className={`p-2 rounded-lg border transition ${disabled ? 'opacity-40 cursor-not-allowed bg-zinc-950 border-zinc-900 text-zinc-700' : isRunning ? 'bg-amber-500/20 border-amber-500/40 text-amber-400 hover:bg-amber-500/30' : 'bg-zinc-950 text-zinc-400 hover:text-zinc-100 border-zinc-800'}`}
+                                    title={isRunning ? "Parar Cronómetro" : !canPlay ? "Tarefa atribuída a outro utilizador" : "Iniciar Cronómetro"}
+                                  >
+                                    {isRunning ? <Pause className="w-4 h-4 fill-current" /> : <Play className="w-4 h-4 fill-current" />}
+                                  </button>
+                                );
+                              })()}
                               <button onClick={() => openComments(ticket)} className="p-2 text-zinc-400 hover:text-zinc-100 bg-zinc-950 border border-zinc-800 rounded-lg transition" title="Comentários">
                                 <MessageSquare className="w-4 h-4" />
                               </button>
@@ -5454,7 +5553,7 @@ const fetchWeekStatus = async () => {
               try {
                 const formData = new FormData();
                 formData.append('final_description', finalDesc);
-                formData.append('tracked_hours', extraTime ? Number(extraTime) : 0);
+                formData.append('tracked_hours', ticketToComplete?.tracked_hours ? Number(ticketToComplete.tracked_hours) : 0);
                 if (completionFile) {
                   formData.append('file', completionFile);
                 }
@@ -5505,24 +5604,20 @@ const fetchWeekStatus = async () => {
               </div>
 
               <div>
-                <label className="block text-xs font-medium text-zinc-300 mb-1.5">Tempo Gasto Total</label>
+                <label className="block text-xs font-medium text-zinc-300 mb-1.5">Tempo Total Contabilizado (Cronómetro)</label>
                 <div className="relative flex items-center">
-                  <Clock className="w-4 h-4 text-zinc-500 absolute left-3.5" />
+                  <Clock className="w-4 h-4 text-emerald-400 absolute left-3.5" />
                   <input 
-                    type="number"
-                    step="0.25"
-                    value={extraTime}
-                    onChange={e => setExtraTime(e.target.value)}
-                    placeholder="Ex: 16"
-                    className="w-full bg-zinc-950 border border-zinc-800 rounded-xl pl-10 pr-16 py-2.5 text-sm text-zinc-100 focus:outline-none focus:border-zinc-700"
+                    type="text"
+                    readOnly
+                    disabled
+                    value={`${formatToHHMM(ticketToComplete?.tracked_hours)} (${(ticketToComplete?.tracked_hours || 0).toFixed(2)}h)`}
+                    className="w-full bg-zinc-950/60 border border-zinc-800 text-emerald-400 font-mono font-bold rounded-xl pl-10 pr-4 py-2.5 text-sm cursor-not-allowed"
                   />
-                  <span className="absolute right-3.5 text-xs text-zinc-500 font-medium">horas</span>
                 </div>
-                {ticketToComplete?.estimated_hours > 0 && (
-                  <p className="text-[10px] text-zinc-500 mt-1">
-                    Estimativa inicial: <strong className="text-zinc-400">{ticketToComplete.estimated_hours}h</strong>
-                  </p>
-                )}
+                <p className="text-[10px] text-zinc-500 mt-1">
+                  Previsto: <strong className="text-zinc-400">{formatToHHMM(ticketToComplete?.estimated_hours)}</strong> • O tempo é calculado automaticamente pelas sessões de trabalho registadas.
+                </p>
               </div>
 
               <div>
@@ -6177,17 +6272,41 @@ const fetchWeekStatus = async () => {
                   </div>
                 )}
                 <div className={!isManagerOrAdmin ? "col-span-2" : ""}>
-                  <label className="block text-xs font-medium text-zinc-400 mb-1">Horas Estimadas</label>
-                  <input
-                    type="number"
-                    step="0.5"
-                    value={newEstimatedHours}
-                    onChange={e => setNewEstimatedHours(e.target.value)}
-                    disabled={isSubtaskCollaborator}
-                    className={`w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2 text-sm text-zinc-100 outline-none transition ${
-                      isSubtaskCollaborator ? 'opacity-70 cursor-not-allowed bg-zinc-900/50' : 'focus:border-blue-500'
-                    }`}
-                  />
+                  <label className="block text-xs font-medium text-zinc-400 mb-1">
+                    Horas Estimadas <span className="text-red-400">*</span>
+                  </label>
+                  <div className="grid grid-cols-2 gap-2">
+                    {/* Campo das Horas */}
+                    <div className="relative">
+                      <input
+                        type="number"
+                        min="0"
+                        max="999"
+                        value={estHours}
+                        onChange={e => setEstHours(Math.max(0, parseInt(e.target.value) || 0))}
+                        disabled={isSubtaskCollaborator}
+                        className={`w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-sm text-zinc-100 outline-none pr-8 ${
+                          isSubtaskCollaborator ? 'opacity-70 cursor-not-allowed bg-zinc-900/50' : 'focus:border-blue-500'
+                        }`}
+                      />
+                      <span className="absolute right-3 top-2 text-xs text-zinc-500 font-mono">h</span>
+                    </div>
+
+                    {/* Dropdown de Minutos Exatos */}
+                    <select
+                      value={estMinutes}
+                      onChange={e => setEstMinutes(Number(e.target.value))}
+                      disabled={isSubtaskCollaborator}
+                      className={`w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-sm text-zinc-100 outline-none ${
+                        isSubtaskCollaborator ? 'opacity-70 cursor-not-allowed bg-zinc-900/50' : 'focus:border-blue-500'
+                      }`}
+                    >
+                      <option value={0}>00 min</option>
+                      <option value={15}>15 min</option>
+                      <option value={30}>30 min</option>
+                      <option value={45}>45 min</option>
+                    </select>
+                  </div>
                 </div>
               </div>
               <div className="grid grid-cols-2 gap-3">
@@ -6362,24 +6481,6 @@ const fetchWeekStatus = async () => {
                 </div>
               )}
 
-              {/* SECÇÃO ÚNICA DE HISTÓRICO */}
-              {editMode && ticketLogs && ticketLogs.length > 0 && (
-                <div className="border-t border-zinc-800 pt-3 mt-3">
-                  <h3 className="font-semibold text-xs mb-2 text-zinc-400 uppercase tracking-wider">📜 Histórico de Alterações</h3>
-                  <div className="space-y-1.5 max-h-32 overflow-y-auto pr-1 text-xs bg-zinc-950 p-2.5 rounded-xl border border-zinc-800">
-                    {ticketLogs.map(log => (
-                      <div key={log.id} className="bg-zinc-900 p-2 rounded-lg border border-zinc-800 flex flex-col gap-0.5">
-                        <div className="flex justify-between items-center text-zinc-500 text-[10px]">
-                          <span className="font-bold text-blue-400">{log.username || "Sistema"}</span>
-                          <span>{log.created_at ? new Date(log.created_at).toLocaleString('pt-PT') : ''}</span>
-                        </div>
-                        <div className="text-zinc-300 text-xs">{log.details}</div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
               <div className="flex justify-between items-center gap-3 pt-3 border-t border-zinc-800 shrink-0 mt-4">
                 {isSubtaskCollaborator ? (
                   <div className="flex justify-end w-full">
@@ -6432,6 +6533,15 @@ const fetchWeekStatus = async () => {
               <div>
                 <label className="block text-xs font-medium text-zinc-400 mb-1">Descrição <span className="text-rose-500">*</span></label>
                 <textarea required value={projectDesc} onChange={e => setProjectDesc(e.target.value)} rows="2" className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2 text-sm text-zinc-100 focus:outline-none resize-none" placeholder="Descreve o âmbito do projeto..." />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-zinc-400 mb-1">Data Limite do Projeto</label>
+                <input 
+                  type="date" 
+                  value={projectDueDate} 
+                  onChange={e => setProjectDueDate(e.target.value)} 
+                  className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2 text-sm text-zinc-100 focus:outline-none [color-scheme:dark]" 
+                />
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div>
@@ -6885,6 +6995,102 @@ const fetchWeekStatus = async () => {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL EXCLUSIVO DE HISTÓRICO E LOGS DA TAREFA */}
+      {showTaskLogsModal && selectedTaskForLogs && (
+        <div className="fixed inset-0 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fadeIn" onClick={() => setShowTaskLogsModal(false)}>
+          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl max-w-2xl w-full p-6 shadow-2xl flex flex-col max-h-[85vh]" onClick={e => e.stopPropagation()}>
+
+            {/* Cabeçalho */}
+            <div className="flex items-center justify-between pb-4 border-b border-zinc-800">
+              <div>
+                <h2 className="text-base font-bold text-zinc-100 flex items-center gap-2">
+                  📜 Registo de Atividade da Tarefa #{selectedTaskForLogs.id}
+                </h2>
+                <p className="text-xs text-zinc-400 mt-0.5 truncate max-w-md">{selectedTaskForLogs.title}</p>
+              </div>
+              <button onClick={() => setShowTaskLogsModal(false)} className="p-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-xl transition">
+                ✕
+              </button>
+            </div>
+
+            {/* Barra de Filtros por Intervalo de Datas */}
+            <div className="flex items-center justify-between gap-3 my-4 bg-zinc-950 p-3 rounded-xl border border-zinc-800">
+              <span className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">Filtrar por data:</span>
+              <div className="flex items-center gap-2">
+                <input 
+                  type="date"
+                  value={logStartDate}
+                  onChange={e => {
+                    setLogStartDate(e.target.value);
+                    fetchTicketLogs(selectedTaskForLogs.id, e.target.value, logEndDate);
+                  }}
+                  className="bg-zinc-900 border border-zinc-700 text-xs text-zinc-200 rounded-lg px-2.5 py-1.5 focus:outline-none [color-scheme:dark]"
+                />
+                <span className="text-zinc-500 text-xs">até</span>
+                <input 
+                  type="date"
+                  value={logEndDate}
+                  onChange={e => {
+                    setLogEndDate(e.target.value);
+                    fetchTicketLogs(selectedTaskForLogs.id, logStartDate, e.target.value);
+                  }}
+                  className="bg-zinc-900 border border-zinc-700 text-xs text-zinc-200 rounded-lg px-2.5 py-1.5 focus:outline-none [color-scheme:dark]"
+                />
+                {(logStartDate || logEndDate) && (
+                  <button
+                    onClick={() => {
+                      setLogStartDate('');
+                      setLogEndDate('');
+                      fetchTicketLogs(selectedTaskForLogs.id, '', '');
+                    }}
+                    className="text-xs text-zinc-400 hover:text-white px-2 py-1 bg-zinc-800 rounded-lg transition"
+                  >
+                    Limpar
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Lista de Registos / Logs */}
+            <div className="flex-1 overflow-y-auto space-y-2.5 pr-1">
+              {ticketLogs.length === 0 ? (
+                <div className="py-12 text-center text-xs text-zinc-500 border border-dashed border-zinc-800 rounded-xl">
+                  Nenhum registo de auditoria encontrado para o intervalo de datas selecionado.
+                </div>
+              ) : (
+                ticketLogs.map(log => (
+                  <div key={log.id} className="bg-zinc-950 border border-zinc-800/80 p-3.5 rounded-xl space-y-1 hover:border-zinc-700 transition">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="font-semibold text-blue-400 flex items-center gap-1.5">
+                        👤 {log.username || `Utilizador #${log.user_id}`}
+                      </span>
+                      <span className="text-[11px] font-mono text-zinc-500">
+                        {log.created_at ? new Date(log.created_at).toLocaleString('pt-PT') : ''}
+                      </span>
+                    </div>
+                    <div className="text-xs font-medium text-zinc-200">{log.action}</div>
+                    <p className="text-xs text-zinc-400 bg-zinc-900/60 p-2 rounded-lg border border-zinc-850">
+                      {log.details}
+                    </p>
+                  </div>
+                ))
+              )}
+            </div>
+
+            {/* Rodapé */}
+            <div className="pt-4 mt-4 border-t border-zinc-800 flex justify-end">
+              <button 
+                onClick={() => setShowTaskLogsModal(false)}
+                className="bg-zinc-800 hover:bg-zinc-700 text-zinc-200 px-4 py-2 rounded-xl text-xs font-medium transition cursor-pointer"
+              >
+                Fechar
+              </button>
+            </div>
+
           </div>
         </div>
       )}
