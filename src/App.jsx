@@ -3121,11 +3121,11 @@ const fetchWeekStatus = async () => {
                                 ✋
                               </button>
                             )}
-                            {!isDone && (
+                            {!isDone && (!ticket.assigned_to_id || ticket.assigned_to_id === currentUserInfo?.id) && (
                               <button
                                 onClick={() => (isRunning ? stopTimer() : startTimer(ticket))}
                                 className={`p-2 rounded-lg border transition ${isRunning ? 'bg-amber-500/20 border-amber-500/40 text-amber-400 hover:bg-amber-500/30' : 'bg-zinc-900 text-zinc-400 hover:text-zinc-100 border-zinc-800'}`}
-                                title={isRunning ? "Parar Cronómetro" : "Iniciar Cronómetro"}
+                                title={isRunning ? "Parar Cronómetro" : ticket.assigned_to_id ? "Iniciar Cronómetro" : "Agarrar e Iniciar Tarefa"}
                               >
                                 {isRunning ? <Pause className="w-3.5 h-3.5 fill-current" /> : <Play className="w-3.5 h-3.5 fill-current" />}
                               </button>
@@ -3343,9 +3343,34 @@ const fetchWeekStatus = async () => {
                           <span className="text-zinc-200 font-medium truncate pr-2">{tec.nome}</span>
                           <span className="text-xs">{tec.icone}</span>
                         </div>
-                        <div className="flex justify-between items-end mt-2">
-                          <span className={`text-xs font-medium ${tec.corTexto}`}>{tec.status}</span>
-                          <span className="text-[10px] text-zinc-600 font-mono">{tec.hora}</span>
+
+                        <div className="flex flex-col gap-2 mt-2">
+                          <div className="flex justify-between items-end">
+                            <span className={`text-xs font-medium ${tec.corTexto}`}>{tec.status}</span>
+                            <span className="text-[10px] text-zinc-600 font-mono">{tec.hora}</span>
+                          </div>
+
+                          {/* 🔔 BOTÃO DE ENVIAR LEMBRETE SE O RELATÓRIO ESTIVER EM FALTA */}
+                          {tec.status === "Em falta" && (
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                try {
+                                  const headers = { Authorization: `Bearer ${token}` };
+                                  await axios.post(`${API_URL}/tickets/admin/reports/remind`, {
+                                    user_id: tec.id,
+                                    date: dashboardDate
+                                  }, { headers });
+                                  alert(`🔔 Lembrete enviado com sucesso para ${tec.nome}!`);
+                                } catch (err) {
+                                  alert("Erro ao enviar notificação.");
+                                }
+                              }}
+                              className="mt-1 w-full bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/30 text-[10px] font-semibold py-1 px-2 rounded-lg transition flex items-center justify-center gap-1 cursor-pointer"
+                            >
+                              🔔 Pedir Relatório
+                            </button>
+                          )}
                         </div>
                       </div>
                     ))}
@@ -3706,49 +3731,25 @@ const fetchWeekStatus = async () => {
                           )}
                         </div>
 
-                        {/* CÁLCULO DINÂMICO DO PROJETO COM HORAS TRABALHADAS + TEMPO REAL */}
+                        {/* Em vez do cálculo antigo no frontend, usa a propriedade oficial da API */}
                         {(() => {
-                          // Tarefas deste projeto
-                          const projTasks = tickets.filter(t => t.project_id === proj.id);
-                          
-                          // Soma das estimativas de todas as tarefas
-                          const totalEstimated = projTasks.reduce((acc, t) => acc + (Number(t.estimated_hours) || 0), 0);
-                          
-                          // Soma das horas já feitas em cada tarefa + segundos em direto se a tarefa estiver a contar
-                          const totalTracked = projTasks.reduce((acc, t) => {
-                            const isLive = activeTimerTask?.id === t.id;
-                            const liveHours = isLive ? (secondsElapsed / 3600) : 0;
-                            return acc + (Number(t.tracked_hours) || 0) + liveHours;
-                          }, 0);
-
-                          const percent = totalEstimated > 0 
-                            ? Math.min(Math.round((totalTracked / totalEstimated) * 100), 100) 
-                            : 0;
-
-                          const isOvertime = totalEstimated > 0 && totalTracked > totalEstimated;
+                          const percent = proj.progress_percentage || 0;
+                          const isOvertime = proj.completed_estimated_hours > proj.total_estimated_hours;
 
                           return (
                             <div className="mt-3 space-y-1.5">
-                              {/* Indicadores de Percentagem e Horas HH:MM */}
                               <div className="flex items-center justify-between text-xs">
                                 <span className="font-semibold text-zinc-300">
                                   Progresso: <span className={isOvertime ? "text-red-400 font-bold" : "text-emerald-400 font-bold"}>{percent}%</span>
                                 </span>
                                 <span className="text-[11px] font-mono text-zinc-400">
-                                  ⏱️ {formatToHHMM(totalTracked)} / 🎯 {formatToHHMM(totalEstimated)}
+                                  ⏱️ {formatToHHMM(proj.completed_estimated_hours)} / 🎯 {formatToHHMM(proj.total_estimated_hours)}
                                 </span>
                               </div>
 
-                              {/* Barra de Progresso do Projeto */}
                               <div className="w-full bg-zinc-950 rounded-full h-2 overflow-hidden border border-zinc-800">
                                 <div 
-                                  className={`h-full rounded-full transition-all duration-300 ease-out ${
-                                    isOvertime 
-                                      ? 'bg-red-500' 
-                                      : projTasks.some(t => t.is_running) 
-                                        ? 'bg-emerald-400' 
-                                        : 'bg-blue-500'
-                                  }`}
+                                  className="h-full rounded-full transition-all duration-300 ease-out bg-blue-500"
                                   style={{ width: `${percent}%` }}
                                 />
                               </div>
