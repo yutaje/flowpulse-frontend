@@ -4,7 +4,7 @@ import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { 
   CheckCircle2, Clock, AlertCircle, Plus, Search, 
-  LogOut, ShieldAlert, LayoutDashboard, Ticket as TicketIcon, Trash2, Edit3, Play, Pause, Square, MessageSquare, FolderPlus, RefreshCw, Calendar, Users, Crown, Folder, UserCheck, Kanban, ListFilter, ArrowUpDown, ChevronLeft, ChevronRight, Settings, BarChart3, Bell, Check, Download, Building2, Phone, Mail, BarChart, X, Upload, Paperclip, Star 
+  LogOut, ShieldAlert, LayoutDashboard, Ticket as TicketIcon, Trash2, Edit3, Play, Pause, Hand, Square, MessageSquare, FolderPlus, RefreshCw, Calendar, Users, Crown, Folder, UserCheck, Kanban, ListFilter, ArrowUpDown, ChevronLeft, ChevronRight, Settings, BarChart3, Bell, Check, Download, Building2, Phone, Mail, BarChart, X, Upload, Paperclip, Star 
 } from 'lucide-react';
 
 const API_URL = 'http://127.0.0.1:8000'; 
@@ -458,12 +458,18 @@ const fetchWeekStatus = async () => {
   const [chatSearchQuery, setChatSearchQuery] = useState('');
   const [pinnedMessages, setPinnedMessages] = useState([]);
   const [showPinnedDrawer, setShowPinnedDrawer] = useState(false);
+  const [showMembersDrawer, setShowMembersDrawer] = useState(false);
   const [chatSummary, setChatSummary] = useState(null);
   const [loadingAiChat, setLoadingAiChat] = useState(false);
   const [showAiPromptModal, setShowAiPromptModal] = useState(false);
   const [customAiPrompt, setCustomAiPrompt] = useState('');
   const chatWsRef = useRef(null);
   const messagesEndRef = useRef(null);
+
+  // --- NOVOS ESTADOS DO CHAT POR PROJETO ---
+  const [chatContext, setChatContext] = useState('direct'); // 'direct' ou 'project'
+  const [selectedChatProjectId, setSelectedChatProjectId] = useState('');
+  const [newChatProjectId, setNewChatProjectId] = useState('');
 
   // Estados da Barra de Pesquisa Rápida (Spotlight / Cmd+K)
   const [showQuickSearch, setShowQuickSearch] = useState(false);
@@ -639,6 +645,7 @@ const fetchWeekStatus = async () => {
   const [taskTypes, setTaskTypes] = useState(['Geral', 'Software', 'Hardware', 'Redes']);
   const [typeFilter, setTypeFilter] = useState('');
   const [knowledgeSort, setKnowledgeSort] = useState('newest');
+  const [selectedKnowledgeTicket, setSelectedKnowledgeTicket] = useState(null);
   const [newStatus, setNewStatus] = useState('To Do');
   const [newProjectId, setNewProjectId] = useState('');
   const [newClientId, setNewClientId] = useState(''); 
@@ -663,7 +670,7 @@ const fetchWeekStatus = async () => {
   const [currentProjectId, setCurrentProjectId] = useState(null);
   const [projectName, setProjectName] = useState('');
   const [projectDesc, setProjectDesc] = useState('');
-  const [projectTeamId, setProjectTeamId] = useState('');
+  const [projectTeamIds, setProjectTeamIds] = useState([]);
   const [projectClientId, setProjectClientId] = useState(''); 
   const [projectTicketIds, setProjectTicketIds] = useState([]); 
   // Data final do projeto
@@ -684,6 +691,10 @@ const fetchWeekStatus = async () => {
   const [editClientCompany, setEditClientCompany] = useState('');
   const [editClientPhone, setEditClientPhone] = useState('');
 
+  // Estados para os Projetos associados ao Cliente (criação e edição)
+  const [selectedClientProjects, setSelectedClientProjects] = useState([]);
+  const [selectedNewClientProjectId, setSelectedNewClientProjectId] = useState('');
+
   // Estados das Equipas
   const [showTeamModal, setShowTeamModal] = useState(false);
   const [newTeamName, setNewTeamName] = useState('');
@@ -698,6 +709,7 @@ const fetchWeekStatus = async () => {
   const [editTeamOwnerId, setEditTeamOwnerId] = useState('');
   const [selectedMemberIds, setSelectedMemberIds] = useState([]);
   const [selectedProjectIds, setSelectedProjectIds] = useState([]);
+  const [selectedNewProjectId, setSelectedNewProjectId] = useState('');
 
   // Estados da Administração (Criação de Utilizador)
   const [showUserModal, setShowUserModal] = useState(false);
@@ -834,13 +846,28 @@ const fetchWeekStatus = async () => {
     }
   };
 
-  // Carregar salas de chat do utilizador
+  // Carregar salas de chat do utilizador (Diretas ou de Projetos)
   const fetchChatRooms = async () => {
     if (!token || !currentUserInfo.id) return;
     try {
       const headers = { Authorization: `Bearer ${token}` };
-      // Passamos o user_id aqui em baixo nos parâmetros do URL 👇
-      const res = await axios.get(`${API_URL}/chat/rooms?user_id=${currentUserInfo.id}`, { headers });
+
+      // Se estivermos no contexto de projetos e houver um projeto selecionado,
+      // garantimos primeiro que a sala geral do projeto está sincronizada no backend!
+      if (chatContext === 'project' && selectedChatProjectId) {
+        try {
+          await axios.post(`${API_URL}/chat/projects/${selectedChatProjectId}/sync-general?current_user_id=${currentUserInfo.id}`, {}, { headers });
+        } catch (err) {
+          console.error("Erro ao auto-sincronizar canal geral:", err);
+        }
+      }
+
+      let url = `${API_URL}/chat/rooms?user_id=${currentUserInfo.id}&context=${chatContext}`;
+      if (chatContext === 'project' && selectedChatProjectId) {
+        url += `&project_id=${selectedChatProjectId}`;
+      }
+
+      const res = await axios.get(url, { headers });
       setChatRooms(res.data);
 
       // Magia: Soma todas as não lidas de todas as salas e atualiza a bolinha de fora!
@@ -851,6 +878,13 @@ const fetchWeekStatus = async () => {
       console.error("Erro ao carregar salas de chat", e);
     }
   };
+
+  // Recarregar conversas sempre que muda de contexto ou de projeto selecionado
+  useEffect(() => {
+    if (token && currentUserInfo.id) {
+      fetchChatRooms();
+    }
+  }, [chatContext, selectedChatProjectId]);
 
   // Carregar o número total de mensagens não lidas
   const fetchUnreadCount = async () => {
@@ -1536,7 +1570,7 @@ const fetchWeekStatus = async () => {
     setEditProjectMode(false);
     setProjectName('');
     setProjectDesc('');
-    setProjectTeamId('');
+    setProjectTeamIds([]);
     setProjectClientId('');
     setProjectDueDate('');
     setProjectTicketIds([]);
@@ -1548,7 +1582,7 @@ const fetchWeekStatus = async () => {
     setCurrentProjectId(proj.id);
     setProjectName(proj.name);
     setProjectDesc(proj.description || '');
-    setProjectTeamId(proj.team_id || '');
+    setProjectTeamIds(proj.team_ids || (proj.teams ? proj.teams.map(t => t.id) : []));
     setProjectClientId(proj.client_id || '');
     setProjectDueDate(proj.due_date ? proj.due_date.split('T')[0] : '');
     setShowProjectModal(true);
@@ -1642,7 +1676,7 @@ const fetchWeekStatus = async () => {
       const payload = {
         name: projectName.trim(),
         description: projectDesc.trim(),
-        team_id: projectTeamId ? Number(projectTeamId) : null,
+        team_ids: projectTeamIds, // envia o array de IDs
         client_id: projectClientId ? Number(projectClientId) : null, // Permite null (cliente opcional)
         due_date: projectDueDate || null,
         ticket_ids: projectTicketIds
@@ -1667,7 +1701,7 @@ const fetchWeekStatus = async () => {
       setShowProjectModal(false);
       setProjectName('');
       setProjectDesc('');
-      setProjectTeamId('');
+      setProjectTeamIds([]);
       setProjectClientId('');
       setProjectDueDate('');
       setProjectTicketIds([]);
@@ -1681,17 +1715,21 @@ const fetchWeekStatus = async () => {
     e.preventDefault();
     try {
       const headers = { Authorization: `Bearer ${token}` };
-      await axios.post(`${API_URL}/clients/`, {
-        name: clientName,
-        email: clientEmail || null,
-        company: clientCompany || null,
-        phone: clientPhone || null
-      }, { headers });
+      const payload = {
+        name: clientName.trim(),
+        company: clientCompany.trim(),
+        email: clientEmail ? clientEmail.trim() : null,
+        phone: clientPhone ? clientPhone.trim() : null,
+        project_ids: selectedClientProjects
+      };
+      await axios.post(`${API_URL}/clients/`, payload, { headers });
       setShowClientModal(false);
       setClientName('');
       setClientEmail('');
       setClientCompany('');
       setClientPhone('');
+      setSelectedClientProjects([]);
+      setSelectedNewClientProjectId('');
       fetchData();
     } catch (err) {
       alert(err.response?.data?.detail || 'Erro ao criar cliente.');
@@ -1704,6 +1742,11 @@ const fetchWeekStatus = async () => {
     setEditClientEmail(client.email || '');
     setEditClientCompany(client.company || '');
     setEditClientPhone(client.phone || '');
+    const initialClientProjects = (projects || [])
+      .filter(p => p.client_id === client.id)
+      .map(p => p.id);
+    setSelectedClientProjects(initialClientProjects);
+    setSelectedNewClientProjectId('');
     setShowEditClientModal(true);
   };
 
@@ -1712,12 +1755,15 @@ const fetchWeekStatus = async () => {
     try {
       const headers = { Authorization: `Bearer ${token}` };
       await axios.put(`${API_URL}/clients/${currentClientId}`, {
-        name: editClientName,
-        email: editClientEmail || null,
-        company: editClientCompany || null,
-        phone: editClientPhone || null
+        name: editClientName.trim(),
+        company: editClientCompany.trim(),
+        email: editClientEmail ? editClientEmail.trim() : null,
+        phone: editClientPhone ? editClientPhone.trim() : null,
+        project_ids: selectedClientProjects
       }, { headers });
       setShowEditClientModal(false);
+      setSelectedClientProjects([]);
+      setSelectedNewClientProjectId('');
       fetchData();
     } catch (err) {
       alert('Erro ao atualizar cliente.');
@@ -1774,7 +1820,16 @@ const fetchWeekStatus = async () => {
     setEditTeamDesc(team.description || '');
     setEditTeamOwnerId(team.owner_id);
     setSelectedMemberIds(team.members ? team.members.map(m => m.id) : []);
-    setSelectedProjectIds(projects.filter(p => p.team_id === team.id).map(p => p.id));
+    const initialProjects = (projects || []).filter(p => {
+      if (p.team_ids && Array.isArray(p.team_ids)) {
+        return p.team_ids.includes(team.id);
+      }
+      if (p.teams && Array.isArray(p.teams)) {
+        return p.teams.some(t => t.id === team.id);
+      }
+      return p.team_id === team.id;
+    }).map(p => p.id);
+    setSelectedProjectIds(initialProjects);
     setShowEditTeamModal(true);
   };
 
@@ -1789,6 +1844,22 @@ const fetchWeekStatus = async () => {
         member_ids: selectedMemberIds,
         project_ids: selectedProjectIds
       }, { headers });
+
+      // Sincroniza os team_ids de cada projeto (adiciona ou remove esta equipa)
+      for (const proj of projects) {
+        const isNowAssociated = selectedProjectIds.includes(proj.id);
+        const currentTeamIds = proj.team_ids || (proj.teams ? proj.teams.map(t => t.id) : (proj.team_id ? [proj.team_id] : []));
+        const wasAssociated = currentTeamIds.includes(currentTeam.id);
+
+        if (isNowAssociated && !wasAssociated) {
+          const updatedTeamIds = [...currentTeamIds, currentTeam.id];
+          await axios.put(`${API_URL}/projects/${proj.id}`, { team_ids: updatedTeamIds }, { headers });
+        } else if (!isNowAssociated && wasAssociated) {
+          const updatedTeamIds = currentTeamIds.filter(id => id !== currentTeam.id);
+          await axios.put(`${API_URL}/projects/${proj.id}`, { team_ids: updatedTeamIds }, { headers });
+        }
+      }
+
       setShowEditTeamModal(false);
       fetchData();
       alert('Equipa atualizada com sucesso!');
@@ -2249,6 +2320,23 @@ const fetchWeekStatus = async () => {
   const overdueTickets = availableTickets.filter(t => t.due_date && t.due_date.split('T')[0] < todayStr && t.status && !['done', 'concluído', 'concluido'].includes(t.status.toLowerCase()));
 
   const filteredTickets = availableTickets.filter(ticket => {
+    // Data atual de referência
+    const now = new Date();
+    const sevenDaysAgo = new Date(now.getTime() - (7 * 24 * 60 * 60 * 1000));
+
+    const isDone = ticket.status && ['done', 'concluído', 'concluido'].includes(ticket.status.toLowerCase());
+
+    if (isDone) {
+      // Procura a data em que foi concluída (pode ser due_date, updated_at ou um campo de conclusão se o tiveres guardado)
+      // Se não tiveres uma data específica de conclusão, podes usar a due_date ou a data de atualização
+      const completedDate = ticket.updated_at ? new Date(ticket.updated_at) : new Date(ticket.due_date || ticket.created_at);
+
+      // Se foi concluída há mais de 7 dias, esconde da vista principal!
+      if (completedDate < sevenDaysAgo) {
+        return false;
+      }
+    }
+
     if (projectFilter && ticket.project_id !== Number(projectFilter)) return false;
     if (priorityFilter && ticket.priority !== priorityFilter) return false;
     if (typeFilter && ticket.task_type !== typeFilter) return false;
@@ -2294,6 +2382,15 @@ const fetchWeekStatus = async () => {
 
   // Aplica os mesmos filtros de projeto/prioridade/tipo e a mesma ordenação da lista, mas sobre myKanbanTickets
   const filteredKanbanTickets = myKanbanTickets.filter(ticket => {
+    // Esconde tarefas concluídas há mais de 7 dias
+    const isDone = ticket.status && ['done', 'concluído', 'concluido'].includes(ticket.status.toLowerCase());
+    if (isDone) {
+      const now = new Date();
+      const sevenDaysAgo = new Date(now.getTime() - (7 * 24 * 60 * 60 * 1000));
+      const completedDate = ticket.updated_at ? new Date(ticket.updated_at) : new Date(ticket.due_date || ticket.created_at);
+      if (completedDate < sevenDaysAgo) return false;
+    }
+
     if (projectFilter && ticket.project_id !== Number(projectFilter)) return false;
     if (priorityFilter && ticket.priority !== priorityFilter) return false;
     if (typeFilter && ticket.task_type !== typeFilter) return false;
@@ -3003,7 +3100,12 @@ const fetchWeekStatus = async () => {
                             </div>
                             <p className="text-xs text-zinc-400 pl-6">{ticket.description || 'Sem descrição'}</p>
                             <div className="text-[11px] text-zinc-500 pl-6 flex items-center gap-3 pt-1">
-                              <span>⏱️ <strong>{ticket.tracked_hours || 0}h</strong> / 🎯 <strong>{ticket.estimated_hours || 0}h</strong></span>
+                              <div className="flex items-center gap-1.5 text-xs font-mono text-zinc-400">
+                                <Clock className="w-3.5 h-3.5 text-zinc-500" />
+                                <span>{formatToHHMM(ticket.tracked_hours)}</span>
+                                <span className="text-zinc-600">/</span>
+                                <span className="text-zinc-300 font-medium">{formatToHHMM(ticket.estimated_hours)}</span>
+                              </div>
                               {ticket.due_date && <span>📅 <strong>{ticket.due_date.split('T')[0]}</strong></span>}
                               {assignee && <span className="text-emerald-400">👤 {assignee}</span>}
                             </div>
@@ -3437,6 +3539,8 @@ const fetchWeekStatus = async () => {
                     setClientEmail('');
                     setClientCompany('');
                     setClientPhone('');
+                    setSelectedClientProjects([]);
+                    setSelectedNewClientProjectId('');
                     setShowClientModal(true);
                   }} 
                   className="flex items-center gap-2 bg-zinc-100 text-zinc-950 font-medium text-sm px-4 py-2 rounded-xl hover:bg-white transition"
@@ -3574,17 +3678,26 @@ const fetchWeekStatus = async () => {
                         </div>
 
                         <div className="flex flex-wrap items-center gap-2 mt-4 text-xs">
-                          <div className="flex items-center gap-1.5 bg-zinc-950 border border-zinc-800 px-2.5 py-1 rounded-md text-zinc-400">
-                            <Users className="w-3.5 h-3.5" />
-                            <span className="truncate max-w-[120px]">{team ? team.name : 'Equipa Geral'}</span>
-                          </div>
+                          {proj.teams && proj.teams.length > 0 ? (
+                            proj.teams.map(t => (
+                              <div key={t.id} className="flex items-center gap-1 bg-zinc-950 border border-zinc-800 px-2 py-0.5 rounded-md text-zinc-300">
+                                <Users className="w-3 h-3 text-blue-400" />
+                                <span className="truncate max-w-[110px]">{t.name}</span>
+                              </div>
+                            ))
+                          ) : (
+                            <div className="flex items-center gap-1 bg-zinc-950 border border-zinc-800/60 px-2 py-0.5 rounded-md text-zinc-500 italic">
+                              Sem equipas
+                            </div>
+                          )}
+
                           {clientNameStr && (
                             <div className="flex items-center gap-1.5 bg-blue-950/40 border border-blue-500/30 px-2.5 py-1 rounded-md text-blue-300">
                               <Building2 className="w-3.5 h-3.5" />
                               <span className="truncate max-w-[120px]">{clientNameStr}</span>
                             </div>
                           )}
-                          {/* BADGE DA DATA LIMITE DO PROJETO */}
+
                           {proj.due_date && (
                             <div className="flex items-center gap-1.5 bg-zinc-950 border border-zinc-800 px-2.5 py-1 rounded-md text-zinc-300 font-mono">
                               <Calendar className="w-3.5 h-3.5 text-zinc-500" />
@@ -3593,18 +3706,55 @@ const fetchWeekStatus = async () => {
                           )}
                         </div>
 
-                        <div className="mt-6 mb-4">
-                          <div className="flex items-center justify-between text-xs mb-2">
-                            <span className="text-zinc-400 font-medium">Progresso</span>
-                            <span className="text-emerald-400 font-bold">{percent}%</span>
-                          </div>
-                          <div className="w-full bg-zinc-950 border border-zinc-800 rounded-full h-2.5 overflow-hidden">
-                            <div className="bg-emerald-500 h-2.5 rounded-full transition-all duration-500 ease-out" style={{ width: `${percent}%` }}></div>
-                          </div>
-                          <p className="text-[10px] text-zinc-500 mt-2 text-right">
-                            {done} de {total} tarefas concluídas
-                          </p>
-                        </div>
+                        {/* CÁLCULO DINÂMICO DO PROJETO COM HORAS TRABALHADAS + TEMPO REAL */}
+                        {(() => {
+                          // Tarefas deste projeto
+                          const projTasks = tickets.filter(t => t.project_id === proj.id);
+                          
+                          // Soma das estimativas de todas as tarefas
+                          const totalEstimated = projTasks.reduce((acc, t) => acc + (Number(t.estimated_hours) || 0), 0);
+                          
+                          // Soma das horas já feitas em cada tarefa + segundos em direto se a tarefa estiver a contar
+                          const totalTracked = projTasks.reduce((acc, t) => {
+                            const isLive = activeTimerTask?.id === t.id;
+                            const liveHours = isLive ? (secondsElapsed / 3600) : 0;
+                            return acc + (Number(t.tracked_hours) || 0) + liveHours;
+                          }, 0);
+
+                          const percent = totalEstimated > 0 
+                            ? Math.min(Math.round((totalTracked / totalEstimated) * 100), 100) 
+                            : 0;
+
+                          const isOvertime = totalEstimated > 0 && totalTracked > totalEstimated;
+
+                          return (
+                            <div className="mt-3 space-y-1.5">
+                              {/* Indicadores de Percentagem e Horas HH:MM */}
+                              <div className="flex items-center justify-between text-xs">
+                                <span className="font-semibold text-zinc-300">
+                                  Progresso: <span className={isOvertime ? "text-red-400 font-bold" : "text-emerald-400 font-bold"}>{percent}%</span>
+                                </span>
+                                <span className="text-[11px] font-mono text-zinc-400">
+                                  ⏱️ {formatToHHMM(totalTracked)} / 🎯 {formatToHHMM(totalEstimated)}
+                                </span>
+                              </div>
+
+                              {/* Barra de Progresso do Projeto */}
+                              <div className="w-full bg-zinc-950 rounded-full h-2 overflow-hidden border border-zinc-800">
+                                <div 
+                                  className={`h-full rounded-full transition-all duration-300 ease-out ${
+                                    isOvertime 
+                                      ? 'bg-red-500' 
+                                      : projTasks.some(t => t.is_running) 
+                                        ? 'bg-emerald-400' 
+                                        : 'bg-blue-500'
+                                  }`}
+                                  style={{ width: `${percent}%` }}
+                                />
+                              </div>
+                            </div>
+                          );
+                        })()}
 
                         <button 
                           onClick={() => openProjectTasksModal(proj)}
@@ -3748,7 +3898,7 @@ const fetchWeekStatus = async () => {
                       .map(ticket => {
                         const assignee = getAssigneeName(ticket.assigned_to_id);
                         return (
-                          <div key={ticket.id} className="bg-zinc-950 border border-zinc-800 p-4 rounded-xl hover:border-zinc-700 transition group flex flex-col sm:flex-row gap-4 justify-between items-start shadow-sm">
+                          <div key={ticket.id} onClick={() => setSelectedKnowledgeTicket(ticket)} className="bg-zinc-950 border border-zinc-800 p-4 rounded-xl hover:border-zinc-700 transition group flex flex-col sm:flex-row gap-4 justify-between items-start shadow-sm cursor-pointer">
                             <div className="space-y-3 flex-1 w-full min-w-0">
                               
                               {/* CABEÇALHO DO TICKET */}
@@ -3794,7 +3944,7 @@ const fetchWeekStatus = async () => {
                                     
                                     {/* Verifica se é uma imagem pela extensão */}
                                     {ticket.attachment_path.match(/\.(jpeg|jpg|gif|png)$/i) ? (
-                                      <a href={`${API_URL}/${ticket.attachment_path}`} target="_blank" rel="noopener noreferrer" className="block max-w-sm rounded-xl overflow-hidden border border-zinc-700 hover:border-blue-500 transition shadow-sm">
+                                      <a href={`${API_URL}/${ticket.attachment_path}`} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} className="block max-w-sm rounded-xl overflow-hidden border border-zinc-700 hover:border-blue-500 transition shadow-sm">
                                         <img 
                                           src={`${API_URL}/${ticket.attachment_path}`} 
                                           alt="Anexo da Tarefa" 
@@ -3802,7 +3952,7 @@ const fetchWeekStatus = async () => {
                                         />
                                       </a>
                                     ) : (
-                                      <a href={`${API_URL}/${ticket.attachment_path}`} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 text-xs text-blue-400 bg-blue-500/10 px-3 py-2 rounded-xl w-fit border border-blue-500/20 hover:bg-blue-500/20 transition">
+                                      <a href={`${API_URL}/${ticket.attachment_path}`} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} className="flex items-center gap-2 text-xs text-blue-400 bg-blue-500/10 px-3 py-2 rounded-xl w-fit border border-blue-500/20 hover:bg-blue-500/20 transition">
                                         <Download className="w-4 h-4" /> Transferir Documento
                                       </a>
                                     )}
@@ -3820,7 +3970,7 @@ const fetchWeekStatus = async () => {
                             
                             {/* BOTÃO DE COMENTÁRIOS */}
                             <button 
-                              onClick={() => openComments(ticket)} 
+                              onClick={(e) => { e.stopPropagation(); openComments(ticket); }} 
                               className="shrink-0 text-xs bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-300 px-3 py-2 rounded-xl transition flex items-center gap-2 mt-2 sm:mt-0"
                             >
                               <MessageSquare className="w-3.5 h-3.5" /> Ver Discussão
@@ -3910,32 +4060,60 @@ const fetchWeekStatus = async () => {
 
                                     {/* BOTÕES DE AÇÃO COMPLETOS */}
                                     <div className="flex items-center gap-1 opacity-80 group-hover:opacity-100 transition">
-                                      {/* 1. Play / Pause protegido por dono */}
-                                      {!isDone && (!ticket.assigned_to_id || ticket.assigned_to_id === currentUserInfo?.id) && (
-                                        <button
-                                          type="button"
-                                          onClick={(e) => {
-                                            e.stopPropagation();
-                                            isRunning ? stopTimer() : startTimer(ticket);
-                                          }}
-                                          title={isRunning ? "Parar Cronómetro" : "Iniciar Cronómetro"}
-                                          className={`p-1.5 rounded-md border transition cursor-pointer ${
-                                            isRunning ? 'bg-amber-500/20 border-amber-500/40 text-amber-400' : 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-emerald-400'
-                                          }`}
-                                        >
-                                          {isRunning ? <Pause className="w-3.5 h-3.5 fill-current" /> : <Play className="w-3.5 h-3.5 fill-current" />}
-                                        </button>
+                                      {/* CONTROLO DINÂMICO DE PLAY / AGARRAR */}
+                                      {!isDone && (
+                                        ticket.assigned_to_id === currentUserInfo?.id ? (
+                                          <button
+                                            type="button"
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              isRunning ? stopTimer() : startTimer(ticket);
+                                            }}
+                                            title={ticket.is_running ? "Pausar Cronómetro" : "Iniciar Cronómetro"}
+                                            className={`p-1.5 rounded-lg text-xs transition cursor-pointer bg-zinc-900 border border-zinc-800 flex items-center justify-center ${
+                                              ticket.is_running
+                                                ? "text-emerald-400 border-emerald-500/30"
+                                                : "text-zinc-400 hover:text-zinc-200 hover:border-zinc-700"
+                                            }`}
+                                          >
+                                            {ticket.is_running ? (
+                                              <Pause className="w-3.5 h-3.5 fill-current" />
+                                            ) : (
+                                              <Play className="w-3.5 h-3.5 fill-current" />
+                                            )}
+                                          </button>
+                                        ) : !ticket.assigned_to_id ? (
+                                          <button
+                                            type="button"
+                                            onClick={async (e) => {
+                                              e.stopPropagation();
+                                              try {
+                                                const headers = { Authorization: `Bearer ${token}` };
+                                                await axios.put(`${API_URL}/tickets/${ticket.id}/grab`, {}, { headers });
+                                                fetchData();
+                                              } catch (err) {
+                                                alert(err.response?.data?.detail || "Erro ao assumir a tarefa.");
+                                              }
+                                            }}
+                                            title="Agarrar esta tarefa para mim"
+                                            className="p-1.5 rounded-lg text-xs transition cursor-pointer bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-zinc-200 hover:border-zinc-700 flex items-center justify-center"
+                                          >
+                                            <Hand className="w-3.5 h-3.5" />
+                                          </button>
+                                        ) : null
                                       )}
 
-                                      {/* 2. Editar */}
-                                      <button
-                                        type="button"
-                                        onClick={(e) => { e.stopPropagation(); handleOpenEditModal(ticket); }}
-                                        title={isOwnerOrCreator ? "Editar Tarefa" : "Ver Detalhes da Tarefa"}
-                                        className="p-1.5 bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-blue-400 rounded-md transition cursor-pointer"
-                                      >
-                                        <Edit3 className="w-3.5 h-3.5" />
-                                      </button>
+                                      {/* BOTÃO DE EDITAR (Apenas Criador ou Gestores/Admin) */}
+                                      {((currentUserInfo?.role && ['admin', 'manager', 'gestor de operações', 'gestor de projeto', 'gestor de projetos'].includes(currentUserInfo.role.toLowerCase())) || ticket.creator_id === currentUserInfo?.id) && (
+                                        <button
+                                          type="button"
+                                          onClick={(e) => { e.stopPropagation(); handleOpenEditModal(ticket); }}
+                                          title="Editar Tarefa"
+                                          className="p-1.5 rounded-lg text-xs bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-zinc-100 hover:border-zinc-700 transition cursor-pointer"
+                                        >
+                                          <Edit3 className="w-3.5 h-3.5" />
+                                        </button>
+                                      )}
 
                                       {/* 3. Concluir com Relatório (✓) */}
                                       {(isOwnerOrCreator || isManagerOrAdmin) && !isDone && (
@@ -4221,11 +4399,16 @@ const fetchWeekStatus = async () => {
                                   <Star className="w-4 h-4 fill-current" />
                                 </button>
                               )}
-                              {canManageTicket(ticket) && (
-                                <button onClick={() => handleOpenEditModal(ticket)} className="p-2 text-zinc-400 hover:text-zinc-100 bg-zinc-950 border border-zinc-800 rounded-lg transition" title="Editar">
-                                  <Edit3 className="w-4 h-4" />
-                                </button>
-                              )}
+                              {(() => {
+                                const userRole = (currentUserInfo?.role || '').toLowerCase();
+                                const canEditTicket = ['admin', 'manager', 'gestor de operações', 'gestor de projeto', 'gestor de projetos'].includes(userRole) || ticket.creator_id === currentUserInfo?.id;
+                                if (!canEditTicket) return null;
+                                return (
+                                  <button onClick={() => handleOpenEditModal(ticket)} className="p-2 text-zinc-400 hover:text-zinc-100 bg-zinc-950 border border-zinc-800 rounded-lg transition" title="Editar">
+                                    <Edit3 className="w-4 h-4" />
+                                  </button>
+                                );
+                              })()}
                               {canManageTicket(ticket) && (
                                 <button onClick={() => handleDeleteTicket(ticket.id)} className="p-2 text-red-400 hover:text-red-300 bg-zinc-950 border border-zinc-800 rounded-lg transition" title="Apagar">
                                   <Trash2 className="w-4 h-4" />
@@ -4262,7 +4445,15 @@ const fetchWeekStatus = async () => {
               ) : (
                 <div className="grid grid-cols-1 gap-6">
                   {filteredTeams.map(team => {
-                    const teamProjects = availableProjects.filter(p => p.team_id === team.id);
+                    const teamProjects = (projects || availableProjects || []).filter(p => {
+                      if (p.team_ids && Array.isArray(p.team_ids)) {
+                        return p.team_ids.includes(team.id);
+                      }
+                      if (p.teams && Array.isArray(p.teams)) {
+                        return p.teams.some(t => t.id === team.id);
+                      }
+                      return p.team_id === team.id;
+                    });
                     const leaderName = getTeamLeaderName(team);
                     return (
                       <div key={team.id} className="bg-zinc-900 border border-zinc-800/80 rounded-2xl p-6 shadow-xl space-y-6">
@@ -4309,16 +4500,29 @@ const fetchWeekStatus = async () => {
                           <div className="space-y-3">
                             <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-400">Projetos</h3>
                             <div className="space-y-2">
-                              {teamProjects.map(proj => (
-                                <div 
-                                  key={proj.id} 
-                                  onClick={() => openProjectTasksModal(proj)}
-                                  className="bg-zinc-950 border border-zinc-800 p-3 rounded-xl text-xs text-zinc-200 font-medium cursor-pointer hover:border-zinc-700 transition flex justify-between items-center"
-                                >
-                                  <span>📁 {proj.name}</span>
-                                  <span className="text-[10px] text-blue-400 hover:underline">Ver Tarefas ➔</span>
+                              {teamProjects.length === 0 ? (
+                                <div className="p-3 bg-zinc-950/60 border border-zinc-900 rounded-xl text-xs text-zinc-600 italic">
+                                  Nenhum projeto associado.
                                 </div>
-                              ))}
+                              ) : (
+                                teamProjects.map(proj => (
+                                  <div 
+                                    key={proj.id} 
+                                    onClick={() => openProjectTasksModal(proj)}
+                                    className="p-3 bg-zinc-950 border border-zinc-800/80 rounded-xl flex items-center justify-between cursor-pointer hover:border-zinc-700 transition"
+                                  >
+                                    <div>
+                                      <span className="text-xs font-semibold text-zinc-200 block">{proj.name}</span>
+                                      <span className="text-[10px] text-zinc-500 font-mono">
+                                        {proj.due_date ? `Prazo: ${proj.due_date.split('T')[0]}` : 'Sem prazo'}
+                                      </span>
+                                    </div>
+                                    <span className="text-xs font-mono font-bold text-emerald-400">
+                                      {proj.progress_percentage || 0}%
+                                    </span>
+                                  </div>
+                                ))
+                              )}
                             </div>
                           </div>
                         </div>
@@ -4330,122 +4534,280 @@ const fetchWeekStatus = async () => {
             </div>
           )}
 
-          {/* MENSAGENS */}
+          {/* MENSAGENS COM SUPORTE A DIRETAS, PROJETOS E SUBCHATS */}
           {activeTab === 'messages' && (
             <div className="absolute inset-x-8 top-0 bottom-8 flex bg-zinc-900 rounded-2xl border border-zinc-800 overflow-hidden shadow-2xl">
               
               {/* COLUNA ESQUERDA: Lista de Conversas ou Seleção de Nova Conversa */}
               <div className="w-80 border-r border-zinc-800 flex flex-col bg-zinc-950/50">
-                <div className="p-4 border-b border-zinc-800 flex justify-between items-center shrink-0">
-                  <div>
-                    <h2 className="text-lg font-bold text-white">
-                      {showNewChatView ? 'Nova Conversa' : 'Mensagens'}
-                    </h2>
-                    <p className="text-xs text-zinc-400">
-                      {showNewChatView ? 'Seleciona os participantes' : 'Conversas de equipa e diretas'}
-                    </p>
+                <div className="p-4 border-b border-zinc-800 flex flex-col gap-3 shrink-0">
+                  <div className="flex justify-between items-center">
+                    <div>
+                      <h2 className="text-lg font-bold text-white">
+                        {showNewChatView ? 'Novo Canal / Subchat' : 'Mensagens'}
+                      </h2>
+                      <p className="text-xs text-zinc-400">
+                        {showNewChatView ? 'Seleciona os participantes' : 'Conversas de equipa e projetos'}
+                      </p>
+                    </div>
+                    <button 
+                      onClick={() => {
+                        setShowNewChatView(!showNewChatView);
+                        setSelectedUserIdsForNewChat([]);
+                        setGroupChatName('');
+                        setNewChatProjectId(selectedChatProjectId || '');
+                      }}
+                      className={`text-xs px-2.5 py-1.5 rounded-lg transition ${showNewChatView ? 'bg-zinc-800 text-zinc-300' : 'bg-blue-600 hover:bg-blue-500 text-white'}`}
+                    >
+                      {showNewChatView ? '✕ Cancelar' : '+ Nova'}
+                    </button>
                   </div>
-                  <button 
-                    onClick={() => {
-                      setShowNewChatView(!showNewChatView);
-                      setSelectedUserIdsForNewChat([]);
-                      setGroupChatName('');
-                    }}
-                    className={`text-xs px-2.5 py-1.5 rounded-lg transition ${showNewChatView ? 'bg-zinc-800 text-zinc-300' : 'bg-blue-600 hover:bg-blue-500 text-white'}`}
-                  >
-                    {showNewChatView ? '✕ Cancelar' : '+ Nova'}
-                  </button>
+
+                  {/* SELETOR DE CONTEXTO: CONVERSAS DIRETAS VS PROJETOS */}
+                  {!showNewChatView && (
+                    <div className="space-y-2">
+                      <div className="grid grid-cols-2 bg-zinc-900 border border-zinc-800 p-1 rounded-xl text-xs">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setChatContext('direct');
+                            setActiveChatRoom(null);
+                          }}
+                          className={`py-1.5 rounded-lg font-medium transition ${
+                            chatContext === 'direct' ? 'bg-zinc-800 text-white shadow-sm' : 'text-zinc-400 hover:text-zinc-200'
+                          }`}
+                        >
+                          💬 Diretas / Geral
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setChatContext('project');
+                            setActiveChatRoom(null);
+                            if (!selectedChatProjectId && availableProjects.length > 0) {
+                              setSelectedChatProjectId(String(availableProjects[0].id));
+                            }
+                          }}
+                          className={`py-1.5 rounded-lg font-medium transition ${
+                            chatContext === 'project' ? 'bg-zinc-800 text-white shadow-sm' : 'text-zinc-400 hover:text-zinc-200'
+                          }`}
+                        >
+                          📁 Projetos
+                        </button>
+                      </div>
+
+                      {chatContext === 'project' && (
+                        <div className="flex gap-2 items-center">
+                          <select
+                            value={selectedChatProjectId}
+                            onChange={(e) => {
+                              setSelectedChatProjectId(e.target.value);
+                              setActiveChatRoom(null);
+                            }}
+                            className="flex-1 bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-1.5 text-xs text-zinc-200 outline-none focus:border-zinc-700"
+                          >
+                            <option value="">Todos os Projetos</option>
+                            {availableProjects.map(p => (
+                              <option key={p.id} value={p.id}>📁 {p.name}</option>
+                            ))}
+                          </select>
+                          {selectedChatProjectId && (
+                            <>
+                              <button
+                                type="button"
+                                onClick={async () => {
+                                  try {
+                                    const headers = { Authorization: `Bearer ${token}` };
+                                    await axios.post(`${API_URL}/chat/projects/${selectedChatProjectId}/sync-general?current_user_id=${currentUserInfo.id}`, {}, { headers });
+                                    fetchChatRooms();
+                                  } catch (err) {
+                                    alert("Erro ao sincronizar canal geral do projeto.");
+                                  }
+                                }}
+                                className="p-1.5 bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-300 rounded-xl text-xs transition"
+                                title="Sincronizar canal geral do projeto"
+                              >
+                                🔄
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setNewChatProjectId(selectedChatProjectId);
+                                  setSelectedUserIdsForNewChat([]);
+                                  setGroupChatName('');
+                                  setShowNewChatView(true);
+                                }}
+                                className="bg-blue-600 hover:bg-blue-500 text-white px-2.5 py-1.5 rounded-xl text-xs font-semibold transition shrink-0 cursor-pointer shadow-sm"
+                                title="Criar um subchat para este projeto"
+                              >
+                                + Subchat
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 {showNewChatView ? (
-                  /* VISTA DE SELECÇÃO DE UTILIZADORES PARA NOVO CHAT / GRUPO */
+                  /* VISTA DE CRIAÇÃO DE CANAL / SUBCHAT */
                   <div className="flex-1 flex flex-col overflow-hidden p-3">
-                    <p className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider mb-2">
-                      Colaboradores ({selectedUserIdsForNewChat.length} selecionados)
-                    </p>
-
-                    {/* Se selecionar 2 ou mais, mostra o campo para dar nome ao grupo */}
-                    {selectedUserIdsForNewChat.length >= 2 && (
-                      <div className="mb-3 animate-fadeIn">
-                        <input 
-                          type="text"
-                          value={groupChatName}
-                          onChange={e => setGroupChatName(e.target.value)}
-                          placeholder="Nome do Grupo (Opcional)..."
-                          className="w-full bg-zinc-900 border border-zinc-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-blue-500"
-                        />
-                      </div>
-                    )}
-
-                    <div className="flex-1 overflow-y-auto space-y-1 pr-1">
-                      {usersList.filter(u => u.id !== currentUserInfo.id).map(user => {
-                        const isSelected = selectedUserIdsForNewChat.includes(user.id);
-                        return (
-                          <div 
-                            key={user.id}
-                            onClick={() => {
-                              if (isSelected) {
-                                setSelectedUserIdsForNewChat(selectedUserIdsForNewChat.filter(id => id !== user.id));
-                              } else {
-                                setSelectedUserIdsForNewChat([...selectedUserIdsForNewChat, user.id]);
-                              }
-                            }}
-                            className={`p-2.5 rounded-xl cursor-pointer transition flex items-center justify-between border ${isSelected ? 'bg-blue-600/20 border-blue-500/50 text-white' : 'bg-zinc-900/40 border-zinc-800/80 hover:bg-zinc-800 text-zinc-300'}`}
-                          >
-                            <div className="flex items-center gap-2.5 min-w-0">
-                              <div className="w-7 h-7 rounded-full bg-zinc-800 flex items-center justify-center text-xs font-bold text-zinc-200 shrink-0">
-                                {(user.name || user.email).charAt(0).toUpperCase()}
-                              </div>
-                              <div className="min-w-0">
-                                <p className="text-xs font-semibold truncate">{user.name || 'Sem nome'}</p>
-                                <p className="text-[10px] text-zinc-400 truncate">{user.email}</p>
-                              </div>
-                            </div>
-                            <div className={`w-4 h-4 rounded-full border flex items-center justify-center text-[10px] ${isSelected ? 'bg-blue-600 border-blue-500 text-white' : 'border-zinc-700'}`}>
-                              {isSelected ? '✓' : ''}
-                            </div>
-                          </div>
-                        );
-                      })}
+                    {/* Seletor de Associação de Projeto */}
+                    <div className="mb-2">
+                      <label className="block text-[10px] font-semibold text-zinc-500 uppercase tracking-wider mb-1">
+                        Associar a um Projeto (Opcional)
+                      </label>
+                      <select
+                        value={newChatProjectId}
+                        onChange={(e) => setNewChatProjectId(e.target.value)}
+                        className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-blue-500"
+                      >
+                        <option value="">Sem Projeto (Chat Geral/Direto)</option>
+                        {availableProjects.map(p => (
+                          <option key={p.id} value={p.id}>📁 {p.name}</option>
+                        ))}
+                      </select>
                     </div>
 
-                    {/* Botão de Avançar / Criar Chat */}
+                    {/* Nome do Canal ou Subchat */}
+                    <div className="mb-3">
+                      <label className="block text-[10px] font-semibold text-zinc-500 uppercase tracking-wider mb-1">
+                        Nome do Canal / Subchat
+                      </label>
+                      <input 
+                        type="text"
+                        value={groupChatName}
+                        onChange={e => setGroupChatName(e.target.value)}
+                        placeholder="Ex: #alinhamento-campo, #design..."
+                        className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-blue-500"
+                      />
+                    </div>
+
+                    <p className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider mb-2">
+                      Participantes ({selectedUserIdsForNewChat.length} selecionados)
+                    </p>
+
+                    {/* Lista de Colaboradores para escolher participantes do Subchat */}
+                    <div className="flex-1 overflow-y-auto space-y-1 pr-1">
+                      {(() => {
+                        // Se estiver a criar um subchat de projeto, filtra apenas colaboradores das equipas desse projeto
+                        let targetUsers = usersList.filter(u => u.id !== currentUserInfo.id);
+
+                        if (newChatProjectId) {
+                          const projObj = availableProjects.find(p => p.id === Number(newChatProjectId));
+                          if (projObj) {
+                            const teamIds = projObj.team_ids || (projObj.teams ? projObj.teams.map(t => t.id) : []);
+                            const allowedMemberIds = new Set();
+
+                            teams
+                              .filter(t => teamIds.includes(t.id))
+                              .forEach(t => {
+                                if (t.owner_id) allowedMemberIds.add(t.owner_id);
+                                if (t.leader_id) allowedMemberIds.add(t.leader_id);
+                                t.members?.forEach(m => allowedMemberIds.add(m.id));
+                              });
+
+                            targetUsers = targetUsers.filter(u => allowedMemberIds.has(u.id));
+                          }
+                        }
+
+                        if (targetUsers.length === 0) {
+                          return (
+                            <div className="text-center py-8 text-xs text-zinc-500 italic">
+                              Nenhum membro encontrado nas equipas deste projeto.
+                            </div>
+                          );
+                        }
+
+                        return targetUsers.map(user => {
+                          const isSelected = selectedUserIdsForNewChat.includes(user.id);
+                          return (
+                            <div 
+                              key={user.id}
+                              onClick={() => {
+                                if (isSelected) {
+                                  setSelectedUserIdsForNewChat(selectedUserIdsForNewChat.filter(id => id !== user.id));
+                                } else {
+                                  setSelectedUserIdsForNewChat([...selectedUserIdsForNewChat, user.id]);
+                                }
+                              }}
+                              className={`p-2.5 rounded-xl cursor-pointer transition flex items-center justify-between border ${
+                                isSelected
+                                  ? 'bg-blue-600/20 border-blue-500/50 text-white'
+                                  : 'bg-zinc-900/40 border-zinc-800/80 hover:bg-zinc-800 text-zinc-300'
+                              }`}
+                            >
+                              <div className="flex items-center gap-2.5 min-w-0">
+                                <div className="w-7 h-7 rounded-full bg-zinc-800 flex items-center justify-center text-xs font-bold text-zinc-200 shrink-0">
+                                  {(user.name || user.email).charAt(0).toUpperCase()}
+                                </div>
+                                <div className="min-w-0">
+                                  <p className="text-xs font-semibold truncate">{user.name || 'Sem nome'}</p>
+                                  <p className="text-[10px] text-zinc-400 truncate">{user.email}</p>
+                                </div>
+                              </div>
+                              <div className={`w-4 h-4 rounded-full border flex items-center justify-center text-[10px] ${
+                                isSelected ? 'bg-blue-600 border-blue-500 text-white' : 'border-zinc-700'
+                              }`}>
+                                {isSelected ? '✓' : ''}
+                              </div>
+                            </div>
+                          );
+                        });
+                      })()}
+                    </div>
+
+                    {/* Botão de Criação com deteção de duplicados */}
                     {selectedUserIdsForNewChat.length > 0 && (
                       <button 
                         onClick={async () => {
-                          if (selectedUserIdsForNewChat.length === 1) {
-                            // 1 Pessoa: Abre chat direto
-                            await startDirectChat(selectedUserIdsForNewChat[0]);
-                            setShowNewChatView(false);
-                          } else {
-                            // 2 ou mais Pessoas: Cria Grupo
+                          const createRoomRequest = async (force = false) => {
                             try {
                               const headers = { Authorization: `Bearer ${token}` };
-                              const res = await axios.post(`${API_URL}/chat/rooms/group?current_user_id=${currentUserInfo.id}`, {
-                                name: groupChatName.trim() || `Grupo (${selectedUserIdsForNewChat.length + 1})`,
-                                member_ids: selectedUserIdsForNewChat
-                              }, { headers });
+                              const payload = {
+                                name: groupChatName.trim() || `Canal (${selectedUserIdsForNewChat.length + 1})`,
+                                type: newChatProjectId ? "project" : (selectedUserIdsForNewChat.length === 1 ? "direct" : "group"),
+                                member_ids: selectedUserIdsForNewChat,
+                                project_id: newChatProjectId ? Number(newChatProjectId) : null,
+                                force_create: force
+                              };
+
+                              const res = await axios.post(`${API_URL}/chat/rooms?current_user_id=${currentUserInfo.id}`, payload, { headers });
                               
+                              // Aviso de canais duplicados
+                              if (res.data.warning) {
+                                const confirmCreate = window.confirm(res.data.message);
+                                if (confirmCreate) {
+                                  await createRoomRequest(true);
+                                }
+                                return;
+                              }
+
                               setShowNewChatView(false);
                               await fetchChatRooms();
-                              openChatRoom(res.data);
+                              openChatRoom({ id: res.data.room_id, name: res.data.name });
                             } catch (err) {
-                              alert("Erro ao criar grupo de chat.");
+                              alert("Erro ao criar sala de chat.");
                             }
-                          }
+                          };
+
+                          await createRoomRequest(false);
                         }}
                         className="mt-3 w-full bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold py-2.5 rounded-xl transition shadow-md"
                       >
-                        {selectedUserIdsForNewChat.length === 1 ? 'Iniciar Conversa Direta' : `Criar Grupo (${selectedUserIdsForNewChat.length} membros)`}
+                        Criar Canal / Conversa ({selectedUserIdsForNewChat.length} participantes)
                       </button>
                     )}
                   </div>
                 ) : (
-                  /* LISTA NORMAL DE CONVERSAS */
+                  /* LISTA DINÂMICA DE CONVERSAS */
                   <div className="flex-1 overflow-y-auto p-2 space-y-1">
                     {chatRooms.length === 0 ? (
                       <div className="text-center py-12 px-4 space-y-2">
-                        <p className="text-xs text-zinc-500">Ainda não tens conversas ativas.</p>
+                        <p className="text-xs text-zinc-500">
+                          {chatContext === 'project' ? 'Sem canais associados a este projeto.' : 'Ainda não tens conversas ativas.'}
+                        </p>
                       </div>
                     ) : (
                       chatRooms.map(room => (
@@ -4459,9 +4821,12 @@ const fetchWeekStatus = async () => {
                               <div className="w-2.5 h-2.5 rounded-full bg-blue-500 shrink-0 shadow-[0_0_8px_rgba(59,130,246,0.5)]"></div>
                             )}
                             <div className="min-w-0">
-                              <p className={`text-xs truncate ${room.unread_count > 0 ? 'font-bold text-white' : 'font-semibold'}`}>
-                                {room.name}
-                              </p>
+                              <div className="flex items-center gap-1.5">
+                                {room.is_general && <span className="text-[10px] bg-blue-950/60 text-blue-400 px-1.5 py-0.5 rounded border border-blue-500/30">Geral</span>}
+                                <p className={`text-xs truncate ${room.unread_count > 0 ? 'font-bold text-white' : 'font-semibold'}`}>
+                                  {room.name}
+                                </p>
+                              </div>
                               <p className="text-[11px] truncate mt-0.5 text-zinc-400">
                                 {room.last_message || 'Sem mensagens'}
                               </p>
@@ -4479,7 +4844,6 @@ const fetchWeekStatus = async () => {
               <div className="flex-1 flex flex-col bg-zinc-900 overflow-hidden relative">
                 {activeChatRoom ? (
                   <>
-                    {/* Topo do Chat Ativo (Com título, pesquisa e botão de IA) */}
                     <div className="p-4 border-b border-zinc-800 flex flex-col gap-3 bg-zinc-950/35 shrink-0">
                       <div className="flex justify-between items-center">
                         <div>
@@ -4488,16 +4852,28 @@ const fetchWeekStatus = async () => {
                         </div>
                         
                         <div className="flex items-center gap-2">
+                          {/* Botão para Ver Membros da Sala */}
+                          <button 
+                            type="button"
+                            onClick={() => setShowMembersDrawer(!showMembersDrawer)}
+                            className="bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-semibold px-3 py-2 rounded-xl transition flex items-center gap-1.5 cursor-pointer"
+                            title="Ver participantes desta sala"
+                          >
+                            👥 Membros ({activeChatRoom.members?.length || 0})
+                          </button>
+
                           {/* Botão de Mensagens Afixadas */}
                           <button 
+                            type="button"
                             onClick={() => setShowPinnedDrawer(!showPinnedDrawer)}
-                            className="relative bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-semibold px-3 py-2 rounded-xl transition flex items-center gap-1.5"
+                            className="relative bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-semibold px-3 py-2 rounded-xl transition flex items-center gap-1.5 cursor-pointer"
                           >
                             📌 Afixadas ({pinnedMessages.length})
                           </button>
 
-                          {/* Botão de Resumo de IA que agora abre o Pop-up */}
+                          {/* Botão de Resumo de IA */}
                           <button 
+                            type="button"
                             onClick={() => setShowAiPromptModal(true)}
                             disabled={loadingAiChat}
                             className="flex items-center gap-2 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white text-xs font-semibold px-3.5 py-2 rounded-xl shadow-lg transition-all cursor-pointer"
@@ -4507,7 +4883,7 @@ const fetchWeekStatus = async () => {
                         </div>
                       </div>
 
-                      {/* Barra de Pesquisa de Mensagens no Chat */}
+                      {/* Barra de Pesquisa de Mensagens */}
                       <div className="relative">
                         <input 
                           type="text"
@@ -4518,6 +4894,7 @@ const fetchWeekStatus = async () => {
                         />
                         {chatSearchQuery && (
                           <button 
+                            type="button"
                             onClick={() => setChatSearchQuery('')}
                             className="absolute right-3 top-2 text-zinc-500 hover:text-zinc-300 text-xs"
                           >
@@ -4527,7 +4904,50 @@ const fetchWeekStatus = async () => {
                       </div>
                     </div>
 
-                    {/* Caixa de Resumo de IA (Se gerado) */}
+                    {/* GAVETA LATERAL / DROPDOWN DE MEMBROS DA SALA */}
+                    {showMembersDrawer && (
+                      <div className="bg-zinc-950 border-b border-zinc-800 p-3 space-y-2 max-h-48 overflow-y-auto shrink-0 animate-fadeIn">
+                        <div className="flex justify-between items-center mb-1">
+                          <p className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+                            Participantes do Canal ({activeChatRoom.members?.length || 0})
+                          </p>
+                          <button 
+                            type="button"
+                            onClick={() => setShowMembersDrawer(false)}
+                            className="text-zinc-500 hover:text-zinc-300 text-xs"
+                          >
+                            ✕
+                          </button>
+                        </div>
+
+                        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2">
+                          {(activeChatRoom.members || []).map(member => {
+                            const isMe = member.id === currentUserInfo.id;
+                            return (
+                              <div 
+                                key={member.id} 
+                                className={`p-2 rounded-xl border flex items-center gap-2.5 text-xs ${
+                                  isMe 
+                                    ? 'bg-blue-600/10 border-blue-500/30 text-blue-200' 
+                                    : 'bg-zinc-900 border-zinc-800 text-zinc-300'
+                                }`}
+                              >
+                                <div className="w-6 h-6 rounded-full bg-zinc-800 border border-zinc-700 flex items-center justify-center font-bold text-[10px] text-zinc-200 shrink-0">
+                                  {(member.name || member.email).charAt(0).toUpperCase()}
+                                </div>
+                                <div className="min-w-0 flex-1 truncate">
+                                  <p className="font-medium truncate">
+                                    {member.name || member.email} {isMe && <span className="text-[10px] text-blue-400 font-bold">(Tu)</span>}
+                                  </p>
+                                  <p className="text-[10px] text-zinc-500 truncate">{member.email}</p>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+
                     {chatSummary && (
                       <div className="bg-purple-950/40 border-b border-purple-500/30 p-3.5 text-xs text-purple-200 flex justify-between items-start animate-fadeIn shrink-0">
                         <div>
@@ -4538,100 +4958,7 @@ const fetchWeekStatus = async () => {
                       </div>
                     )}
 
-                    {/* MODAL DE PROMPT PERSONALIZADA PARA A IA */}
-                    {showAiPromptModal && (
-                      <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-                        <div className="bg-zinc-900 border border-zinc-800 rounded-2xl w-full max-w-md p-6 text-zinc-100 shadow-2xl relative space-y-4">
-                          
-                          <div className="flex justify-between items-center">
-                            <h3 className="text-base font-bold text-zinc-100 flex items-center gap-2">
-                              ✨ Resumir com Assistente IA
-                            </h3>
-                            <button 
-                              onClick={() => setShowAiPromptModal(false)}
-                              className="text-zinc-400 hover:text-zinc-100 text-sm bg-zinc-800 px-2 py-1 rounded-lg cursor-pointer"
-                            >
-                              ✕
-                            </button>
-                          </div>
-
-                          <p className="text-xs text-zinc-400">
-                            Deixa em branco para usar o resumo padrão ou escreve o que pretendes focar (ex: <span className="italic text-zinc-300">"Quero que resumas apenas o que o user João disse sobre o projeto"</span>).
-                          </p>
-
-                          <textarea
-                            value={customAiPrompt}
-                            onChange={e => setCustomAiPrompt(e.target.value)}
-                            rows="3"
-                            placeholder="Ex: Resumir decisões tomadas e focar nas tarefas do utilizador X..."
-                            className="w-full bg-zinc-950 border border-zinc-800 rounded-xl p-3 text-xs text-zinc-100 focus:outline-none focus:border-purple-500 resize-none"
-                          />
-
-                          <div className="flex justify-end gap-2 pt-2 border-t border-zinc-800">
-                            <button
-                              onClick={() => setShowAiPromptModal(false)}
-                              className="bg-zinc-800 hover:bg-zinc-700 text-zinc-300 px-4 py-2 rounded-xl text-xs font-medium transition cursor-pointer"
-                            >
-                              Cancelar
-                            </button>
-                            <button
-                              onClick={() => handleSummarizeChatWithAI(customAiPrompt)}
-                              disabled={loadingAiChat}
-                              className="bg-purple-600 hover:bg-purple-500 text-white px-4 py-2 rounded-xl text-xs font-semibold transition cursor-pointer shadow-md"
-                            >
-                              {loadingAiChat ? 'A gerar...' : 'Gerar Resumo'}
-                            </button>
-                          </div>
-
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Painel lateral/gaveta de Mensagens Afixadas */}
-                    {showPinnedDrawer && (
-                      <div className="bg-zinc-950 border-b border-zinc-800 p-3 space-y-2 max-h-40 overflow-y-auto shrink-0 animate-fadeIn">
-                        <p className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">Mensagens Afixadas ({pinnedMessages.length})</p>
-                        {pinnedMessages.length === 0 ? (
-                          <p className="text-xs text-zinc-500 italic">Nenhuma mensagem afixada nesta conversa.</p>
-                        ) : (
-                          pinnedMessages.map((pMsg, idx) => (
-                            <div key={idx} className="bg-zinc-900 border border-zinc-800 p-2 rounded-xl text-xs flex justify-between items-center gap-2">
-                              <span className="text-zinc-200 truncate flex-1">📌 {pMsg.content}</span>
-                              
-                              <div className="flex items-center gap-1.5 shrink-0">
-                                {/* 🎯 BOTÃO CORRIGIDO PARA ENCONTRAR O ID CORRETO */}
-                                <button 
-                                  onClick={() => {
-                                    const realIndex = chatMessages.findIndex(m => m.content === pMsg.content);
-                                    if (realIndex !== -1) {
-                                      const element = document.getElementById(`msg-item-${realIndex}`);
-                                      if (element) {
-                                        element.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                                        element.classList.add('ring-2', 'ring-blue-500');
-                                        setTimeout(() => element.classList.remove('ring-2', 'ring-blue-500'), 1500);
-                                      }
-                                    }
-                                  }}
-                                  className="text-[10px] bg-blue-600/20 text-blue-400 hover:bg-blue-600/30 px-2 py-1 rounded-lg transition"
-                                  title="Ir para a mensagem"
-                                >
-                                  🎯 Ir
-                                </button>
-
-                                <button 
-                                  onClick={() => setPinnedMessages(pinnedMessages.filter((_, i) => i !== idx))}
-                                  className="text-[10px] text-red-400 hover:underline px-1"
-                                >
-                                  ✕
-                                </button>
-                              </div>
-                            </div>
-                          ))
-                        )}
-                      </div>
-                    )}
-
-                    {/* Histórico de Mensagens (Com filtro de pesquisa aplicado) */}
+                    {/* Histórico de Mensagens */}
                     <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-zinc-950/40">
                       {chatMessages
                         .filter(msg => msg.content.toLowerCase().includes(chatSearchQuery.toLowerCase()))
@@ -4650,7 +4977,6 @@ const fetchWeekStatus = async () => {
                                   {isPinned && <span className="absolute -top-2 -right-2 text-[10px]" title="Mensagem Afixada">📌</span>}
                                 </div>
                                 
-                                {/* Botão rápido para afixar mensagem */}
                                 <button 
                                   onClick={() => {
                                     if (!isPinned) setPinnedMessages([...pinnedMessages, msg]);
@@ -4669,7 +4995,6 @@ const fetchWeekStatus = async () => {
                       <div ref={messagesEndRef} />
                     </div>
 
-                    {/* Caixa de Escrever Mensagem */}
                     <form onSubmit={sendChatMessage} className="p-4 border-t border-zinc-800 bg-zinc-950/35 flex gap-2 shrink-0">
                       <input 
                         type="text" 
@@ -4688,7 +5013,7 @@ const fetchWeekStatus = async () => {
                     <svg className="w-12 h-12 stroke-1 opacity-40" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
                     </svg>
-                    <p className="text-sm font-medium text-zinc-400">Seleciona uma conversa à esquerda para começar a chattear.</p>
+                    <p className="text-sm font-medium text-zinc-400">Seleciona uma conversa ou canal à esquerda para começar a conversar.</p>
                   </div>
                 )}
               </div>
@@ -5427,13 +5752,26 @@ const fetchWeekStatus = async () => {
 
       {/* MODAL TASK POOL DA EQUIPA */}
       {showTeamTasksModal && activeTeamForTasks && (() => {
-        // Encontra todos os IDs de projetos atribuídos a esta equipa
-        const teamProjectIds = availableProjects
-          .filter(p => p.team_id === activeTeamForTasks.id)
-          .map(p => p.id);
+        // 1. Obter os IDs de todos os projetos associados a esta equipa
+        const teamProjectIds = (projects || []).filter(p => {
+          if (p.team_ids && Array.isArray(p.team_ids)) {
+            return p.team_ids.includes(activeTeamForTasks?.id);
+          }
+          if (p.teams && Array.isArray(p.teams)) {
+            return p.teams.some(t => t.id === activeTeamForTasks?.id);
+          }
+          return p.team_id === activeTeamForTasks?.id;
+        }).map(p => p.id);
 
-        // Filtra as tarefas que pertencem aos projetos desta equipa
-        const teamTickets = availableTickets.filter(t => teamProjectIds.includes(t.project_id));
+        // 2. Filtrar as tarefas que pertencem a esses projetos OU diretamente à equipa
+        const teamPoolTasks = (tickets || []).filter(t => {
+          const belongsToProject = t.project_id && teamProjectIds.includes(t.project_id);
+          const belongsDirectlyToTeam = t.team_id === activeTeamForTasks?.id;
+          const isDone = t.status && ['done', 'concluído', 'concluido'].includes(t.status.toLowerCase());
+
+          // Apenas tarefas ativas/não concluídas da equipa
+          return (belongsToProject || belongsDirectlyToTeam) && !isDone;
+        });
 
         return (
           <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fadeIn" onClick={() => setShowTeamTasksModal(false)}>
@@ -5453,69 +5791,72 @@ const fetchWeekStatus = async () => {
               </div>
 
               {/* Lista de Tarefas da Equipa */}
-              <div className="flex-1 overflow-y-auto space-y-3 pr-1">
-                {teamTickets.length === 0 ? (
-                  <div className="py-12 text-center text-xs text-zinc-500 border border-dashed border-zinc-800 rounded-xl">
-                    Nenhuma tarefa associada aos projetos desta equipa de momento.
+              <div className="space-y-2.5 max-h-[60vh] overflow-y-auto pr-1">
+                {teamPoolTasks.length === 0 ? (
+                  <div className="p-8 text-center border border-dashed border-zinc-800/80 rounded-2xl">
+                    <span className="text-xs text-zinc-500 italic">
+                      Nenhuma tarefa disponível nos projetos desta equipa de momento.
+                    </span>
                   </div>
                 ) : (
-                  teamTickets.map(ticket => {
-                    const isDone = ticket.status && ['done', 'concluído', 'concluido'].includes(ticket.status.toLowerCase());
-                    const assigneeName = getAssigneeName(ticket.assigned_to_id);
-                    
-                    return (
-                      <div key={ticket.id} className="bg-zinc-950 border border-zinc-800 p-4 rounded-xl flex items-center justify-between gap-4">
-                        <div className="space-y-1 min-w-0 flex-1">
-                          <div className="flex items-center gap-2">
-                            <span className="text-xs font-mono text-zinc-500">#{ticket.id}</span>
-                            <h4 className="font-medium text-sm text-zinc-100 truncate">{ticket.title}</h4>
-                            <span className="text-[10px] bg-zinc-900 border border-zinc-800 px-2 py-0.5 rounded text-zinc-400">
-                              📁 {getProjectName(ticket.project_id)}
-                            </span>
-                            {ticket.priority && (
-                              <span className={`text-[10px] px-2 py-0.5 rounded border font-medium ${getPriorityBadgeStyle(ticket.priority)}`}>
-                                {ticket.priority}
-                              </span>
-                            )}
-                          </div>
-                          <p className="text-xs text-zinc-400 truncate pl-6">{ticket.description || 'Sem descrição'}</p>
-                          <div className="flex items-center gap-4 text-[11px] text-zinc-500 pl-6 pt-1">
-                            <span>Estado: <strong className="text-zinc-300">{ticket.status}</strong></span>
-                            {assigneeName ? (
-                              <span className="text-amber-400">👤 Atribuído a: {assigneeName}</span>
-                            ) : (
-                              <span className="text-emerald-400 font-bold">🟢 Disponível (Livre)</span>
-                            )}
-                          </div>
+                  teamPoolTasks.map(task => (
+                    <div 
+                      key={task.id} 
+                      className="p-3.5 bg-zinc-950 border border-zinc-800/90 rounded-2xl flex items-center justify-between gap-3 hover:border-zinc-700 transition"
+                    >
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 mb-1">
+                          <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-zinc-900 border border-zinc-800 text-zinc-400">
+                            #{task.id}
+                          </span>
+                          <span className="text-xs font-semibold text-zinc-200 truncate">
+                            {task.title}
+                          </span>
                         </div>
+                        
+                        <div className="flex items-center gap-3 text-[11px] text-zinc-400">
+                          <span>📁 {getProjectName(task.project_id)}</span>
+                          <span className="font-mono">🎯 {formatToHHMM(task.estimated_hours)}</span>
+                          {/* EXIBIÇÃO DO UTILIZADOR ATRIBUÍDO OU STATUS LIVRE */}
+                          {(() => {
+                            const assignedUser = (usersList || []).find(u => u.id === task.assigned_to_id);
+                            const userName = assignedUser ? (assignedUser.name || assignedUser.email) : null;
 
-                        {/* Botão Agarrar Tarefa */}
-                        <div className="shrink-0">
-                          {!assigneeName && !isDone ? (
-                            <button 
-                              onClick={async () => {
-                                try {
-                                  const headers = { Authorization: `Bearer ${token}` };
-                                  await axios.put(`${API_URL}/tickets/${ticket.id}/grab`, {}, { headers });
-                                  alert("Tarefa agarrada com sucesso! Ficou atribuída a ti.");
-                                  fetchData();
-                                } catch (error) {
-                                  alert(error.response?.data?.detail || "Erro ao agarrar tarefa.");
-                                }
-                              }}
-                              className="bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold px-4 py-2 rounded-xl transition shadow-md flex items-center gap-1.5"
-                            >
-                              ✋ Agarrar
-                            </button>
-                          ) : (
-                            <span className="text-[11px] text-zinc-500 italic bg-zinc-900 px-3 py-1.5 rounded-xl border border-zinc-800">
-                              {isDone ? 'Concluída' : 'Ocupada'}
-                            </span>
-                          )}
+                            return task.assigned_to_id ? (
+                              <span className="flex items-center gap-1 text-emerald-400 font-medium">
+                                <span>👤</span>
+                                <span>{userName || `User #${task.assigned_to_id}`}</span>
+                              </span>
+                            ) : (
+                              <span className="flex items-center gap-1 text-amber-400 font-medium">
+                                <span>🔓</span>
+                                <span>Livre</span>
+                              </span>
+                            );
+                          })()}
                         </div>
                       </div>
-                    );
-                  })
+
+                      {/* Botão de Agarrar / Iniciar se a tarefa não estiver atribuída */}
+                      {!task.assigned_to_id && (
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            try {
+                              const headers = { Authorization: `Bearer ${token}` };
+                              await axios.put(`${API_URL}/tickets/${task.id}/grab`, {}, { headers });
+                              fetchData();
+                            } catch (err) {
+                              alert(err.response?.data?.detail || 'Erro ao assumir tarefa.');
+                            }
+                          }}
+                          className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-medium transition cursor-pointer shrink-0"
+                        >
+                          Assumir Tarefa
+                        </button>
+                      )}
+                    </div>
+                  ))
                 )}
               </div>
 
@@ -5985,6 +6326,76 @@ const fetchWeekStatus = async () => {
                 <label className="block text-xs font-medium text-zinc-400 mb-1">Telefone</label>
                 <input type="text" value={clientPhone} onChange={e => setClientPhone(e.target.value)} className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2 text-sm text-zinc-100 focus:outline-none" />
               </div>
+
+              {/* SECÇÃO DE PROJETOS ASSOCIADOS AO CLIENTE */}
+              <div className="mt-4 pt-3 border-t border-zinc-800">
+                <label className="block text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-2">
+                  PROJETOS DO CLIENTE (0, 1 OU VÁRIOS)
+                </label>
+
+                {/* 1. Lista de projetos atualmente associados */}
+                <div className="space-y-1.5 mb-3 max-h-36 overflow-y-auto">
+                  {selectedClientProjects.length === 0 ? (
+                    <div className="p-2.5 bg-zinc-950/60 border border-zinc-900 rounded-xl text-xs text-zinc-600 italic">
+                      Nenhum projeto associado a este cliente.
+                    </div>
+                  ) : (
+                    selectedClientProjects.map(projId => {
+                      const projObj = (projects || []).find(p => p.id === projId);
+                      if (!projObj) return null;
+                      return (
+                        <div
+                          key={projId}
+                          className="flex items-center justify-between p-2 px-3 bg-zinc-950 border border-zinc-800 rounded-xl text-xs"
+                        >
+                          <span className="font-medium text-zinc-200 truncate">📁 {projObj.name}</span>
+                          <button
+                            type="button"
+                            onClick={() => setSelectedClientProjects(selectedClientProjects.filter(id => id !== projId))}
+                            className="text-zinc-500 hover:text-red-400 text-xs px-1 cursor-pointer font-bold"
+                            title="Remover projeto deste cliente"
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+
+                {/* 2. Seletor para adicionar novos projetos */}
+                <div className="flex gap-2">
+                  <select
+                    value={selectedNewClientProjectId || ''}
+                    onChange={(e) => setSelectedNewClientProjectId(e.target.value)}
+                    className="flex-1 bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-zinc-200 outline-none focus:border-zinc-700"
+                  >
+                    <option value="">Selecionar projeto para associar...</option>
+                    {(projects || [])
+                      .filter(p => !selectedClientProjects.includes(p.id))
+                      .map(p => (
+                        <option key={p.id} value={p.id}>
+                          {p.name}
+                        </option>
+                      ))}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!selectedNewClientProjectId) return;
+                      const pId = Number(selectedNewClientProjectId);
+                      if (!selectedClientProjects.includes(pId)) {
+                        setSelectedClientProjects([...selectedClientProjects, pId]);
+                      }
+                      setSelectedNewClientProjectId('');
+                    }}
+                    className="bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-zinc-200 px-3 py-2 rounded-xl text-xs font-medium transition cursor-pointer shrink-0"
+                  >
+                    Adicionar
+                  </button>
+                </div>
+              </div>
+
               <div className="flex justify-end gap-3 mt-6">
                 <button type="button" onClick={() => setShowClientModal(false)} className="px-4 py-2 text-sm text-zinc-400 hover:text-zinc-100 transition">Cancelar</button>
                 <button type="submit" className="bg-zinc-100 text-zinc-950 font-medium text-sm px-4 py-2 rounded-xl hover:bg-white transition">Guardar Cliente</button>
@@ -6016,6 +6427,76 @@ const fetchWeekStatus = async () => {
                 <label className="block text-xs font-medium text-zinc-400 mb-1">Telefone</label>
                 <input type="text" value={editClientPhone} onChange={e => setEditClientPhone(e.target.value)} className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2 text-sm text-zinc-100 focus:outline-none" />
               </div>
+
+              {/* SECÇÃO DE PROJETOS ASSOCIADOS AO CLIENTE */}
+              <div className="mt-4 pt-3 border-t border-zinc-800">
+                <label className="block text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-2">
+                  PROJETOS DO CLIENTE (0, 1 OU VÁRIOS)
+                </label>
+
+                {/* 1. Lista de projetos atualmente associados */}
+                <div className="space-y-1.5 mb-3 max-h-36 overflow-y-auto">
+                  {selectedClientProjects.length === 0 ? (
+                    <div className="p-2.5 bg-zinc-950/60 border border-zinc-900 rounded-xl text-xs text-zinc-600 italic">
+                      Nenhum projeto associado a este cliente.
+                    </div>
+                  ) : (
+                    selectedClientProjects.map(projId => {
+                      const projObj = (projects || []).find(p => p.id === projId);
+                      if (!projObj) return null;
+                      return (
+                        <div
+                          key={projId}
+                          className="flex items-center justify-between p-2 px-3 bg-zinc-950 border border-zinc-800 rounded-xl text-xs"
+                        >
+                          <span className="font-medium text-zinc-200 truncate">📁 {projObj.name}</span>
+                          <button
+                            type="button"
+                            onClick={() => setSelectedClientProjects(selectedClientProjects.filter(id => id !== projId))}
+                            className="text-zinc-500 hover:text-red-400 text-xs px-1 cursor-pointer font-bold"
+                            title="Remover projeto deste cliente"
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+
+                {/* 2. Seletor para adicionar novos projetos */}
+                <div className="flex gap-2">
+                  <select
+                    value={selectedNewClientProjectId || ''}
+                    onChange={(e) => setSelectedNewClientProjectId(e.target.value)}
+                    className="flex-1 bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-zinc-200 outline-none focus:border-zinc-700"
+                  >
+                    <option value="">Selecionar projeto para associar...</option>
+                    {(projects || [])
+                      .filter(p => !selectedClientProjects.includes(p.id))
+                      .map(p => (
+                        <option key={p.id} value={p.id}>
+                          {p.name}
+                        </option>
+                      ))}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!selectedNewClientProjectId) return;
+                      const pId = Number(selectedNewClientProjectId);
+                      if (!selectedClientProjects.includes(pId)) {
+                        setSelectedClientProjects([...selectedClientProjects, pId]);
+                      }
+                      setSelectedNewClientProjectId('');
+                    }}
+                    className="bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-zinc-200 px-3 py-2 rounded-xl text-xs font-medium transition cursor-pointer shrink-0"
+                  >
+                    Adicionar
+                  </button>
+                </div>
+              </div>
+
               <div className="flex justify-end gap-3 mt-6">
                 <button type="button" onClick={() => setShowEditClientModal(false)} className="px-4 py-2 text-sm text-zinc-400 hover:text-zinc-100 transition">Cancelar</button>
                 <button type="submit" className="bg-zinc-100 text-zinc-950 font-medium text-sm px-4 py-2 rounded-xl hover:bg-white transition">Guardar Alterações</button>
@@ -6545,11 +7026,40 @@ const fetchWeekStatus = async () => {
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block text-xs font-medium text-zinc-400 mb-1">Equipa Responsável</label>
-                  <select value={projectTeamId} onChange={e => setProjectTeamId(e.target.value)} className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-sm text-zinc-100 focus:outline-none">
-                    <option value="">Nenhuma (Geral)</option>
-                    {availableTeams.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-                  </select>
+                  <label className="block text-xs font-medium text-zinc-400 mb-1.5">
+                    Equipas Associadas (Opcional)
+                  </label>
+                  
+                  <div className="flex flex-wrap gap-1.5 p-2 bg-zinc-950 border border-zinc-800 rounded-xl min-h-[42px] max-h-32 overflow-y-auto items-center">
+                    {(teams || availableTeams || []).length === 0 ? (
+                      <span className="text-xs text-zinc-600 italic px-1">Nenhuma equipa registada no sistema.</span>
+                    ) : (
+                      (teams || availableTeams || []).map(t => {
+                        const isSelected = projectTeamIds.includes(t.id);
+                        return (
+                          <button
+                            key={t.id}
+                            type="button"
+                            onClick={() => {
+                              if (isSelected) {
+                                setProjectTeamIds(projectTeamIds.filter(id => id !== t.id));
+                              } else {
+                                setProjectTeamIds([...projectTeamIds, t.id]);
+                              }
+                            }}
+                            className={`px-2.5 py-1 rounded-lg text-xs font-medium transition cursor-pointer flex items-center gap-1.5 ${
+                              isSelected 
+                                ? 'bg-blue-600 text-white shadow-sm border border-blue-500' 
+                                : 'bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-zinc-200 hover:border-zinc-700'
+                            }`}
+                          >
+                            <span>👥 {t.name}</span>
+                            {isSelected && <span className="font-bold text-white text-[10px]">✓</span>}
+                          </button>
+                        );
+                      })
+                    )}
+                  </div>
                 </div>
                 <div>
                   <label className="block text-xs font-medium text-zinc-400 mb-1">Cliente do Projeto (Opcional)</label>
@@ -6670,17 +7180,70 @@ const fetchWeekStatus = async () => {
                 </div>
               </div>
               <div>
-                <label className="block text-xs font-medium text-zinc-400 mb-1.5 uppercase tracking-wider">Projetos Associados</label>
-                <div className="bg-zinc-950 border border-zinc-800 rounded-xl p-3 space-y-2 max-h-40 overflow-y-auto">
-                  {availableProjects.map(proj => {
-                    const isSelected = selectedProjectIds.includes(proj.id);
-                    return (
-                      <div key={proj.id} onClick={() => toggleProjectSelection(proj.id)} className={`p-2.5 rounded-lg flex items-center justify-between text-xs cursor-pointer transition ${isSelected ? 'bg-zinc-800 border border-zinc-700 text-zinc-100' : 'bg-zinc-900/50 text-zinc-400 hover:bg-zinc-900'}`}>
-                        <span>{proj.name}</span>
-                        <span className={`text-[10px] px-2 py-0.5 rounded ${isSelected ? 'bg-blue-500/20 text-blue-400 font-bold' : 'bg-zinc-800 text-zinc-500'}`}>{isSelected ? 'Associado' : 'Adicionar'}</span>
-                      </div>
-                    );
-                  })}
+                <label className="block text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-2">
+                  PROJETOS ASSOCIADOS
+                </label>
+
+                {/* 1. Lista dos projetos que já estão associados com botão para remover */}
+                <div className="space-y-1.5 mb-3 max-h-36 overflow-y-auto">
+                  {selectedProjectIds.length === 0 ? (
+                    <div className="p-2.5 bg-zinc-950/60 border border-zinc-900 rounded-xl text-xs text-zinc-600 italic">
+                      Nenhum projeto associado a esta equipa.
+                    </div>
+                  ) : (
+                    selectedProjectIds.map(projId => {
+                      const projObj = (projects || []).find(p => p.id === projId);
+                      if (!projObj) return null;
+                      return (
+                        <div 
+                          key={projId}
+                          className="flex items-center justify-between p-2 px-3 bg-zinc-950 border border-zinc-800 rounded-xl text-xs"
+                        >
+                          <span className="font-medium text-zinc-200 truncate">{projObj.name}</span>
+                          <button
+                            type="button"
+                            onClick={() => setSelectedProjectIds(selectedProjectIds.filter(id => id !== projId))}
+                            className="text-zinc-500 hover:text-red-400 text-xs px-1 cursor-pointer font-bold"
+                            title="Remover projeto da equipa"
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+
+                {/* 2. Campo para Adicionar Novo Projeto à Equipa */}
+                <div className="flex gap-2">
+                  <select
+                    value={selectedNewProjectId || ''}
+                    onChange={(e) => setSelectedNewProjectId(e.target.value)}
+                    className="flex-1 bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-zinc-200 outline-none focus:border-zinc-700"
+                  >
+                    <option value="">Selecionar projeto para adicionar...</option>
+                    {(projects || [])
+                      .filter(p => !selectedProjectIds.includes(p.id))
+                      .map(p => (
+                        <option key={p.id} value={p.id}>
+                          {p.name}
+                        </option>
+                      ))}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!selectedNewProjectId) return;
+                      const pId = Number(selectedNewProjectId);
+                      if (!selectedProjectIds.includes(pId)) {
+                        setSelectedProjectIds([...selectedProjectIds, pId]);
+                      }
+                      setSelectedNewProjectId('');
+                    }}
+                    className="bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-zinc-200 px-3 py-2 rounded-xl text-xs font-medium transition cursor-pointer"
+                  >
+                    Adicionar
+                  </button>
                 </div>
               </div>
               <div className="flex justify-end gap-3 mt-6 pt-4 border-t border-zinc-800">
@@ -7086,6 +7649,106 @@ const fetchWeekStatus = async () => {
               <button 
                 onClick={() => setShowTaskLogsModal(false)}
                 className="bg-zinc-800 hover:bg-zinc-700 text-zinc-200 px-4 py-2 rounded-xl text-xs font-medium transition cursor-pointer"
+              >
+                Fechar
+              </button>
+            </div>
+
+          </div>
+        </div>
+      )}
+
+      {/* MODAL DETALHADO DA BASE DE CONHECIMENTO */}
+      {selectedKnowledgeTicket && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fadeIn" onClick={() => setSelectedKnowledgeTicket(null)}>
+          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl max-w-2xl w-full p-6 shadow-2xl flex flex-col max-h-[85vh] text-zinc-100" onClick={e => e.stopPropagation()}>
+            
+            {/* Cabeçalho */}
+            <div className="flex items-center justify-between pb-4 mb-4 border-b border-zinc-800">
+              <div className="flex items-center gap-3">
+                <span className="text-xs font-mono text-zinc-400 bg-zinc-800 px-2.5 py-1 rounded-lg">#{selectedKnowledgeTicket.id}</span>
+                <h2 className="text-base font-bold text-zinc-100">{selectedKnowledgeTicket.title}</h2>
+                {selectedKnowledgeTicket.task_type && selectedKnowledgeTicket.task_type !== 'Geral' && (
+                  <span className="text-[10px] px-2.5 py-0.5 rounded border border-purple-500/30 bg-purple-500/10 text-purple-400 font-medium">
+                    {selectedKnowledgeTicket.task_type}
+                  </span>
+                )}
+              </div>
+              <button 
+                onClick={() => setSelectedKnowledgeTicket(null)} 
+                className="p-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-xl transition cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Conteúdo com Scroll */}
+            <div className="flex-1 overflow-y-auto space-y-4 pr-1">
+              
+              {/* Metadados / Informações úteis */}
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 bg-zinc-950 p-3.5 rounded-xl border border-zinc-800 text-xs text-zinc-400">
+                <div>📁 Projeto: <strong className="text-zinc-200 block mt-0.5">{getProjectName(selectedKnowledgeTicket.project_id)}</strong></div>
+                <div>👤 Resolvido por: <strong className="text-emerald-400 block mt-0.5">{getAssigneeName(selectedKnowledgeTicket.assigned_to_id) || 'Equipa'}</strong></div>
+                <div>
+                  📅 Conclusão: 
+                  <strong className="text-zinc-200 block mt-0.5">
+                    {selectedKnowledgeTicket.completed_at 
+                      ? new Date(selectedKnowledgeTicket.completed_at).toLocaleDateString('pt-PT') 
+                      : 'N/A'}
+                  </strong>
+                </div>
+              </div>
+
+              {/* Problema Original */}
+              <div className="bg-zinc-950 p-4 rounded-xl border border-zinc-800/80 space-y-1.5">
+                <p className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider flex items-center gap-1.5">
+                  <AlertCircle className="w-3.5 h-3.5" /> Problema Original
+                </p>
+                <p className="text-xs text-zinc-300 leading-relaxed whitespace-pre-wrap">
+                  {selectedKnowledgeTicket.description || 'Sem descrição inicial registada.'}
+                </p>
+              </div>
+
+              {/* Solução Aplicada */}
+              <div className="bg-zinc-950 p-4 rounded-xl border border-emerald-500/20 space-y-1.5">
+                <p className="text-[10px] font-semibold text-emerald-400 uppercase tracking-wider flex items-center gap-1.5">
+                  <CheckCircle2 className="w-3.5 h-3.5" /> Solução Aplicada (Relatório Final)
+                </p>
+                <p className="text-sm text-zinc-100 leading-relaxed whitespace-pre-wrap font-medium">
+                  {selectedKnowledgeTicket.final_description || 'Tarefa concluída sem relatório detalhado.'}
+                </p>
+              </div>
+
+              {/* Anexos e Fotografias */}
+              {selectedKnowledgeTicket.attachment_path && (
+                <div className="bg-zinc-950 p-4 rounded-xl border border-zinc-800/80 space-y-2">
+                  <p className="text-[10px] font-semibold text-zinc-400 uppercase tracking-wider flex items-center gap-1.5">
+                    <Paperclip className="w-3.5 h-3.5" /> Ficheiro Anexo / Evidência
+                  </p>
+                  
+                  {selectedKnowledgeTicket.attachment_path.match(/\.(jpeg|jpg|gif|png)$/i) ? (
+                    <a href={`${API_URL}/${selectedKnowledgeTicket.attachment_path}`} target="_blank" rel="noopener noreferrer" className="block rounded-xl overflow-hidden border border-zinc-700 hover:border-blue-500 transition shadow-sm max-w-sm">
+                      <img 
+                        src={`${API_URL}/${selectedKnowledgeTicket.attachment_path}`} 
+                        alt="Anexo da Tarefa Concluída" 
+                        className="w-full h-auto object-cover max-h-60"
+                      />
+                    </a>
+                  ) : (
+                    <a href={`${API_URL}/${selectedKnowledgeTicket.attachment_path}`} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 text-xs text-blue-400 bg-blue-500/10 px-3 py-2 rounded-xl w-fit border border-blue-500/20 hover:bg-blue-500/20 transition">
+                      <Download className="w-4 h-4" /> Transferir Documento Anexo
+                    </a>
+                  )}
+                </div>
+              )}
+
+            </div>
+
+            {/* Rodapé do Modal */}
+            <div className="pt-4 mt-4 border-t border-zinc-800 flex justify-end">
+              <button 
+                onClick={() => setSelectedKnowledgeTicket(null)}
+                className="bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-medium px-4 py-2 rounded-xl transition cursor-pointer"
               >
                 Fechar
               </button>
