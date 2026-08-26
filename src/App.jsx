@@ -633,6 +633,8 @@ const fetchWeekStatus = async () => {
   const [newFeedbackDesc, setNewFeedbackDesc] = useState("");
   const [newFeedbackDeadline, setNewFeedbackDeadline] = useState("");
   const [newFeedbackUsers, setNewFeedbackUsers] = useState([]);
+  const [taskFeedbackHistory, setTaskFeedbackHistory] = useState([]);
+  const [selectedFeedbackDetailsModal, setSelectedFeedbackDetailsModal] = useState(null);
 
   // Estados Modais de Tarefa
   const [showModal, setShowModal] = useState(false);
@@ -646,6 +648,8 @@ const fetchWeekStatus = async () => {
   const [typeFilter, setTypeFilter] = useState('');
   const [knowledgeSort, setKnowledgeSort] = useState('newest');
   const [selectedKnowledgeTicket, setSelectedKnowledgeTicket] = useState(null);
+  const [selectedProjectDetailsModal, setSelectedProjectDetailsModal] = useState(null);
+  const [selectedClientDetailsModal, setSelectedClientDetailsModal] = useState(null);
   const [newStatus, setNewStatus] = useState('To Do');
   const [newProjectId, setNewProjectId] = useState('');
   const [newClientId, setNewClientId] = useState(''); 
@@ -750,6 +754,29 @@ const fetchWeekStatus = async () => {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
+  // 🛡️ CORREÇÃO DE CRONÓMETROS ESQUECIDOS AO FECHAR O BROWSER
+  useEffect(() => {
+    const savedStart = localStorage.getItem('flowpulse_timerStartTime');
+    const savedTask = localStorage.getItem('flowpulse_activeTimerTask');
+
+    if (savedStart && savedTask) {
+      const startMs = new Date(savedStart).getTime();
+      const nowMs = Date.now();
+      const elapsedHours = (nowMs - startMs) / (1000 * 60 * 60);
+
+      // Se passaram mais de 12 horas desde que o site foi fechado (ou se passou do horário razoável),
+      // o sistema assume que foi um esquecimento e limpa/para automaticamente para não estragar as horas da tarefa!
+      if (elapsedHours > 12) {
+        console.warn("⚠️ Cronómetro detetado como 'esquecido' ao fechar o site. A limpar automaticamente...");
+        localStorage.removeItem('flowpulse_activeTimerTask');
+        localStorage.removeItem('flowpulse_timerStartTime');
+        setActiveTimerTask(null);
+        setTimerStartTime(null);
+        setSecondsElapsed(0);
+      }
+    }
   }, []);
 
   useEffect(() => {
@@ -1119,7 +1146,7 @@ const fetchWeekStatus = async () => {
       const ticket = tickets.find(t => t.id === ticketId);
       if (ticket) {
         setShowNotificationsModal(false); // Fecha o modal de notificações
-        changeTab('tasks'); // Muda para a aba de Tarefas
+        handleOpenEditModal(ticket); // Abre o modal de edição/detalhes da tarefa
       } else {
         alert("A tarefa correspondente não foi encontrada ou não tens permissão para aceder.");
       }
@@ -1265,6 +1292,28 @@ const fetchWeekStatus = async () => {
     }
   };
 
+  // Abre o modal de pedido de feedback para uma tarefa, já com o histórico carregado
+  const openFeedbackModalForTicket = async (ticket) => {
+    setFeedbackTargetTicket(ticket);
+    setNewFeedbackTitle(`Feedback da Tarefa #${ticket.id}: ${ticket.title}`);
+    setNewFeedbackDesc("");
+    const defaultDate = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString().slice(0, 16);
+    setNewFeedbackDeadline(defaultDate);
+    setNewFeedbackUsers(ticket.assigned_to_id ? [ticket.assigned_to_id] : []);
+
+    // 📋 BUSCA O HISTÓRICO DE FEEDBACKS DESTA TAREFA AO BACKEND
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      const res = await axios.get(`${API_URL}/feedback/requests?ticket_id=${ticket.id}`, { headers });
+      setTaskFeedbackHistory(res.data);
+    } catch (err) {
+      console.error("Erro ao carregar histórico de feedbacks", err);
+      setTaskFeedbackHistory([]);
+    }
+
+    setShowCreateFeedbackModal(true);
+  };
+
   // Submeter pedido de feedback (Gestor/Admin)
   const handleCreateFeedbackRequest = async (e) => {
     e.preventDefault();
@@ -1294,7 +1343,7 @@ const fetchWeekStatus = async () => {
     }
   };
 
-  // Deteta inatividade do utilizador apenas quando há um cronómetro ativo
+  // Deteta inatividade apenas fora do horário de expediente (das 18:00 às 09:00) quando há cronómetro ativo
   useEffect(() => {
     // Só monitoriza se houver um cronómetro ativo
     if (!activeTimerTask) {
@@ -1305,11 +1354,23 @@ const fetchWeekStatus = async () => {
     let idleTimeout;
 
     const resetIdleTimer = () => {
-      if (showIdleModal) return; // Não reinicia se o modal de aviso já estiver aberto
+      // 🕒 VERIFICAÇÃO DE HORÁRIO: Só ativa o controlo de inatividade fora das 09:00 às 18:00
+      const currentHour = new Date().getHours();
+      const isWorkingHours = currentHour >= 9 && currentHour < 18;
+
+      if (isWorkingHours || showIdleModal) {
+        // Se estivermos no horário de trabalho (9h-18h), ignoramos a inatividade
+        return; 
+      }
+
       clearTimeout(idleTimeout);
       idleTimeout = setTimeout(() => {
-        setShowIdleModal(true);
-        setIdleCountdown(60);
+        // Confirma novamente a hora antes de mostrar o modal
+        const checkHour = new Date().getHours();
+        if (!(checkHour >= 9 && checkHour < 18)) {
+          setShowIdleModal(true);
+          setIdleCountdown(60);
+        }
       }, IDLE_LIMIT_MS);
     };
 
@@ -2422,6 +2483,18 @@ const fetchWeekStatus = async () => {
     return user.name && user.name.trim() !== '' ? user.name : user.email;
   };
 
+  // Formata datas/horas vindas do backend garantindo interpretação correta como UTC
+  const formatLocalDateTime = (dateString) => {
+    if (!dateString) return '';
+    // Se a string da BD não terminar em 'Z' (UTC) nem tiver fuso horário, adicionamos o 'Z' para o browser converter bem
+    const isoStr = dateString.endsWith('Z') || dateString.includes('+') ? dateString : dateString + 'Z';
+    return new Date(isoStr).toLocaleString('pt-PT', {
+      timeZone: 'Europe/Lisbon',
+      dateStyle: 'short',
+      timeStyle: 'short'
+    });
+  };
+
   const getTeamLeaderName = (team) => {
     if (!team || !team.members) return 'Sem líder';
     const leader = team.members.find(m => m.id === team.owner_id);
@@ -2591,6 +2664,9 @@ const fetchWeekStatus = async () => {
   const editingTicketObj = tickets.find(t => t.id === currentTicketId);
   const isOwnerOrCreator = canManageTicket(editingTicketObj);
   const isSubtaskCollaborator = !isOwnerOrCreator && subtasks.some(s => s.assigned_to_id === currentUserInfo?.id);
+  const userHasPermission = canManageTicket(editingTicketObj);
+  // Se não puder gerir a tarefa, o modal abre estritamente em modo de leitura (Read-only)
+  const isReadOnly = editMode && !userHasPermission;
 
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 flex overflow-hidden">
@@ -3135,15 +3211,7 @@ const fetchWeekStatus = async () => {
                             </button>
                             {isManagerOrAdmin && (
                               <button
-                                onClick={() => {
-                                  setFeedbackTargetTicket(ticket);
-                                  setNewFeedbackTitle(`Feedback da Tarefa #${ticket.id}: ${ticket.title}`);
-                                  setNewFeedbackDesc("");
-                                  const defaultDate = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString().slice(0, 16);
-                                  setNewFeedbackDeadline(defaultDate);
-                                  setNewFeedbackUsers(ticket.assigned_to_id ? [ticket.assigned_to_id] : []);
-                                  setShowCreateFeedbackModal(true);
-                                }}
+                                onClick={() => openFeedbackModalForTicket(ticket)}
                                 className="p-2 text-amber-400 hover:text-amber-300 bg-zinc-900 border border-zinc-800 rounded-lg transition"
                                 title="Pedir Feedback desta Tarefa"
                               >
@@ -3279,7 +3347,7 @@ const fetchWeekStatus = async () => {
                           const translated = translateLogAction(log.action, log.details);
                           return (
                             <tr key={log.id} className="hover:bg-zinc-800/20 transition">
-                              <td className="px-4 py-3 whitespace-nowrap text-xs text-zinc-400">{new Date(log.created_at).toLocaleString('pt-PT')}</td>
+                              <td className="px-4 py-3 whitespace-nowrap text-xs text-zinc-400">{formatLocalDateTime(log.created_at)}</td>
                               <td className="px-4 py-3"><span className="bg-zinc-800 border border-zinc-700/50 text-zinc-300 px-2 py-1 rounded text-xs font-medium">👤 {getLogUserName(log.user_id)}</span></td>
                               <td className="px-4 py-3">
                                 <span className={`px-2 py-1 rounded text-[10px] font-bold tracking-wider ${translated.badge === 'LOGIN' ? 'bg-blue-500/10 text-blue-400 border border-blue-500/20' : log.action === 'DELETE' ? 'bg-red-500/10 text-red-400 border border-red-500/20' : 'bg-zinc-800 text-zinc-400 border border-zinc-700'}`}>
@@ -3584,7 +3652,11 @@ const fetchWeekStatus = async () => {
                     const clientProjects = availableProjects.filter(p => p.client_id === client.id);
                     const clientTickets = availableTickets.filter(t => t.client_id === client.id);
                     return (
-                      <div key={client.id} className="bg-zinc-900 border border-zinc-800/80 rounded-2xl p-6 shadow-xl flex flex-col justify-between group hover:border-zinc-700 transition space-y-4">
+                      <div 
+                        key={client.id}
+                        onClick={() => setSelectedClientDetailsModal(client)}
+                        className="bg-zinc-900 border border-zinc-800/80 rounded-2xl p-6 shadow-xl flex flex-col justify-between group hover:border-zinc-700 transition space-y-4 cursor-pointer"
+                      >
                         <div>
                           <div className="flex items-start justify-between mb-3">
                             <div className="flex items-center gap-3">
@@ -3597,10 +3669,10 @@ const fetchWeekStatus = async () => {
                               </div>
                             </div>
                             <div className="flex items-center gap-1">
-                              <button onClick={() => openEditClientModal(client)} className="p-1.5 bg-zinc-950 border border-zinc-800 text-zinc-400 hover:text-zinc-100 rounded-lg transition" title="Editar Cliente">
+                              <button onClick={(e) => { e.stopPropagation(); openEditClientModal(client); }} className="p-1.5 bg-zinc-950 border border-zinc-800 text-zinc-400 hover:text-zinc-100 rounded-lg transition" title="Editar Cliente">
                                 <Edit3 className="w-3.5 h-3.5" />
                               </button>
-                              <button onClick={() => handleDeleteClient(client.id)} className="p-1.5 bg-zinc-950 border border-zinc-800 text-red-400 hover:text-red-300 rounded-lg transition" title="Apagar Cliente">
+                              <button onClick={(e) => { e.stopPropagation(); handleDeleteClient(client.id); }} className="p-1.5 bg-zinc-950 border border-zinc-800 text-red-400 hover:text-red-300 rounded-lg transition" title="Apagar Cliente">
                                 <Trash2 className="w-3.5 h-3.5" />
                               </button>
                             </div>
@@ -3633,7 +3705,7 @@ const fetchWeekStatus = async () => {
                                 clientProjects.map(p => (
                                   <div key={p.id} className="text-xs bg-zinc-950 border border-zinc-800/80 px-2.5 py-1.5 rounded-lg flex items-center justify-between text-zinc-300">
                                     <span className="truncate">📁 {p.name}</span>
-                                    <button onClick={() => openProjectTasksModal(p)} className="text-[10px] text-blue-400 hover:underline shrink-0">Ver</button>
+                                    <button onClick={(e) => { e.stopPropagation(); openProjectTasksModal(p); }} className="text-[10px] text-blue-400 hover:underline shrink-0">Ver</button>
                                   </div>
                                 ))
                               )}
@@ -3690,15 +3762,19 @@ const fetchWeekStatus = async () => {
                     const clientNameStr = getClientName(proj.client_id);
 
                     return (
-                      <div key={proj.id} className="bg-zinc-900 border border-zinc-800/80 rounded-2xl p-6 shadow-xl flex flex-col group hover:border-zinc-700 transition">
+                      <div 
+                        key={proj.id} 
+                        onClick={() => setSelectedProjectDetailsModal(proj)}
+                        className="bg-zinc-900 border border-zinc-800/80 rounded-2xl p-6 shadow-xl flex flex-col group hover:border-zinc-700 transition cursor-pointer"
+                      >
                         <div className="flex items-start justify-between mb-2">
                           <div className="flex-1 pr-4">
                             <h2 className="font-semibold text-base text-zinc-100 truncate" title={proj.name}>{proj.name}</h2>
                             <p className="text-xs text-zinc-400 mt-1 line-clamp-2 min-h-[32px]">{proj.description || 'Sem descrição'}</p>
                           </div>
                           <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition">
-                            <button onClick={() => openEditProjectModal(proj)} className="p-1.5 bg-zinc-950 border border-zinc-800 text-zinc-400 hover:text-zinc-100 rounded-lg transition" title="Editar Projeto"><Edit3 className="w-3.5 h-3.5" /></button>
-                            <button onClick={() => handleDeleteProject(proj.id)} className="p-1.5 bg-zinc-950 border border-zinc-800 text-red-400 hover:text-red-300 rounded-lg transition" title="Apagar Projeto"><Trash2 className="w-3.5 h-3.5" /></button>
+                            <button onClick={(e) => { e.stopPropagation(); openEditProjectModal(proj); }} className="p-1.5 bg-zinc-950 border border-zinc-800 text-zinc-400 hover:text-zinc-100 rounded-lg transition" title="Editar Projeto"><Edit3 className="w-3.5 h-3.5" /></button>
+                            <button onClick={(e) => { e.stopPropagation(); handleDeleteProject(proj.id); }} className="p-1.5 bg-zinc-950 border border-zinc-800 text-red-400 hover:text-red-300 rounded-lg transition" title="Apagar Projeto"><Trash2 className="w-3.5 h-3.5" /></button>
                           </div>
                         </div>
 
@@ -4150,13 +4226,7 @@ const fetchWeekStatus = async () => {
                                           type="button"
                                           onClick={(e) => {
                                             e.stopPropagation();
-                                            setFeedbackTargetTicket(ticket);
-                                            setNewFeedbackTitle(`Feedback da Tarefa #${ticket.id}: ${ticket.title}`);
-                                            setNewFeedbackDesc("");
-                                            const defaultDate = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString().slice(0, 16);
-                                            setNewFeedbackDeadline(defaultDate);
-                                            setNewFeedbackUsers(ticket.assigned_to_id ? [ticket.assigned_to_id] : []);
-                                            setShowCreateFeedbackModal(true);
+                                            openFeedbackModalForTicket(ticket);
                                           }}
                                           title="Pedir Feedback desta Tarefa"
                                           className="p-1.5 bg-zinc-900 border border-zinc-800 text-amber-400 hover:text-amber-300 hover:border-amber-500/30 rounded-md transition cursor-pointer"
@@ -4385,15 +4455,7 @@ const fetchWeekStatus = async () => {
                               </button>
                               {isManagerOrAdmin && (
                                 <button
-                                  onClick={() => {
-                                    setFeedbackTargetTicket(ticket);
-                                    setNewFeedbackTitle(`Feedback da Tarefa #${ticket.id}: ${ticket.title}`);
-                                    setNewFeedbackDesc("");
-                                    const defaultDate = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString().slice(0, 16);
-                                    setNewFeedbackDeadline(defaultDate);
-                                    setNewFeedbackUsers(ticket.assigned_to_id ? [ticket.assigned_to_id] : []);
-                                    setShowCreateFeedbackModal(true);
-                                  }}
+                                  onClick={() => openFeedbackModalForTicket(ticket)}
                                   className="p-2 text-amber-400 hover:text-amber-300 bg-zinc-950 border border-zinc-800 rounded-lg transition"
                                   title="Pedir Feedback desta Tarefa"
                                 >
@@ -4692,23 +4754,29 @@ const fetchWeekStatus = async () => {
                     {/* Lista de Colaboradores para escolher participantes do Subchat */}
                     <div className="flex-1 overflow-y-auto space-y-1 pr-1">
                       {(() => {
-                        // Se estiver a criar um subchat de projeto, filtra apenas colaboradores das equipas desse projeto
+                        // 1. Se houver um projeto selecionado para o subchat:
                         let targetUsers = usersList.filter(u => u.id !== currentUserInfo.id);
 
                         if (newChatProjectId) {
                           const projObj = availableProjects.find(p => p.id === Number(newChatProjectId));
                           if (projObj) {
-                            const teamIds = projObj.team_ids || (projObj.teams ? projObj.teams.map(t => t.id) : []);
+                            // Recolhe todos os IDs de equipas associadas ao projeto (seja em team_ids ou teams)
+                            const projTeamIds = projObj.team_ids || (projObj.teams ? projObj.teams.map(t => t.id) : (projObj.team_id ? [projObj.team_id] : []));
+
                             const allowedMemberIds = new Set();
 
+                            // Vai buscar os membros de cada equipa associada ao projeto
                             teams
-                              .filter(t => teamIds.includes(t.id))
+                              .filter(t => projTeamIds.includes(t.id))
                               .forEach(t => {
                                 if (t.owner_id) allowedMemberIds.add(t.owner_id);
                                 if (t.leader_id) allowedMemberIds.add(t.leader_id);
-                                t.members?.forEach(m => allowedMemberIds.add(m.id));
+                                if (t.members && Array.isArray(t.members)) {
+                                  t.members.forEach(m => allowedMemberIds.add(m.id));
+                                }
                               });
 
+                            // Filtra estritamente para que só apareçam os membros permitidos
                             targetUsers = targetUsers.filter(u => allowedMemberIds.has(u.id));
                           }
                         }
@@ -4716,7 +4784,7 @@ const fetchWeekStatus = async () => {
                         if (targetUsers.length === 0) {
                           return (
                             <div className="text-center py-8 text-xs text-zinc-500 italic">
-                              Nenhum membro encontrado nas equipas deste projeto.
+                              Nenhum membro válido nas equipas deste projeto.
                             </div>
                           );
                         }
@@ -6231,7 +6299,7 @@ const fetchWeekStatus = async () => {
                         <div className="flex-1 min-w-0">
                           <p className={`text-sm ${n.is_read ? 'text-zinc-400 font-normal' : 'text-zinc-100 font-medium'}`}>{n.message}</p>
                           <p className="text-[10px] text-zinc-500 mt-1 uppercase tracking-wider font-mono">
-                            {new Date(n.created_at).toLocaleString('pt-PT')}
+                            {formatLocalDateTime(n.created_at)}
                           </p>
                         </div>
                       </div>
@@ -7347,7 +7415,7 @@ const fetchWeekStatus = async () => {
                         <div key={log.id} className="bg-zinc-950 border border-zinc-800 p-2.5 rounded-xl flex flex-col gap-1">
                           <div className="flex justify-between items-center text-[11px] text-zinc-500">
                             <span className="font-bold text-blue-400">{log.action}</span>
-                            <span>{log.created_at ? new Date(log.created_at).toLocaleString('pt-PT') : ''}</span>
+                            <span>{formatLocalDateTime(log.created_at)}</span>
                           </div>
                           <div className="text-xs font-medium text-zinc-200">{log.details}</div>
                         </div>
@@ -7559,6 +7627,129 @@ const fetchWeekStatus = async () => {
                 </button>
               </div>
             </form>
+
+            {/* --- SECÇÃO DE HISTÓRICO DE FEEDBACKS DA TAREFA --- */}
+            <div className="mt-6 pt-4 border-t border-zinc-800">
+              <p className="text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-3">
+                📋 Histórico de Feedbacks desta Tarefa
+              </p>
+
+              <div className="space-y-2.5 max-h-48 overflow-y-auto pr-1">
+                {taskFeedbackHistory.length === 0 ? (
+                  <div className="p-3 bg-zinc-950 border border-zinc-800 rounded-xl text-xs text-zinc-500 italic text-center">
+                    Ainda não foram pedidos feedbacks para esta tarefa.
+                  </div>
+                ) : (
+                  taskFeedbackHistory.map(item => (
+                    <div 
+                      key={item.id} 
+                      onClick={() => setSelectedFeedbackDetailsModal(item)}
+                      className="p-3 bg-zinc-950 border border-zinc-800 hover:border-zinc-700 rounded-xl space-y-2 text-xs transition cursor-pointer group"
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="font-medium text-zinc-200 group-hover:text-blue-400 transition">{item.title}</span>
+                        <span className={`text-[10px] px-2 py-0.5 rounded font-medium ${item.responses && item.responses.length > 0 ? 'bg-emerald-500/10 text-emerald-400' : 'bg-amber-500/10 text-amber-400'}`}>
+                          {item.responses && item.responses.length > 0 ? 'Respondido' : 'Pendente'}
+                        </span>
+                      </div>
+
+                      {item.responses && item.responses.length > 0 ? (
+                        <div className="space-y-1.5 pt-1">
+                          {item.responses.map(resp => (
+                            <div key={resp.id} className="bg-zinc-900 p-2.5 rounded-lg border border-zinc-800 space-y-1">
+                              <div className="flex justify-between text-[10px] text-zinc-400 font-semibold">
+                                <span>👤 {resp.user_name}</span>
+                                <span>⭐ {resp.rating}/5</span>
+                              </div>
+                              <p className="text-zinc-200 text-xs truncate">{resp.comment || 'Sem comentário escrito.'}</p>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="text-[11px] text-zinc-500 italic">A aguardar resposta dos destinatários...</p>
+                      )}
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* --- MINI POP-UP DE DETALHES DO FEEDBACK --- */}
+      {selectedFeedbackDetailsModal && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 z-[60] animate-fadeIn" onClick={() => setSelectedFeedbackDetailsModal(null)}>
+          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-5" onClick={e => e.stopPropagation()}>
+            
+            {/* Cabeçalho */}
+            <div className="flex items-center justify-between pb-3 border-b border-zinc-800">
+              <div>
+                <span className="text-[10px] font-mono text-zinc-500 uppercase tracking-wider">Detalhes do Pedido #{selectedFeedbackDetailsModal.id}</span>
+                <h3 className="text-base font-bold text-zinc-100">{selectedFeedbackDetailsModal.title}</h3>
+              </div>
+              <button onClick={() => setSelectedFeedbackDetailsModal(null)} className="p-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-xl transition cursor-pointer">
+                ✕
+              </button>
+            </div>
+
+            {/* Corpo com Informações do Pedido */}
+            <div className="space-y-4 text-xs">
+              <div className="bg-zinc-950 border border-zinc-800 p-3.5 rounded-xl space-y-2">
+                <p className="text-[10px] font-semibold text-zinc-400 uppercase tracking-wider">Instruções / O que foi pedido:</p>
+                <p className="text-zinc-200 leading-relaxed">{selectedFeedbackDetailsModal.description || 'Sem instruções adicionais.'}</p>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="bg-zinc-950 border border-zinc-800 p-3 rounded-xl">
+                  <p className="text-[10px] font-semibold text-zinc-400 uppercase tracking-wider mb-1">Data de Criação</p>
+                  <p className="font-mono text-zinc-300">{formatLocalDateTime(selectedFeedbackDetailsModal.created_at)}</p>
+                </div>
+                <div className="bg-zinc-950 border border-zinc-800 p-3 rounded-xl">
+                  <p className="text-[10px] font-semibold text-zinc-400 uppercase tracking-wider mb-1">Prazo Limite</p>
+                  <p className="font-mono text-amber-400">{formatLocalDateTime(selectedFeedbackDetailsModal.deadline)}</p>
+                </div>
+              </div>
+
+              {/* Respostas Recebidas */}
+              <div>
+                <p className="text-[10px] font-semibold text-zinc-400 uppercase tracking-wider mb-2">Respostas dos Colaboradores</p>
+                <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
+                  {!selectedFeedbackDetailsModal.responses || selectedFeedbackDetailsModal.responses.length === 0 ? (
+                    <p className="text-zinc-500 italic p-3 bg-zinc-950 border border-zinc-800 rounded-xl">Ainda não existem respostas submetidas para este pedido.</p>
+                  ) : (
+                    selectedFeedbackDetailsModal.responses.map(resp => (
+                      <div key={resp.id} className="bg-zinc-950 border border-zinc-800 p-3.5 rounded-xl space-y-2">
+                        <div className="flex items-center justify-between">
+                          <span className="font-semibold text-zinc-200">👤 {resp.user_name}</span>
+                          <div className="flex items-center gap-1 bg-amber-500/10 border border-amber-500/20 text-amber-400 px-2 py-0.5 rounded-lg font-bold text-xs">
+                            <span>⭐</span>
+                            <span>{resp.rating}/5</span>
+                          </div>
+                        </div>
+                        <p className="text-zinc-300 bg-zinc-900 p-2.5 rounded-lg border border-zinc-800/80 leading-relaxed">
+                          "{resp.comment || 'Sem comentário escrito.'}"
+                        </p>
+                        <p className="text-[10px] text-zinc-500 font-mono text-right">
+                          Respondido em: {formatLocalDateTime(resp.created_at)}
+                        </p>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Rodapé */}
+            <div className="pt-3 border-t border-zinc-800 flex justify-end">
+              <button 
+                onClick={() => setSelectedFeedbackDetailsModal(null)} 
+                className="bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-semibold px-4 py-2 rounded-xl transition cursor-pointer"
+              >
+                Fechar
+              </button>
+            </div>
+
           </div>
         </div>
       )}
@@ -7633,7 +7824,7 @@ const fetchWeekStatus = async () => {
                         👤 {log.username || `Utilizador #${log.user_id}`}
                       </span>
                       <span className="text-[11px] font-mono text-zinc-500">
-                        {log.created_at ? new Date(log.created_at).toLocaleString('pt-PT') : ''}
+                        {formatLocalDateTime(log.created_at)}
                       </span>
                     </div>
                     <div className="text-xs font-medium text-zinc-200">{log.action}</div>
@@ -7750,6 +7941,168 @@ const fetchWeekStatus = async () => {
               <button 
                 onClick={() => setSelectedKnowledgeTicket(null)}
                 className="bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-medium px-4 py-2 rounded-xl transition cursor-pointer"
+              >
+                Fechar
+              </button>
+            </div>
+
+          </div>
+        </div>
+      )}
+
+      {selectedProjectDetailsModal && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fadeIn" onClick={() => setSelectedProjectDetailsModal(null)}>
+          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl max-w-2xl w-full p-6 shadow-2xl flex flex-col max-h-[85vh]" onClick={e => e.stopPropagation()}>
+            
+            {/* Cabeçalho */}
+            <div className="flex items-center justify-between mb-4 pb-3 border-b border-zinc-800">
+              <div>
+                <span className="text-xs font-mono text-zinc-500 uppercase tracking-wider">Detalhes do Projeto</span>
+                <h2 className="text-lg font-bold text-zinc-100">{selectedProjectDetailsModal.name}</h2>
+              </div>
+              <button onClick={() => setSelectedProjectDetailsModal(null)} className="p-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-xl transition cursor-pointer">
+                ✕
+              </button>
+            </div>
+
+            {/* Corpo do Modal com Scroll */}
+            <div className="space-y-6 flex-1 overflow-y-auto pr-1">
+              
+              {/* Descrição e Info */}
+              <div className="bg-zinc-950 border border-zinc-800/80 p-4 rounded-xl space-y-2">
+                <p className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">Descrição</p>
+                <p className="text-sm text-zinc-200 leading-relaxed">{selectedProjectDetailsModal.description || 'Sem descrição registada.'}</p>
+              </div>
+
+              {/* Equipas e Membros Associados */}
+              <div>
+                <p className="text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-2">Equipas & Membros</p>
+                <div className="space-y-2">
+                  {selectedProjectDetailsModal.teams && selectedProjectDetailsModal.teams.length > 0 ? (
+                    selectedProjectDetailsModal.teams.map(teamInfo => {
+                      const fullTeam = teams.find(t => t.id === teamInfo.id);
+                      return (
+                        <div key={teamInfo.id} className="bg-zinc-950 border border-zinc-800 p-3.5 rounded-xl space-y-2">
+                          <p className="text-xs font-bold text-blue-400 flex items-center gap-1.5">
+                            <span>👥</span> {teamInfo.name}
+                          </p>
+                          <div className="flex flex-wrap gap-1.5">
+                            {fullTeam && fullTeam.members && fullTeam.members.length > 0 ? (
+                              fullTeam.members.map(m => (
+                                <span key={m.id} className="text-[11px] bg-zinc-900 border border-zinc-800 text-zinc-300 px-2.5 py-1 rounded-lg">
+                                  👤 {getUserDisplayName(m)}
+                                </span>
+                              ))
+                            ) : (
+                              <span className="text-[11px] text-zinc-500 italic">Sem membros detalhados nesta equipa.</span>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })
+                  ) : (
+                    <div className="p-3 bg-zinc-950 border border-zinc-800 rounded-xl text-xs text-zinc-500 italic">
+                      Nenhuma equipa associada a este projeto.
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Tarefas do Projeto */}
+              <div>
+                <p className="text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-2">Tarefas do Projeto</p>
+                <div className="space-y-1.5 max-h-48 overflow-y-auto">
+                  {(() => {
+                    const projTasks = (tickets || []).filter(t => t.project_id === selectedProjectDetailsModal.id);
+                    if (projTasks.length === 0) {
+                      return <p className="text-xs text-zinc-500 italic p-3 bg-zinc-950 border border-zinc-800 rounded-xl">Sem tarefas associadas.</p>;
+                    }
+                    return projTasks.map(t => (
+                      <div key={t.id} className="p-3 bg-zinc-950 border border-zinc-800 rounded-xl flex items-center justify-between text-xs">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="font-mono text-zinc-500">#{t.id}</span>
+                          <span className="font-medium text-zinc-200 truncate">{t.title}</span>
+                        </div>
+                        <span className={`text-[10px] px-2 py-0.5 rounded font-medium shrink-0 ${t.status === 'Done' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-zinc-900 text-zinc-400'}`}>
+                          {t.status}
+                        </span>
+                      </div>
+                    ));
+                  })()}
+                </div>
+              </div>
+
+            </div>
+
+            {/* Rodapé */}
+            <div className="pt-4 mt-4 border-t border-zinc-800 flex justify-end">
+              <button 
+                onClick={() => setSelectedProjectDetailsModal(null)} 
+                className="bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-semibold px-4 py-2 rounded-xl transition cursor-pointer"
+              >
+                Fechar
+              </button>
+            </div>
+
+          </div>
+        </div>
+      )}
+
+      {selectedClientDetailsModal && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fadeIn" onClick={() => setSelectedClientDetailsModal(null)}>
+          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl max-w-2xl w-full p-6 shadow-2xl flex flex-col max-h-[85vh]" onClick={e => e.stopPropagation()}>
+            
+            {/* Cabeçalho */}
+            <div className="flex items-center justify-between mb-4 pb-3 border-b border-zinc-800">
+              <div>
+                <span className="text-xs font-mono text-zinc-500 uppercase tracking-wider">Detalhes do Cliente</span>
+                <h2 className="text-lg font-bold text-zinc-100">{selectedClientDetailsModal.name}</h2>
+              </div>
+              <button onClick={() => setSelectedClientDetailsModal(null)} className="p-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-xl transition cursor-pointer">
+                ✕
+              </button>
+            </div>
+
+            {/* Corpo com Scroll */}
+            <div className="space-y-6 flex-1 overflow-y-auto pr-1">
+              
+              {/* Informações de Contacto / Email */}
+              <div className="bg-zinc-950 border border-zinc-800/80 p-4 rounded-xl space-y-2">
+                <p className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">Email de Contacto</p>
+                <p className="text-sm text-zinc-200">{selectedClientDetailsModal.email || 'Sem email registado.'}</p>
+              </div>
+
+              {/* Projetos Associados a este Cliente */}
+              <div>
+                <p className="text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-2">Projetos do Cliente</p>
+                <div className="space-y-1.5 max-h-48 overflow-y-auto">
+                  {(() => {
+                    const clientProjects = (availableProjects || []).filter(p => p.client_id === selectedClientDetailsModal.id);
+                    if (clientProjects.length === 0) {
+                      return <p className="text-xs text-zinc-500 italic p-3 bg-zinc-950 border border-zinc-800 rounded-xl">Sem projetos associados a este cliente.</p>;
+                    }
+                    return clientProjects.map(p => (
+                      <div key={p.id} className="p-3 bg-zinc-950 border border-zinc-800 rounded-xl flex items-center justify-between text-xs">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="font-mono text-zinc-500">📁</span>
+                          <span className="font-medium text-zinc-200 truncate">{p.name}</span>
+                        </div>
+                        <span className="text-[10px] bg-blue-500/10 text-blue-400 px-2 py-0.5 rounded font-medium shrink-0">
+                          {p.progress_percentage}% Concluído
+                        </span>
+                      </div>
+                    ));
+                  })()}
+                </div>
+              </div>
+
+            </div>
+
+            {/* Rodapé */}
+            <div className="pt-4 mt-4 border-t border-zinc-800 flex justify-end">
+              <button 
+                onClick={() => setSelectedClientDetailsModal(null)} 
+                className="bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-semibold px-4 py-2 rounded-xl transition cursor-pointer"
               >
                 Fechar
               </button>
