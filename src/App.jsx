@@ -19,12 +19,11 @@ const formatToHHMM = (hoursFloat) => {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
 };
 
-// Lista centralizada de cargos disponíveis na aplicação
+// Lista centralizada de cargos globais disponíveis na aplicação (sem Líder de Equipa)
 const ROLES_LIST = [
   { value: "Admin", label: "Administrador", color: "text-red-400 bg-red-500/10 border-red-500/30" },
   { value: "Gestor de Operações", label: "Gestor de Operações", color: "text-purple-400 bg-purple-500/10 border-purple-500/30" },
   { value: "Gestor de Projeto", label: "Gestor de Projeto", color: "text-blue-400 bg-blue-500/10 border-blue-500/30" },
-  { value: "Líder de Equipa", label: "Líder de Equipa", color: "text-amber-400 bg-amber-500/10 border-amber-500/30" },
   { value: "Técnico", label: "Técnico / Colaborador", color: "text-emerald-400 bg-emerald-500/10 border-emerald-500/30" }
 ];
 
@@ -52,6 +51,12 @@ export default function App() {
   const [imagem, setImagem] = useState(null);
   // Modal de detalhes da tarefa concluída
   const [selectedTicketDetails, setSelectedTicketDetails] = useState(null);
+  // Modal de Visualização rápida da tarefa (abre ao clicar no cartão)
+  const [showViewModal, setShowViewModal] = useState(false);
+  const [selectedViewTicket, setSelectedViewTicket] = useState(null);
+  // Filtros do Calendário: tarefas atrasadas e tarefas a terminar em menos de 72h
+  const [filterOverdue, setFilterOverdue] = useState(false);
+  const [filterUpcoming72h, setFilterUpcoming72h] = useState(false);
   const [ticketHistoryLogs, setTicketHistoryLogs] = useState([]);
   // Histórico da tarefa no modal de edição
   const [ticketLogs, setTicketLogs] = useState([]);
@@ -635,6 +640,10 @@ const fetchWeekStatus = async () => {
   const [newFeedbackUsers, setNewFeedbackUsers] = useState([]);
   const [taskFeedbackHistory, setTaskFeedbackHistory] = useState([]);
   const [selectedFeedbackDetailsModal, setSelectedFeedbackDetailsModal] = useState(null);
+  const [feedbackMode, setFeedbackMode] = useState('pontual'); // 'pontual' ou 'ciclico'
+  const [cyclicIntervalNum, setCyclicIntervalNum] = useState(1);
+  const [cyclicIntervalUnit, setCyclicIntervalUnit] = useState('days'); // 'days' ou 'weeks'
+  const [cyclicTime, setCyclicTime] = useState('14:00');
 
   // Estados Modais de Tarefa
   const [showModal, setShowModal] = useState(false);
@@ -897,6 +906,14 @@ const fetchWeekStatus = async () => {
       const res = await axios.get(url, { headers });
       setChatRooms(res.data);
 
+      // Mantém a sala ativa sincronizada com os dados mais atualizados (ex: membros da equipa),
+      // sem nunca a limpar aqui — o "desmarcar" só acontece nos botões dedicados para isso.
+      setActiveChatRoom(prevActiveRoom => {
+        if (!prevActiveRoom) return prevActiveRoom;
+        const refreshedRoom = res.data.find(r => r.id === prevActiveRoom.id);
+        return refreshedRoom || prevActiveRoom;
+      });
+
       // Magia: Soma todas as não lidas de todas as salas e atualiza a bolinha de fora!
       const totalUnread = res.data.reduce((sum, room) => sum + (room.unread_count || 0), 0);
       setChatUnreadCount(totalUnread);
@@ -942,6 +959,63 @@ const fetchWeekStatus = async () => {
 
     } catch (e) {
       console.error("Erro ao carregar histórico de chat", e);
+    }
+  };
+
+  // Adiciona um participante à sala/subchat ativo
+  const handleAddMemberToActiveRoom = async (newUserId) => {
+    if (!activeChatRoom || !newUserId) return;
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      const res = await axios.post(
+        `${API_URL}/chat/rooms/${activeChatRoom.id}/members?user_id=${newUserId}&current_user_id=${currentUserInfo.id}`,
+        {},
+        { headers }
+      );
+      // Atualiza os membros da sala ativa
+      setActiveChatRoom(prev => ({ ...prev, members: res.data }));
+      fetchChatRooms();
+    } catch (err) {
+      alert(err.response?.data?.detail || "Erro ao adicionar participante.");
+    }
+  };
+
+  // Remove um participante da sala/subchat ativo
+  const handleRemoveMemberFromActiveRoom = async (userIdToRemove) => {
+    if (!activeChatRoom || !userIdToRemove) return;
+    if (!window.confirm("Tens a certeza que queres remover este participante do subchat?")) return;
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      const res = await axios.delete(
+        `${API_URL}/chat/rooms/${activeChatRoom.id}/members/${userIdToRemove}?current_user_id=${currentUserInfo.id}`,
+        { headers }
+      );
+      // Atualiza os membros da sala ativa
+      setActiveChatRoom(prev => ({ ...prev, members: res.data }));
+      fetchChatRooms();
+    } catch (err) {
+      alert(err.response?.data?.detail || "Erro ao remover participante.");
+    }
+  };
+
+  // Apaga o canal/subchat ativo (não permitido no canal Geral)
+  const handleDeleteChatRoom = async () => {
+    if (!activeChatRoom) return;
+    if (activeChatRoom.is_general) {
+      alert("Não podes apagar o canal Geral de um projeto.");
+      return;
+    }
+    if (!window.confirm(`Tens a certeza que pretendes apagar o canal "${activeChatRoom.name}"? Esta ação é irreversível.`)) return;
+
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      await axios.delete(`${API_URL}/chat/rooms/${activeChatRoom.id}?current_user_id=${currentUserInfo.id}`, { headers });
+      
+      setActiveChatRoom(null);
+      await fetchChatRooms();
+      alert("Subchat apagado com sucesso!");
+    } catch (err) {
+      alert(err.response?.data?.detail || "Erro ao apagar o subchat.");
     }
   };
 
@@ -1300,6 +1374,10 @@ const fetchWeekStatus = async () => {
     const defaultDate = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString().slice(0, 16);
     setNewFeedbackDeadline(defaultDate);
     setNewFeedbackUsers(ticket.assigned_to_id ? [ticket.assigned_to_id] : []);
+    setFeedbackMode('pontual');
+    setCyclicIntervalNum(1);
+    setCyclicIntervalUnit('days');
+    setCyclicTime('14:00');
 
     // 📋 BUSCA O HISTÓRICO DE FEEDBACKS DESTA TAREFA AO BACKEND
     try {
@@ -1317,8 +1395,18 @@ const fetchWeekStatus = async () => {
   // Submeter pedido de feedback (Gestor/Admin)
   const handleCreateFeedbackRequest = async (e) => {
     e.preventDefault();
-    if (!newFeedbackTitle.trim() || !newFeedbackDeadline) {
-      alert("Indica o título e a data/hora limite.");
+
+    // Se for cíclico, podemos definir um prazo predefinido (ex: daqui a 30 dias) ou deixar opcional, 
+    // já que o foco é a frequência (diária/semanal)
+    let deadlineIso = newFeedbackDeadline;
+    if (feedbackMode === 'ciclico') {
+      const futureDate = new Date();
+      futureDate.setDate(futureDate.getDate() + 30); // Prazo limite de 30 dias para o ciclo expirar por defeito
+      deadlineIso = futureDate.toISOString();
+    }
+
+    if (!newFeedbackTitle.trim() || !deadlineIso) {
+      alert("Indica o título do pedido.");
       return;
     }
 
@@ -1329,13 +1417,17 @@ const fetchWeekStatus = async () => {
         ticket_id: feedbackTargetTicket?.id || null,
         project_id: feedbackTargetTicket?.project_id || null,
         target_user_ids: newFeedbackUsers,
-        deadline: new Date(newFeedbackDeadline).toISOString()
+        deadline: new Date(deadlineIso).toISOString(),
+        feedback_type: feedbackMode, // "pontual" ou "ciclico"
+        interval_value: feedbackMode === 'ciclico' ? Number(cyclicIntervalNum) : null,
+        interval_unit: feedbackMode === 'ciclico' ? cyclicIntervalUnit : null,
+        cyclic_time: feedbackMode === 'ciclico' ? cyclicTime : null
       };
 
       const headers = { Authorization: `Bearer ${token}` };
       await axios.post(`${API_URL}/feedback/requests`, payload, { headers });
 
-      alert("✅ Pedido de feedback enviado com sucesso! Os colaboradores foram notificados.");
+      alert("✅ Pedido de feedback criado com sucesso!");
       setShowCreateFeedbackModal(false);
       setFeedbackTargetTicket(null);
     } catch (err) {
@@ -1343,50 +1435,37 @@ const fetchWeekStatus = async () => {
     }
   };
 
-  // Deteta inatividade apenas fora do horário de expediente (das 18:00 às 09:00) quando há cronómetro ativo
+  // 🕒 MONITORIZAÇÃO DE INATIVIDADE E HORÁRIO PÓS-LABORAL (A partir das 18:05)
   useEffect(() => {
-    // Só monitoriza se houver um cronómetro ativo
     if (!activeTimerTask) {
       setShowIdleModal(false);
       return;
     }
 
-    let idleTimeout;
+    const checkPostLaboral = async () => {
+      const now = new Date();
+      const currentHour = now.getHours();
+      const currentMinute = now.getMinutes();
 
-    const resetIdleTimer = () => {
-      // 🕒 VERIFICAÇÃO DE HORÁRIO: Só ativa o controlo de inatividade fora das 09:00 às 18:00
-      const currentHour = new Date().getHours();
-      const isWorkingHours = currentHour >= 9 && currentHour < 18;
+      // Verifica se já passou das 18:05
+      const isPast1805 = (currentHour > 18) || (currentHour === 18 && currentMinute >= 5);
 
-      if (isWorkingHours || showIdleModal) {
-        // Se estivermos no horário de trabalho (9h-18h), ignoramos a inatividade
-        return; 
+      if (isPast1805) {
+        // Mostra o modal de aviso pós-laboral
+        setShowIdleModal(true);
+        setIdleCountdown(60); // 60 segundos para responder ao aviso
       }
-
-      clearTimeout(idleTimeout);
-      idleTimeout = setTimeout(() => {
-        // Confirma novamente a hora antes de mostrar o modal
-        const checkHour = new Date().getHours();
-        if (!(checkHour >= 9 && checkHour < 18)) {
-          setShowIdleModal(true);
-          setIdleCountdown(60);
-        }
-      }, IDLE_LIMIT_MS);
     };
 
-    // Eventos do browser para detetar atividade do utilizador
-    const activityEvents = ['mousemove', 'keydown', 'mousedown', 'touchstart', 'scroll'];
-    activityEvents.forEach(evt => window.addEventListener(evt, resetIdleTimer));
+    // Dispara a verificação logo às 18:05 ou de 1 em 1 hora depois disso
+    const interval = setInterval(() => {
+      checkPostLaboral();
+    }, 60 * 60 * 1000); // Verifica a cada hora (ou podes ajustar para testar)
 
-    resetIdleTimer();
+    return () => clearInterval(interval);
+  }, [activeTimerTask]);
 
-    return () => {
-      clearTimeout(idleTimeout);
-      activityEvents.forEach(evt => window.removeEventListener(evt, resetIdleTimer));
-    };
-  }, [activeTimerTask, showIdleModal]);
-
-  // Contagem decrescente do Modal de Aviso (60 segundos)
+  // Contagem decrescente do Modal de Aviso (60 segundos para responder)
   useEffect(() => {
     let timer;
     if (showIdleModal && idleCountdown > 0) {
@@ -1394,11 +1473,60 @@ const fetchWeekStatus = async () => {
         setIdleCountdown(prev => prev - 1);
       }, 1000);
     } else if (showIdleModal && idleCountdown <= 0) {
-      // Tempo esgotado -> Parar cronómetro automaticamente e descontar os 15 min de inatividade
-      handleAutoStopIdleTimer();
+      // ⏳ Tempo esgotado e NINGUÉM RESPONDEU ao aviso!
+      handleTimeoutNoResponse();
     }
     return () => clearInterval(timer);
   }, [showIdleModal, idleCountdown]);
+
+  // Ação quando o utilizador NÃO RESPONDEU ao aviso de inatividade
+  const handleTimeoutNoResponse = async () => {
+    setShowIdleModal(false);
+    if (!activeTimerTask) return;
+
+    const now = new Date();
+    const currentHour = now.getHours();
+
+    // Se for exatamente o primeiro aviso das 18:05 (ou por volta das 18h), 
+    // para apenas o cronómetro e regista o tempo normal acumulado.
+    // Nos avisos seguintes (de hora a hora, ex: 19h, 20h...), retira 1 hora ao tempo.
+    const isFirst18hAlert = currentHour === 18;
+
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      let sessionHours = secondsElapsed / 3600;
+
+      if (!isFirst18hAlert) {
+        // Retira 1 hora devido à ausência de resposta num ciclo horário posterior
+        sessionHours = Math.max(0, sessionHours - 1.0);
+      }
+
+      const endTime = new Date().toISOString();
+
+      await axios.post(`${API_URL}/tickets/${activeTimerTask.id}/stop-timer`, { 
+        session_hours: sessionHours,
+        start_time: timerStartTime,
+        end_time: endTime
+      }, { headers });
+
+      // Limpa o estado local do cronómetro
+      localStorage.removeItem('flowpulse_activeTimerTask');
+      localStorage.removeItem('flowpulse_timerStartTime');
+      setActiveTimerTask(null);
+      setSecondsElapsed(0);
+      setTimerStartTime(null);
+      fetchData();
+      fetchActiveWorkers();
+
+      if (isFirst18hAlert) {
+        alert("⏱️ Como não respondeste ao aviso das 18:05, o cronómetro foi parado e o tempo foi registado na tarefa.");
+      } else {
+        alert("⚠️ Ausência de resposta ao aviso horário. O cronómetro foi parado e foram penalizadas ⏱️ 1 hora ao registo.");
+      }
+    } catch (err) {
+      console.error("Erro ao processar timeout de inatividade pós-laboral.");
+    }
+  };
 
   // Agarrar uma tarefa que ainda não tem dono, sem precisar de arrancar o cronómetro
   const handleGrabTask = async (ticket) => {
@@ -1922,7 +2050,10 @@ const fetchWeekStatus = async () => {
       }
 
       setShowEditTeamModal(false);
-      fetchData();
+      await fetchData();
+      if (chatContext === 'project') {
+        await fetchChatRooms();
+      }
       alert('Equipa atualizada com sucesso!');
     } catch (err) {
       alert('Erro ao atualizar equipa.');
@@ -2177,6 +2308,27 @@ const fetchWeekStatus = async () => {
 
     try {
       const headers = { Authorization: `Bearer ${token}` };
+
+      // 1. Se esta tarefa tem o cronómetro a correr, para-o e regista o tempo antes de mudar o estado
+      if (activeTimerTask && activeTimerTask.id === ticketId) {
+        const hoursSpent = secondsElapsed / 3600;
+        const endTime = new Date().toISOString();
+
+        await axios.post(`${API_URL}/tickets/${ticketId}/stop-timer`, {
+          session_hours: hoursSpent,
+          start_time: timerStartTime,
+          end_time: endTime
+        }, { headers });
+
+        // Limpa os dados do localStorage e reseta os estados do cronómetro no frontend
+        localStorage.removeItem('flowpulse_activeTimerTask');
+        localStorage.removeItem('flowpulse_timerStartTime');
+        setActiveTimerTask(null);
+        setSecondsElapsed(0);
+        setTimerStartTime(null);
+      }
+
+      // 2. Atualiza o estado da tarefa para o novo
       let updatePayload = { status: newStat };
       await axios.put(`${API_URL}/tickets/${ticketId}`, updatePayload, { headers });
 
@@ -2294,8 +2446,8 @@ const fetchWeekStatus = async () => {
   const availableProjects = isAdmin ? projects : projects.filter(p => !p.team_id || availableTeamIds.includes(p.team_id));
   const availableProjectIds = availableProjects.map(p => p.id);
 
-  // Líder de Equipa = dono (owner_id) de pelo menos uma das suas equipas, ou tem o cargo global de Líder de Equipa
-  const isTeamLeader = isTeamLeaderRole || availableTeams.some(t => t.owner_id === currentUserInfo.id);
+  // Líder de Equipa = dono (owner_id) ou líder (leader_id) de pelo menos uma das suas equipas
+  const isTeamLeader = availableTeams.some(t => t.owner_id === currentUserInfo.id || t.leader_id === currentUserInfo.id);
   // Admin, Manager e Líder de Equipa veem todas as tarefas dos projetos a que têm acesso; um membro normal só vê as suas
   const canSeeProjectTickets = isManagerOrAdmin || isTeamLeader;
   // 🔍 Inclui tickets onde o colaborador tem subtarefas atribuídas
@@ -2483,10 +2635,10 @@ const fetchWeekStatus = async () => {
     return user.name && user.name.trim() !== '' ? user.name : user.email;
   };
 
-  // Formata datas/horas vindas do backend garantindo interpretação correta como UTC
+  // Função auxiliar para forçar a conversão correta para a hora local de Portugal
   const formatLocalDateTime = (dateString) => {
     if (!dateString) return '';
-    // Se a string da BD não terminar em 'Z' (UTC) nem tiver fuso horário, adicionamos o 'Z' para o browser converter bem
+    // Adiciona o 'Z' se não o tiver, para o JS saber que a data da BD está em UTC
     const isoStr = dateString.endsWith('Z') || dateString.includes('+') ? dateString : dateString + 'Z';
     return new Date(isoStr).toLocaleString('pt-PT', {
       timeZone: 'Europe/Lisbon',
@@ -3185,6 +3337,13 @@ const fetchWeekStatus = async () => {
                               {ticket.due_date && <span>📅 <strong>{ticket.due_date.split('T')[0]}</strong></span>}
                               {assignee && <span className="text-emerald-400">👤 {assignee}</span>}
                             </div>
+                            {/* Se houver tempo de revisão registado, aparece aqui destacado no card */}
+                            {Number(ticket.review_tracked_hours || 0) > 0 && (
+                              <div className="mt-2 flex items-center gap-1.5 text-[11px] font-mono text-amber-400 bg-amber-500/10 border border-amber-500/20 px-2 py-1 rounded-lg w-fit ml-6">
+                                <span>🔍 Revisão:</span>
+                                <span className="font-bold">{formatToHHMM(Number(ticket.review_tracked_hours))}</span>
+                              </div>
+                            )}
                           </div>
                           <div className="flex items-center gap-2">
                             {!isDone && (
@@ -3992,6 +4151,15 @@ const fetchWeekStatus = async () => {
                               {/* CAIXA DE CONHECIMENTO (PROBLEMA + SOLUÇÃO + ANEXOS) */}
                               <div className="bg-zinc-900/50 p-4 rounded-xl border border-zinc-800/60 space-y-4">
                                 
+                                {/* RESUMO DE TEMPOS */}
+                                <div className="flex flex-wrap items-center gap-4 text-xs font-mono pb-3 border-b border-zinc-800/60">
+                                  <span className="text-zinc-300">🎯 Previsto: <strong>{formatToHHMM(ticket.estimated_hours)}</strong></span>
+                                  <span className="text-blue-400">⏱️ Real: <strong>{formatToHHMM(ticket.tracked_hours)}</strong></span>
+                                  {Number(ticket.review_tracked_hours || 0) > 0 && (
+                                    <span className="text-amber-400">🔍 Revisão: <strong>{formatToHHMM(ticket.review_tracked_hours)}</strong></span>
+                                  )}
+                                </div>
+
                                 {/* PROBLEMA ORIGINAL */}
                                 <div>
                                   <p className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider mb-1.5 flex items-center gap-1.5">
@@ -4109,7 +4277,7 @@ const fetchWeekStatus = async () => {
                                   key={ticket.id}
                                   draggable
                                   onDragStart={(e) => handleDragStart(e, ticket.id)}
-                                  onClick={() => handleOpenEditModal(ticket)}
+                                  onClick={() => { setSelectedViewTicket(ticket); setShowViewModal(true); }}
                                   className={`bg-zinc-900/90 border p-3.5 rounded-2xl shadow-sm transition-all duration-200 cursor-pointer flex flex-col gap-3 group relative hover:shadow-md ${
                                     ticket.is_running 
                                       ? 'border-emerald-500/50 shadow-[0_0_12px_rgba(16,185,129,0.15)] ring-1 ring-emerald-500/30' 
@@ -4294,6 +4462,14 @@ const fetchWeekStatus = async () => {
                                           />
                                         </div>
 
+                                        {/* 🔍 Tempo de Revisão no Card do Kanban */}
+                                        {Number(ticket.review_tracked_hours || 0) > 0 && (
+                                          <div className="mt-2 flex items-center gap-1.5 text-[11px] font-mono text-amber-400 bg-amber-500/10 border border-amber-500/20 px-2 py-1 rounded-lg w-fit">
+                                            <span>🔍 Revisão:</span>
+                                            <span className="font-bold">{formatToHHMM(ticket.review_tracked_hours)}</span>
+                                          </div>
+                                        )}
+
                                         {/* TEMPO EM HH:MM (Atualiza segundo a segundo enquanto trabalhas) */}
                                         <div className="flex flex-col gap-2">
                                           <div className="flex items-center justify-between text-[11px]">
@@ -4348,7 +4524,11 @@ const fetchWeekStatus = async () => {
                         const assignee = getAssigneeName(ticket.assigned_to_id);
                         const clientNameStr = getClientName(ticket.client_id);
                         return (
-                          <div key={ticket.id} className={`p-5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 transition ${isDone ? 'bg-zinc-900/30 opacity-60' : 'hover:bg-zinc-850/50'}`}>
+                          <div
+                            key={ticket.id}
+                            onClick={() => { setSelectedViewTicket(ticket); setShowViewModal(true); }}
+                            className={`p-5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 transition cursor-pointer ${isDone ? 'bg-zinc-900/30 opacity-60' : 'hover:bg-zinc-850/50'}`}
+                          >
                             <div className="space-y-1">
                               <div className="flex items-center gap-3">
                                 <span className="text-xs text-zinc-500 font-mono">#{ticket.id}</span>
@@ -4414,8 +4594,15 @@ const fetchWeekStatus = async () => {
                                 {ticket.due_date && <span>📅 <strong>{ticket.due_date.split('T')[0]}</strong></span>}
                                 {assignee && <span className="text-emerald-400">👤 {assignee}</span>}
                               </div>
+                              {/* 🔍 Tempo de Revisão no Card do Kanban */}
+                              {Number(ticket.review_tracked_hours || 0) > 0 && (
+                                <div className="mt-2 flex items-center gap-1.5 text-[11px] font-mono text-amber-400 bg-amber-500/10 border border-amber-500/20 px-2 py-1 rounded-lg w-fit">
+                                  <span>🔍 Revisão:</span>
+                                  <span className="font-bold">{formatToHHMM(Number(ticket.review_tracked_hours))}</span>
+                                </div>
+                              )}
                             </div>
-                            <div className="flex items-center gap-3">
+                            <div className="flex items-center gap-3" onClick={(e) => e.stopPropagation()}>
                               <select 
                                 value={ticket.status} 
                                 onChange={e => handleStatusChange(ticket.id, e.target.value)}
@@ -4754,29 +4941,42 @@ const fetchWeekStatus = async () => {
                     {/* Lista de Colaboradores para escolher participantes do Subchat */}
                     <div className="flex-1 overflow-y-auto space-y-1 pr-1">
                       {(() => {
-                        // 1. Se houver um projeto selecionado para o subchat:
                         let targetUsers = usersList.filter(u => u.id !== currentUserInfo.id);
 
                         if (newChatProjectId) {
-                          const projObj = availableProjects.find(p => p.id === Number(newChatProjectId));
+                          const projObj = (projects || availableProjects || []).find(
+                            p => String(p.id) === String(newChatProjectId)
+                          );
+
                           if (projObj) {
-                            // Recolhe todos os IDs de equipas associadas ao projeto (seja em team_ids ou teams)
-                            const projTeamIds = projObj.team_ids || (projObj.teams ? projObj.teams.map(t => t.id) : (projObj.team_id ? [projObj.team_id] : []));
+                            // Recolhe todos os IDs de equipas associadas ao projeto
+                            const projTeamIds = [
+                              ...(Array.isArray(projObj.team_ids) ? projObj.team_ids : []),
+                              ...(Array.isArray(projObj.teams) ? projObj.teams.map(t => t.id) : []),
+                              ...(projObj.team_id ? [projObj.team_id] : [])
+                            ];
 
                             const allowedMemberIds = new Set();
 
-                            // Vai buscar os membros de cada equipa associada ao projeto
-                            teams
-                              .filter(t => projTeamIds.includes(t.id))
-                              .forEach(t => {
+                            // 1. Membros das equipas ligadas ao projeto
+                            teams.forEach(t => {
+                              const teamHasProject = 
+                                projTeamIds.includes(t.id) || 
+                                (Array.isArray(t.project_ids) && t.project_ids.includes(Number(newChatProjectId))) ||
+                                t.project_id === Number(newChatProjectId);
+
+                              if (teamHasProject) {
                                 if (t.owner_id) allowedMemberIds.add(t.owner_id);
                                 if (t.leader_id) allowedMemberIds.add(t.leader_id);
-                                if (t.members && Array.isArray(t.members)) {
-                                  t.members.forEach(m => allowedMemberIds.add(m.id));
+                                if (Array.isArray(t.members)) {
+                                  t.members.forEach(m => allowedMemberIds.add(m.id || m));
                                 }
-                              });
+                              }
+                            });
 
-                            // Filtra estritamente para que só apareçam os membros permitidos
+                            // 2. Gestor do projeto
+                            if (projObj.manager_id) allowedMemberIds.add(projObj.manager_id);
+
                             targetUsers = targetUsers.filter(u => allowedMemberIds.has(u.id));
                           }
                         }
@@ -4784,7 +4984,7 @@ const fetchWeekStatus = async () => {
                         if (targetUsers.length === 0) {
                           return (
                             <div className="text-center py-8 text-xs text-zinc-500 italic">
-                              Nenhum membro válido nas equipas deste projeto.
+                              Nenhum membro encontrado nas equipas deste projeto.
                             </div>
                           );
                         }
@@ -4831,11 +5031,16 @@ const fetchWeekStatus = async () => {
                     {selectedUserIdsForNewChat.length > 0 && (
                       <button 
                         onClick={async () => {
+                          if (!groupChatName.trim()) {
+                            alert("Por favor, introduz um nome para o subchat.");
+                            return;
+                          }
+
                           const createRoomRequest = async (force = false) => {
                             try {
                               const headers = { Authorization: `Bearer ${token}` };
                               const payload = {
-                                name: groupChatName.trim() || `Canal (${selectedUserIdsForNewChat.length + 1})`,
+                                name: groupChatName.trim(),
                                 type: newChatProjectId ? "project" : (selectedUserIdsForNewChat.length === 1 ? "direct" : "group"),
                                 member_ids: selectedUserIdsForNewChat,
                                 project_id: newChatProjectId ? Number(newChatProjectId) : null,
@@ -4857,7 +5062,7 @@ const fetchWeekStatus = async () => {
                               await fetchChatRooms();
                               openChatRoom({ id: res.data.room_id, name: res.data.name });
                             } catch (err) {
-                              alert("Erro ao criar sala de chat.");
+                              alert(err.response?.data?.detail || "Erro ao criar sala de chat.");
                             }
                           };
 
@@ -4949,6 +5154,18 @@ const fetchWeekStatus = async () => {
                           >
                             {loadingAiChat ? '✨ A resumir...' : '✨ Resumir Chat com IA'}
                           </button>
+
+                          {/* Botão para Apagar o Canal/Subchat */}
+                          {!activeChatRoom.is_general && (
+                            <button 
+                              type="button"
+                              onClick={handleDeleteChatRoom}
+                              className="bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/30 text-xs font-semibold px-3 py-2 rounded-xl transition flex items-center gap-1.5 cursor-pointer"
+                              title="Apagar este subchat"
+                            >
+                              🗑️ Apagar Canal
+                            </button>
+                          )}
                         </div>
                       </div>
 
@@ -4973,43 +5190,108 @@ const fetchWeekStatus = async () => {
                       </div>
                     </div>
 
-                    {/* GAVETA LATERAL / DROPDOWN DE MEMBROS DA SALA */}
+                    {/* GAVETA DE GESTÃO DE PARTICIPANTES */}
                     {showMembersDrawer && (
-                      <div className="bg-zinc-950 border-b border-zinc-800 p-3 space-y-2 max-h-48 overflow-y-auto shrink-0 animate-fadeIn">
-                        <div className="flex justify-between items-center mb-1">
-                          <p className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
-                            Participantes do Canal ({activeChatRoom.members?.length || 0})
+                      <div className="bg-zinc-950 border-b border-zinc-800 p-4 space-y-4 max-h-72 overflow-y-auto shrink-0 animate-fadeIn">
+                        <div className="flex justify-between items-center">
+                          <p className="text-[11px] font-bold uppercase tracking-wider text-zinc-400">
+                            Participantes do Subchat ({activeChatRoom.members?.length || 0})
                           </p>
                           <button 
                             type="button"
                             onClick={() => setShowMembersDrawer(false)}
-                            className="text-zinc-500 hover:text-zinc-300 text-xs"
+                            className="text-zinc-500 hover:text-zinc-300 text-xs cursor-pointer"
                           >
-                            ✕
+                            ✕ Fechar
                           </button>
                         </div>
 
+                        {/* SELETOR PARA ADICIONAR NOVO MEMBRO (apenas utilizadores do projeto) */}
+                        {!activeChatRoom.is_general && activeChatRoom.project_id && (
+                          <div className="flex gap-2 items-center bg-zinc-900 p-2 rounded-xl border border-zinc-800">
+                            <select
+                              id="selectNewRoomMember"
+                              className="flex-1 bg-zinc-950 border border-zinc-800 rounded-lg px-3 py-1.5 text-xs text-zinc-200 outline-none focus:border-blue-500"
+                              defaultValue=""
+                            >
+                              <option value="" disabled>Adicionar membro do projeto...</option>
+                              {(() => {
+                                const currentMemberIds = (activeChatRoom.members || []).map(m => m.id);
+                                const projObj = availableProjects.find(p => p.id === activeChatRoom.project_id);
+                                if (!projObj) return null;
+
+                                const projTeamIds = projObj.team_ids || (projObj.teams ? projObj.teams.map(t => t.id) : (projObj.team_id ? [projObj.team_id] : []));
+                                const allowedUserIds = new Set();
+
+                                teams
+                                  .filter(t => projTeamIds.includes(t.id))
+                                  .forEach(t => {
+                                    if (t.owner_id) allowedUserIds.add(t.owner_id);
+                                    if (t.leader_id) allowedUserIds.add(t.leader_id);
+                                    if (t.members) t.members.forEach(m => allowedUserIds.add(m.id));
+                                  });
+
+                                return usersList
+                                  .filter(u => allowedUserIds.has(u.id) && !currentMemberIds.includes(u.id))
+                                  .map(u => (
+                                    <option key={u.id} value={u.id}>
+                                      + {u.name || u.email}
+                                    </option>
+                                  ));
+                              })()}
+                            </select>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const sel = document.getElementById("selectNewRoomMember");
+                                if (sel && sel.value) {
+                                  handleAddMemberToActiveRoom(Number(sel.value));
+                                  sel.value = "";
+                                }
+                              }}
+                              className="bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold px-3 py-1.5 rounded-lg transition shrink-0 cursor-pointer shadow-sm"
+                            >
+                              Adicionar
+                            </button>
+                          </div>
+                        )}
+
+                        {/* LISTA DE MEMBROS ATUAIS */}
                         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2">
                           {(activeChatRoom.members || []).map(member => {
                             const isMe = member.id === currentUserInfo.id;
                             return (
                               <div 
                                 key={member.id} 
-                                className={`p-2 rounded-xl border flex items-center gap-2.5 text-xs ${
+                                className={`p-2.5 rounded-xl border flex items-center justify-between gap-2 text-xs ${
                                   isMe 
                                     ? 'bg-blue-600/10 border-blue-500/30 text-blue-200' 
                                     : 'bg-zinc-900 border-zinc-800 text-zinc-300'
                                 }`}
                               >
-                                <div className="w-6 h-6 rounded-full bg-zinc-800 border border-zinc-700 flex items-center justify-center font-bold text-[10px] text-zinc-200 shrink-0">
-                                  {(member.name || member.email).charAt(0).toUpperCase()}
+                                <div className="flex items-center gap-2.5 min-w-0 flex-1 truncate">
+                                  <div className="w-6 h-6 rounded-full bg-zinc-800 border border-zinc-700 flex items-center justify-center font-bold text-[10px] text-zinc-200 shrink-0">
+                                    {(member.name || member.email).charAt(0).toUpperCase()}
+                                  </div>
+                                  <div className="min-w-0 flex-1 truncate">
+                                    <p className="font-medium truncate">
+                                      {member.name || member.email} {isMe && <span className="text-[10px] text-blue-400 font-bold">(Tu)</span>}
+                                    </p>
+                                    <p className="text-[10px] text-zinc-500 truncate">{member.email}</p>
+                                  </div>
                                 </div>
-                                <div className="min-w-0 flex-1 truncate">
-                                  <p className="font-medium truncate">
-                                    {member.name || member.email} {isMe && <span className="text-[10px] text-blue-400 font-bold">(Tu)</span>}
-                                  </p>
-                                  <p className="text-[10px] text-zinc-500 truncate">{member.email}</p>
-                                </div>
+
+                                {/* Botão para remover participante (não permitido no chat geral) */}
+                                {!activeChatRoom.is_general && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleRemoveMemberFromActiveRoom(member.id)}
+                                    className="text-zinc-500 hover:text-red-400 p-1 rounded transition text-xs font-bold shrink-0 cursor-pointer"
+                                    title="Remover participante"
+                                  >
+                                    ✕
+                                  </button>
+                                )}
                               </div>
                             );
                           })}
@@ -5100,12 +5382,37 @@ const fetchWeekStatus = async () => {
               "julho", "agosto", "setembro", "outubro", "novembro", "dezembro"
             ];
 
+            const todayString = getLocalDateString(new Date());
+            const nowMs = new Date().getTime();
+            const hours72Ms = 72 * 60 * 60 * 1000; // 72 horas em milissegundos
+
             const calendarFilteredTickets = availableTickets.filter(t => {
               if (!t.due_date) return false;
-              if (calendarTeamFilter === 'all') return true;
-              
-              const teamProjIds = availableProjects.filter(p => p.team_id === Number(calendarTeamFilter)).map(p => p.id);
-              return teamProjIds.includes(t.project_id);
+
+              const isDone = t.status && ['done', 'concluído', 'concluido'].includes(t.status.toLowerCase());
+              const dueDateStr = t.due_date.split('T')[0];
+
+              // 1. Filtro de Equipa
+              if (calendarTeamFilter !== 'all') {
+                const teamProjIds = availableProjects.filter(p => p.team_id === Number(calendarTeamFilter)).map(p => p.id);
+                if (!teamProjIds.includes(t.project_id)) return false;
+              }
+
+              // 2. Filtro de Tarefas Atrasadas (Prazo menor que hoje e não concluída)
+              if (filterOverdue) {
+                if (isDone || dueDateStr >= todayString) return false;
+              }
+
+              // 3. Filtro de Menos de 72h para o fim (Entre agora e daqui a 72h, não concluídas)
+              if (filterUpcoming72h) {
+                if (isDone) return false;
+                const dueMs = new Date(t.due_date).getTime();
+                const diffMs = dueMs - nowMs;
+                // Se já passou (atrasada) ou se falta mais de 72h, esconde. Queremos estritamente entre 0h e 72h.
+                if (diffMs < 0 || diffMs > hours72Ms) return false;
+              }
+
+              return true;
             });
 
             const firstDayIndex = new Date(year, month, 1).getDay();
@@ -5116,21 +5423,50 @@ const fetchWeekStatus = async () => {
             const nextMonth = () => setCurrentDate(new Date(year, month + 1, 1));
             const goToToday = () => setCurrentDate(new Date());
 
-            const todayString = getLocalDateString(new Date());
-
             return (
               <div className="flex flex-col h-[calc(100vh-100px)]">
-                <div className="flex items-center justify-between mb-6 shrink-0">
+                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-6 shrink-0">
                   <div>
                     <h1 className="text-xl font-bold tracking-tight">Calendário</h1>
                     <p className="text-xs text-zinc-400">Visualize prazos e marcos dos projetos</p>
                   </div>
 
-                  <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-2 flex-wrap">
+
+                    {/* BOTÃO FILTRO: ATRASADAS */}
+                    <button
+                      onClick={() => {
+                        setFilterOverdue(!filterOverdue);
+                        if (!filterOverdue) setFilterUpcoming72h(false); // Limpa o outro para não colidir
+                      }}
+                      className={`px-3 py-2 rounded-xl text-xs font-medium transition border cursor-pointer flex items-center gap-1.5 ${
+                        filterOverdue 
+                          ? 'bg-red-500/20 text-red-400 border-red-500/40 shadow-sm' 
+                          : 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-zinc-200'
+                      }`}
+                    >
+                      🚨 Atrasadas
+                    </button>
+
+                    {/* BOTÃO FILTRO: MENOS DE 72H */}
+                    <button
+                      onClick={() => {
+                        setFilterUpcoming72h(!filterUpcoming72h);
+                        if (!filterUpcoming72h) setFilterOverdue(false); // Limpa o outro para não colidir
+                      }}
+                      className={`px-3 py-2 rounded-xl text-xs font-medium transition border cursor-pointer flex items-center gap-1.5 ${
+                        filterUpcoming72h 
+                          ? 'bg-amber-500/20 text-amber-400 border-amber-500/40 shadow-sm' 
+                          : 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-zinc-200'
+                      }`}
+                    >
+                      ⏳ Menos de 72h
+                    </button>
+
                     <select 
                       value={calendarTeamFilter} 
                       onChange={e => setCalendarTeamFilter(e.target.value)}
-                      className="bg-zinc-900 border border-zinc-800 text-xs text-zinc-300 rounded-xl px-3 py-2 focus:outline-none"
+                      className="bg-zinc-900 border border-zinc-800 text-xs text-zinc-300 rounded-xl px-3 py-2 focus:outline-none cursor-pointer"
                     >
                       <option value="all">Todas as equipas</option>
                       {availableTeams.map(t => (
@@ -5138,7 +5474,7 @@ const fetchWeekStatus = async () => {
                       ))}
                     </select>
 
-                    <button onClick={() => fetchData()} className="p-2 bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-zinc-100 rounded-xl transition">
+                    <button onClick={() => fetchData()} className="p-2 bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-zinc-100 rounded-xl transition cursor-pointer">
                       <RefreshCw className="w-4 h-4" />
                     </button>
                   </div>
@@ -5147,13 +5483,13 @@ const fetchWeekStatus = async () => {
                 <div className="bg-zinc-900/40 border border-zinc-800/80 rounded-2xl p-6 flex-1 flex flex-col shadow-xl min-h-[500px]">
                   <div className="flex items-center justify-between mb-6">
                     <div className="flex items-center gap-2">
-                      <button onClick={prevMonth} className="p-2 bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-zinc-100 rounded-xl transition">
+                      <button onClick={prevMonth} className="p-2 bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-zinc-100 rounded-xl transition cursor-pointer">
                         <ChevronLeft className="w-4 h-4" />
                       </button>
-                      <button onClick={nextMonth} className="p-2 bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-zinc-100 rounded-xl transition">
+                      <button onClick={nextMonth} className="p-2 bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-zinc-100 rounded-xl transition cursor-pointer">
                         <ChevronRight className="w-4 h-4" />
                       </button>
-                      <button onClick={goToToday} className="px-3 py-2 bg-zinc-900 border border-zinc-800 text-zinc-300 hover:text-zinc-100 text-xs rounded-xl transition">
+                      <button onClick={goToToday} className="px-3 py-2 bg-zinc-900 border border-zinc-800 text-zinc-300 hover:text-zinc-100 text-xs rounded-xl transition cursor-pointer">
                         Hoje
                       </button>
                     </div>
@@ -5201,7 +5537,6 @@ const fetchWeekStatus = async () => {
 
                           <div className="flex-1 overflow-y-auto space-y-1 pr-0.5">
                             {dayTasks.map(ticket => {
-                              const isDone = ticket.status && ['done', 'concluído', 'concluido'].includes(ticket.status.toLowerCase());
                               return (
                                 <div 
                                   key={ticket.id} 
@@ -7375,6 +7710,32 @@ const fetchWeekStatus = async () => {
                 <p className="mt-0.5">{selectedTicketDetails.status} • <span className="font-semibold">{selectedTicketDetails.priority}</span></p>
               </div>
 
+              {selectedTicketDetails.review_tracked_hours > 0 && (
+                <div className="grid grid-cols-2 gap-3 bg-zinc-950 border border-zinc-800 p-4 rounded-xl">
+
+                  {/* Horas de Execução Normal */}
+                  <div>
+                    <span className="text-[10px] font-mono text-zinc-500 uppercase tracking-wider block mb-1">
+                      ⏱️ Tempo de Execução
+                    </span>
+                    <span className="text-sm font-bold text-zinc-100 font-mono">
+                      {formatToHHMM(selectedTicketDetails.tracked_hours || 0)}
+                    </span>
+                  </div>
+
+                  {/* Horas de Revisão (Separado à parte) */}
+                  <div>
+                    <span className="text-[10px] font-mono text-amber-500/80 uppercase tracking-wider block mb-1">
+                      🔍 Tempo de Revisão
+                    </span>
+                    <span className="text-sm font-bold text-amber-400 font-mono">
+                      {formatToHHMM(selectedTicketDetails.review_tracked_hours || 0)}
+                    </span>
+                  </div>
+
+                </div>
+              )}
+
               <div>
                 <span className="block text-xs font-medium text-zinc-500 uppercase">Descrição Inicial</span>
                 <p className="mt-0.5 bg-zinc-950 p-3 rounded-xl border border-zinc-800 text-zinc-300">
@@ -7561,118 +7922,178 @@ const fetchWeekStatus = async () => {
 
       {/* MODAL CRIAR PEDIDO DE FEEDBACK (GESTOR) */}
       {showCreateFeedbackModal && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4">
-            <div className="flex justify-between items-center pb-2 border-b border-zinc-800">
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fadeIn" onClick={() => setShowCreateFeedbackModal(false)}>
+          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl max-w-lg w-full p-6 shadow-2xl flex flex-col max-h-[90vh]" onClick={e => e.stopPropagation()}>
+
+            {/* Cabeçalho */}
+            <div className="flex items-center justify-between mb-4 pb-3 border-b border-zinc-800">
               <div>
-                <span className="text-[10px] text-amber-400 font-bold uppercase tracking-wider">Qualidade & Avaliação</span>
-                <h3 className="text-base font-bold text-zinc-100">Solicitar Feedback</h3>
+                <span className="text-[10px] font-mono text-zinc-500 uppercase tracking-wider">Qualidade & Avaliação</span>
+                <h2 className="text-base font-bold text-zinc-100">Solicitar Feedback</h2>
               </div>
-              <button
-                type="button"
-                onClick={() => setShowCreateFeedbackModal(false)}
-                className="text-zinc-500 hover:text-zinc-300 text-sm cursor-pointer"
-              >
+              <button onClick={() => setShowCreateFeedbackModal(false)} className="p-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-xl transition cursor-pointer">
                 ✕
               </button>
             </div>
 
-            <form onSubmit={handleCreateFeedbackRequest} className="space-y-3.5">
+            {/* ABAS: Pontual vs Cíclico */}
+            <div className="grid grid-cols-2 bg-zinc-950 border border-zinc-800 p-1 rounded-xl text-xs mb-4">
+              <button
+                type="button"
+                onClick={() => setFeedbackMode('pontual')}
+                className={`py-2 rounded-lg font-medium transition cursor-pointer flex items-center justify-center gap-1.5 ${
+                  feedbackMode === 'pontual' ? 'bg-zinc-800 text-white shadow-sm' : 'text-zinc-400 hover:text-zinc-200'
+                }`}
+              >
+                📅 Pedido Pontual
+              </button>
+              <button
+                type="button"
+                onClick={() => setFeedbackMode('ciclico')}
+                className={`py-2 rounded-lg font-medium transition cursor-pointer flex items-center justify-center gap-1.5 ${
+                  feedbackMode === 'ciclico' ? 'bg-zinc-800 text-white shadow-sm' : 'text-zinc-400 hover:text-zinc-200'
+                }`}
+              >
+                🔄 Pedido Cíclico
+              </button>
+            </div>
+
+            {/* Formulário com Scroll */}
+            <form onSubmit={handleCreateFeedbackRequest} className="space-y-4 flex-1 overflow-y-auto pr-1">
               <div>
-                <label className="block text-xs font-medium text-zinc-400 mb-1">Título do Pedido *</label>
+                <label className="block text-xs font-medium text-zinc-400 mb-1.5 uppercase tracking-wider">Título do Pedido *</label>
                 <input
                   type="text"
                   value={newFeedbackTitle}
-                  onChange={(e) => setNewFeedbackTitle(e.target.value)}
-                  className="w-full bg-zinc-950 border border-zinc-800 rounded-xl p-2.5 text-xs text-zinc-200 outline-none focus:border-amber-500"
+                  onChange={e => setNewFeedbackTitle(e.target.value)}
                   required
+                  className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-xs text-zinc-100 focus:outline-none focus:border-zinc-700 transition"
                 />
               </div>
 
               <div>
-                <label className="block text-xs font-medium text-zinc-400 mb-1">Instruções / O que avaliar?</label>
+                <label className="block text-xs font-medium text-zinc-400 mb-1.5 uppercase tracking-wider">Instruções / O que avaliar?</label>
                 <textarea
                   value={newFeedbackDesc}
-                  onChange={(e) => setNewFeedbackDesc(e.target.value)}
-                  placeholder="Ex: Como correu a instalação no cliente? Houve imprevistos técnicos?"
-                  className="w-full bg-zinc-950 border border-zinc-800 rounded-xl p-2.5 text-xs text-zinc-200 outline-none focus:border-amber-500"
-                  rows={2}
+                  onChange={e => setNewFeedbackDesc(e.target.value)}
+                  rows="3"
+                  placeholder="Ex: Como correu a instalação? Houve imprevistos?"
+                  className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-xs text-zinc-100 focus:outline-none focus:border-zinc-700 transition resize-none"
                 />
               </div>
 
-              <div>
-                <label className="block text-xs font-medium text-zinc-400 mb-1">Prazo Limite *</label>
-                <input
-                  type="datetime-local"
-                  value={newFeedbackDeadline}
-                  onChange={(e) => setNewFeedbackDeadline(e.target.value)}
-                  className="w-full bg-zinc-950 border border-zinc-800 rounded-xl p-2.5 text-xs text-zinc-200 outline-none focus:border-amber-500"
-                  required
-                />
+              {/* CAMPOS DINÂMICOS CONSOANTE A ABA */}
+              {feedbackMode === 'pontual' ? (
+                <div>
+                  <label className="block text-xs font-medium text-zinc-400 mb-1.5 uppercase tracking-wider">Prazo Limite *</label>
+                  <input
+                    type="datetime-local"
+                    value={newFeedbackDeadline}
+                    onChange={e => setNewFeedbackDeadline(e.target.value)}
+                    required
+                    className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-xs text-zinc-100 focus:outline-none focus:border-zinc-700 transition [color-scheme:dark]"
+                  />
+                </div>
+              ) : (
+                <div className="grid grid-cols-3 gap-2 bg-zinc-950 border border-zinc-800 p-3.5 rounded-xl">
+                  <div className="col-span-1">
+                    <label className="block text-[10px] font-semibold text-zinc-400 uppercase tracking-wider mb-1.5">A cada</label>
+                    <input
+                      type="number"
+                      min="1"
+                      max="30"
+                      value={cyclicIntervalNum}
+                      onChange={e => setCyclicIntervalNum(e.target.value)}
+                      className="w-full bg-zinc-900 border border-zinc-800 text-xs text-zinc-200 rounded-lg px-3 py-2 outline-none text-center font-bold"
+                    />
+                  </div>
+                  <div className="col-span-1">
+                    <label className="block text-[10px] font-semibold text-zinc-400 uppercase tracking-wider mb-1.5">Unidade</label>
+                    <select
+                      value={cyclicIntervalUnit}
+                      onChange={e => setCyclicIntervalUnit(e.target.value)}
+                      className="w-full bg-zinc-900 border border-zinc-800 text-xs text-zinc-200 rounded-lg px-3 py-2 outline-none cursor-pointer"
+                    >
+                      <option value="days">Dia(s)</option>
+                      <option value="weeks">Semana(s)</option>
+                    </select>
+                  </div>
+                  <div className="col-span-1">
+                    <label className="block text-[10px] font-semibold text-zinc-400 uppercase tracking-wider mb-1.5">Hora</label>
+                    <input
+                      type="time"
+                      value={cyclicTime}
+                      onChange={e => setCyclicTime(e.target.value)}
+                      className="w-full bg-zinc-900 border border-zinc-800 text-xs text-zinc-200 rounded-lg px-2 py-2 outline-none [color-scheme:dark]"
+                    />
+                  </div>
+                </div>
+              )}
+
+              {/* HISTÓRICO DE FEEDBACKS ANTERIORES DA TAREFA */}
+              <div className="pt-4 border-t border-zinc-800">
+                <p className="text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-3">
+                  📋 Histórico de Feedbacks desta Tarefa
+                </p>
+
+                <div className="space-y-2.5 max-h-40 overflow-y-auto pr-1">
+                  {taskFeedbackHistory.length === 0 ? (
+                    <div className="p-3 bg-zinc-950 border border-zinc-800 rounded-xl text-xs text-zinc-500 italic text-center">
+                      Ainda não foram pedidos feedbacks para esta tarefa.
+                    </div>
+                  ) : (
+                    taskFeedbackHistory.map(item => (
+                      <div
+                        key={item.id}
+                        onClick={() => setSelectedFeedbackDetailsModal(item)}
+                        className="p-3 bg-zinc-950 border border-zinc-800 hover:border-zinc-700 rounded-xl space-y-2 text-xs transition cursor-pointer group"
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="font-medium text-zinc-200 group-hover:text-blue-400 transition">{item.title}</span>
+                          <span className={`text-[10px] px-2 py-0.5 rounded font-medium ${item.responses && item.responses.length > 0 ? 'bg-emerald-500/10 text-emerald-400' : 'bg-amber-500/10 text-amber-400'}`}>
+                            {item.responses && item.responses.length > 0 ? 'Respondido' : 'Pendente'}
+                          </span>
+                        </div>
+
+                        {item.responses && item.responses.length > 0 ? (
+                          <div className="space-y-1.5 pt-1">
+                            {item.responses.map(resp => (
+                              <div key={resp.id} className="bg-zinc-900 p-2.5 rounded-lg border border-zinc-800 space-y-1">
+                                <div className="flex justify-between text-[10px] text-zinc-400 font-semibold">
+                                  <span>👤 {resp.user_name}</span>
+                                  <span>⭐ {resp.rating}/5</span>
+                                </div>
+                                <p className="text-zinc-200 text-xs truncate">{resp.comment || 'Sem comentário escrito.'}</p>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="text-[11px] text-zinc-500 italic">A aguardar resposta dos destinatários...</p>
+                        )}
+                      </div>
+                    ))
+                  )}
+                </div>
               </div>
 
-              <div className="flex gap-2 pt-2 border-t border-zinc-800">
+              {/* Botões do Rodapé */}
+              <div className="pt-4 mt-2 border-t border-zinc-800 flex justify-end gap-2">
                 <button
                   type="button"
                   onClick={() => setShowCreateFeedbackModal(false)}
-                  className="flex-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs font-medium py-2.5 rounded-xl transition cursor-pointer"
+                  className="bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-semibold px-4 py-2.5 rounded-xl transition cursor-pointer"
                 >
                   Cancelar
                 </button>
                 <button
                   type="submit"
-                  className="flex-1 bg-amber-500 hover:bg-amber-400 text-zinc-950 text-xs font-bold py-2.5 rounded-xl transition cursor-pointer shadow-lg shadow-amber-500/20"
+                  className="bg-amber-500 hover:bg-amber-400 text-zinc-950 text-xs font-bold px-5 py-2.5 rounded-xl transition cursor-pointer shadow-lg"
                 >
-                  Enviar Pedido
+                  {feedbackMode === 'pontual' ? 'Enviar Pedido Pontual' : 'Ativar Pedido Cíclico'}
                 </button>
               </div>
+
             </form>
-
-            {/* --- SECÇÃO DE HISTÓRICO DE FEEDBACKS DA TAREFA --- */}
-            <div className="mt-6 pt-4 border-t border-zinc-800">
-              <p className="text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-3">
-                📋 Histórico de Feedbacks desta Tarefa
-              </p>
-
-              <div className="space-y-2.5 max-h-48 overflow-y-auto pr-1">
-                {taskFeedbackHistory.length === 0 ? (
-                  <div className="p-3 bg-zinc-950 border border-zinc-800 rounded-xl text-xs text-zinc-500 italic text-center">
-                    Ainda não foram pedidos feedbacks para esta tarefa.
-                  </div>
-                ) : (
-                  taskFeedbackHistory.map(item => (
-                    <div 
-                      key={item.id} 
-                      onClick={() => setSelectedFeedbackDetailsModal(item)}
-                      className="p-3 bg-zinc-950 border border-zinc-800 hover:border-zinc-700 rounded-xl space-y-2 text-xs transition cursor-pointer group"
-                    >
-                      <div className="flex items-center justify-between">
-                        <span className="font-medium text-zinc-200 group-hover:text-blue-400 transition">{item.title}</span>
-                        <span className={`text-[10px] px-2 py-0.5 rounded font-medium ${item.responses && item.responses.length > 0 ? 'bg-emerald-500/10 text-emerald-400' : 'bg-amber-500/10 text-amber-400'}`}>
-                          {item.responses && item.responses.length > 0 ? 'Respondido' : 'Pendente'}
-                        </span>
-                      </div>
-
-                      {item.responses && item.responses.length > 0 ? (
-                        <div className="space-y-1.5 pt-1">
-                          {item.responses.map(resp => (
-                            <div key={resp.id} className="bg-zinc-900 p-2.5 rounded-lg border border-zinc-800 space-y-1">
-                              <div className="flex justify-between text-[10px] text-zinc-400 font-semibold">
-                                <span>👤 {resp.user_name}</span>
-                                <span>⭐ {resp.rating}/5</span>
-                              </div>
-                              <p className="text-zinc-200 text-xs truncate">{resp.comment || 'Sem comentário escrito.'}</p>
-                            </div>
-                          ))}
-                        </div>
-                      ) : (
-                        <p className="text-[11px] text-zinc-500 italic">A aguardar resposta dos destinatários...</p>
-                      )}
-                    </div>
-                  ))
-                )}
-              </div>
-            </div>
           </div>
         </div>
       )}
@@ -7740,8 +8161,28 @@ const fetchWeekStatus = async () => {
               </div>
             </div>
 
-            {/* Rodapé */}
-            <div className="pt-3 border-t border-zinc-800 flex justify-end">
+            {/* Rodapé do Pop-up de Detalhes com opção de Cancelar Pedido */}
+            <div className="pt-3 border-t border-zinc-800 flex items-center justify-between">
+              <button 
+                onClick={async () => {
+                  if (confirm("Tens a certeza que pretendes apagar/cancelar este pedido de feedback?")) {
+                    try {
+                      const headers = { Authorization: `Bearer ${token}` };
+                      // Podes criar uma rota para apagar ou usar a de cancelamento
+                      await axios.patch(`${API_URL}/feedback/requests/${selectedFeedbackDetailsModal.id}/cancel`, {}, { headers });
+                      alert("Pedido cancelado com sucesso!");
+                      setSelectedFeedbackDetailsModal(null);
+                      // Recarregar os dados do histórico aqui se necessário
+                    } catch (err) {
+                      alert("Erro ao cancelar o pedido.");
+                    }
+                  }
+                }}
+                className="bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 text-red-400 text-xs font-semibold px-3 py-2 rounded-xl transition cursor-pointer"
+              >
+                🗑️ Cancelar Pedido
+              </button>
+
               <button 
                 onClick={() => setSelectedFeedbackDetailsModal(null)} 
                 className="bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-semibold px-4 py-2 rounded-xl transition cursor-pointer"
@@ -7852,100 +8293,60 @@ const fetchWeekStatus = async () => {
 
       {/* MODAL DETALHADO DA BASE DE CONHECIMENTO */}
       {selectedKnowledgeTicket && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fadeIn" onClick={() => setSelectedKnowledgeTicket(null)}>
-          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl max-w-2xl w-full p-6 shadow-2xl flex flex-col max-h-[85vh] text-zinc-100" onClick={e => e.stopPropagation()}>
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fadeIn" onClick={() => setSelectedKnowledgeTicket(null)}>
+          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl max-w-xl w-full p-6 shadow-2xl flex flex-col max-h-[85vh]" onClick={e => e.stopPropagation()}>
             
-            {/* Cabeçalho */}
-            <div className="flex items-center justify-between pb-4 mb-4 border-b border-zinc-800">
-              <div className="flex items-center gap-3">
-                <span className="text-xs font-mono text-zinc-400 bg-zinc-800 px-2.5 py-1 rounded-lg">#{selectedKnowledgeTicket.id}</span>
-                <h2 className="text-base font-bold text-zinc-100">{selectedKnowledgeTicket.title}</h2>
-                {selectedKnowledgeTicket.task_type && selectedKnowledgeTicket.task_type !== 'Geral' && (
-                  <span className="text-[10px] px-2.5 py-0.5 rounded border border-purple-500/30 bg-purple-500/10 text-purple-400 font-medium">
-                    {selectedKnowledgeTicket.task_type}
-                  </span>
-                )}
+            <div className="flex items-center justify-between mb-4 pb-3 border-b border-zinc-800">
+              <div>
+                <span className="text-xs font-mono text-zinc-500">#{selectedKnowledgeTicket.id}</span>
+                <h2 className="text-base font-semibold text-zinc-100">{selectedKnowledgeTicket.title}</h2>
               </div>
-              <button 
-                onClick={() => setSelectedKnowledgeTicket(null)} 
-                className="p-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-xl transition cursor-pointer"
-              >
+              <button onClick={() => setSelectedKnowledgeTicket(null)} className="p-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-xl transition">
                 ✕
               </button>
             </div>
 
-            {/* Conteúdo com Scroll */}
             <div className="flex-1 overflow-y-auto space-y-4 pr-1">
               
-              {/* Metadados / Informações úteis */}
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 bg-zinc-950 p-3.5 rounded-xl border border-zinc-800 text-xs text-zinc-400">
-                <div>📁 Projeto: <strong className="text-zinc-200 block mt-0.5">{getProjectName(selectedKnowledgeTicket.project_id)}</strong></div>
-                <div>👤 Resolvido por: <strong className="text-emerald-400 block mt-0.5">{getAssigneeName(selectedKnowledgeTicket.assigned_to_id) || 'Equipa'}</strong></div>
-                <div>
-                  📅 Conclusão: 
-                  <strong className="text-zinc-200 block mt-0.5">
-                    {selectedKnowledgeTicket.completed_at 
-                      ? new Date(selectedKnowledgeTicket.completed_at).toLocaleDateString('pt-PT') 
-                      : 'N/A'}
-                  </strong>
-                </div>
+              {/* CAIXA COM AS HORAS ESTIMADAS, REAIS E DE REVISÃO */}
+              <div className="flex flex-wrap items-center gap-4 text-xs font-mono bg-zinc-950 p-3.5 rounded-xl border border-zinc-800">
+                <span className="text-zinc-300">🎯 Previsto: <strong>{formatToHHMM(selectedKnowledgeTicket.estimated_hours)}</strong></span>
+                <span className="text-blue-400">⏱️ Real: <strong>{formatToHHMM(selectedKnowledgeTicket.tracked_hours)}</strong></span>
+                {Number(selectedKnowledgeTicket.review_tracked_hours || 0) > 0 && (
+                  <span className="text-amber-400">🔍 Revisão: <strong>{formatToHHMM(selectedKnowledgeTicket.review_tracked_hours)}</strong></span>
+                )}
               </div>
 
-              {/* Problema Original */}
-              <div className="bg-zinc-950 p-4 rounded-xl border border-zinc-800/80 space-y-1.5">
-                <p className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider flex items-center gap-1.5">
-                  <AlertCircle className="w-3.5 h-3.5" /> Problema Original
-                </p>
-                <p className="text-xs text-zinc-300 leading-relaxed whitespace-pre-wrap">
-                  {selectedKnowledgeTicket.description || 'Sem descrição inicial registada.'}
+              <div>
+                <p className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider mb-1">Problema Original</p>
+                <p className="text-xs text-zinc-300 bg-zinc-950 p-3 rounded-xl border border-zinc-800 leading-relaxed">
+                  {selectedKnowledgeTicket.description || 'Sem descrição.'}
                 </p>
               </div>
 
-              {/* Solução Aplicada */}
-              <div className="bg-zinc-950 p-4 rounded-xl border border-emerald-500/20 space-y-1.5">
-                <p className="text-[10px] font-semibold text-emerald-400 uppercase tracking-wider flex items-center gap-1.5">
-                  <CheckCircle2 className="w-3.5 h-3.5" /> Solução Aplicada (Relatório Final)
-                </p>
-                <p className="text-sm text-zinc-100 leading-relaxed whitespace-pre-wrap font-medium">
-                  {selectedKnowledgeTicket.final_description || 'Tarefa concluída sem relatório detalhado.'}
+              <div>
+                <p className="text-[10px] font-semibold text-emerald-500 uppercase tracking-wider mb-1">Solução Aplicada</p>
+                <p className="text-xs text-zinc-200 bg-zinc-950 p-3 rounded-xl border border-zinc-800 leading-relaxed whitespace-pre-wrap">
+                  {selectedKnowledgeTicket.final_description || 'Sem relatório final.'}
                 </p>
               </div>
 
-              {/* Anexos e Fotografias */}
               {selectedKnowledgeTicket.attachment_path && (
-                <div className="bg-zinc-950 p-4 rounded-xl border border-zinc-800/80 space-y-2">
-                  <p className="text-[10px] font-semibold text-zinc-400 uppercase tracking-wider flex items-center gap-1.5">
-                    <Paperclip className="w-3.5 h-3.5" /> Ficheiro Anexo / Evidência
-                  </p>
-                  
+                <div>
+                  <p className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider mb-2">Anexo</p>
                   {selectedKnowledgeTicket.attachment_path.match(/\.(jpeg|jpg|gif|png)$/i) ? (
-                    <a href={`${API_URL}/${selectedKnowledgeTicket.attachment_path}`} target="_blank" rel="noopener noreferrer" className="block rounded-xl overflow-hidden border border-zinc-700 hover:border-blue-500 transition shadow-sm max-w-sm">
-                      <img 
-                        src={`${API_URL}/${selectedKnowledgeTicket.attachment_path}`} 
-                        alt="Anexo da Tarefa Concluída" 
-                        className="w-full h-auto object-cover max-h-60"
-                      />
+                    <a href={`${API_URL}/${selectedKnowledgeTicket.attachment_path}`} target="_blank" rel="noopener noreferrer" className="block max-w-sm rounded-xl overflow-hidden border border-zinc-700">
+                      <img src={`${API_URL}/${selectedKnowledgeTicket.attachment_path}`} alt="Anexo" className="w-full h-auto object-cover max-h-48" />
                     </a>
                   ) : (
-                    <a href={`${API_URL}/${selectedKnowledgeTicket.attachment_path}`} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 text-xs text-blue-400 bg-blue-500/10 px-3 py-2 rounded-xl w-fit border border-blue-500/20 hover:bg-blue-500/20 transition">
-                      <Download className="w-4 h-4" /> Transferir Documento Anexo
+                    <a href={`${API_URL}/${selectedKnowledgeTicket.attachment_path}`} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 text-xs text-blue-400 bg-blue-500/10 px-3 py-2 rounded-xl w-fit border border-blue-500/20">
+                      <Download className="w-4 h-4" /> Transferir Documento
                     </a>
                   )}
                 </div>
               )}
 
             </div>
-
-            {/* Rodapé do Modal */}
-            <div className="pt-4 mt-4 border-t border-zinc-800 flex justify-end">
-              <button 
-                onClick={() => setSelectedKnowledgeTicket(null)}
-                className="bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-medium px-4 py-2 rounded-xl transition cursor-pointer"
-              >
-                Fechar
-              </button>
-            </div>
-
           </div>
         </div>
       )}
@@ -8103,6 +8504,84 @@ const fetchWeekStatus = async () => {
               <button 
                 onClick={() => setSelectedClientDetailsModal(null)} 
                 className="bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-semibold px-4 py-2 rounded-xl transition cursor-pointer"
+              >
+                Fechar
+              </button>
+            </div>
+
+          </div>
+        </div>
+      )}
+
+      {showViewModal && selectedViewTicket && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fadeIn" onClick={() => setShowViewModal(false)}>
+          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl max-w-lg w-full p-6 shadow-2xl flex flex-col max-h-[85vh]" onClick={e => e.stopPropagation()}>
+
+            {/* Cabeçalho */}
+            <div className="flex items-center justify-between pb-3 mb-4 border-b border-zinc-800">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-mono text-zinc-500 bg-zinc-950 px-2.5 py-1 rounded-lg border border-zinc-800">#{selectedViewTicket.id}</span>
+                <h2 className="text-base font-semibold text-zinc-100 truncate max-w-[320px]">{selectedViewTicket.title}</h2>
+              </div>
+              <button onClick={() => setShowViewModal(false)} className="text-zinc-500 hover:text-zinc-300 text-sm p-1">✕</button>
+            </div>
+
+            {/* Conteúdo de Visualização */}
+            <div className="space-y-4 overflow-y-auto pr-1 text-sm">
+
+              {/* Estado e Prioridade */}
+              <div className="flex items-center gap-2">
+                <span className="text-xs px-2.5 py-1 rounded-lg border bg-zinc-950 border-zinc-800 text-zinc-300 font-medium">
+                  Estado: <strong>{selectedViewTicket.status}</strong>
+                </span>
+                {selectedViewTicket.priority && (
+                  <span className={`text-xs px-2.5 py-1 rounded-lg border font-medium ${getPriorityBadgeStyle(selectedViewTicket.priority)}`}>
+                    Prioridade: {selectedViewTicket.priority}
+                  </span>
+                )}
+              </div>
+
+              {/* Descrição */}
+              <div className="bg-zinc-950 border border-zinc-800/80 rounded-xl p-3.5 space-y-1">
+                <p className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider">Descrição</p>
+                <p className="text-xs text-zinc-300 leading-relaxed whitespace-pre-wrap">{selectedViewTicket.description || 'Sem descrição registada.'}</p>
+              </div>
+
+              {/* Informações (Projeto, Atribuído) */}
+              <div className="grid grid-cols-2 gap-3 text-xs">
+                <div className="bg-zinc-950 border border-zinc-800/80 p-3 rounded-xl">
+                  <span className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider block mb-1">Projeto</span>
+                  <span className="font-medium text-zinc-200">📁 {getProjectName(selectedViewTicket.project_id)}</span>
+                </div>
+                <div className="bg-zinc-950 border border-zinc-800/80 p-3 rounded-xl">
+                  <span className="text-[10px] font-semibold text-zinc-500 uppercase tracking-wider block mb-1">Responsável</span>
+                  <span className="font-medium text-emerald-400">👤 {getAssigneeName(selectedViewTicket.assigned_to_id) || 'Não atribuído'}</span>
+                </div>
+              </div>
+
+              {/* Tempos (Trabalho, Estimado e Revisão) */}
+              <div className="grid grid-cols-3 gap-3 bg-zinc-950 border border-zinc-800 p-4 rounded-xl font-mono text-center">
+                <div>
+                  <span className="text-[10px] text-zinc-500 uppercase tracking-wider block mb-1 font-sans">Trabalho</span>
+                  <span className="text-xs font-bold text-zinc-200">{formatToHHMM(selectedViewTicket.tracked_hours || 0)}</span>
+                </div>
+                <div>
+                  <span className="text-[10px] text-zinc-500 uppercase tracking-wider block mb-1 font-sans">Estimado</span>
+                  <span className="text-xs font-bold text-zinc-300">{formatToHHMM(selectedViewTicket.estimated_hours || 0)}</span>
+                </div>
+                <div>
+                  <span className="text-[10px] text-amber-500/80 uppercase tracking-wider block mb-1 font-sans">Revisão</span>
+                  <span className="text-xs font-bold text-amber-400">{formatToHHMM(selectedViewTicket.review_tracked_hours || 0)}</span>
+                </div>
+              </div>
+
+            </div>
+
+            {/* Rodapé */}
+            <div className="flex justify-end pt-4 mt-4 border-t border-zinc-800">
+              <button
+                onClick={() => setShowViewModal(false)}
+                className="bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-medium px-4 py-2 rounded-xl transition"
               >
                 Fechar
               </button>
