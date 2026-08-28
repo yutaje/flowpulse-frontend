@@ -19,6 +19,91 @@ const formatToHHMM = (hoursFloat) => {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
 };
 
+// Calcula a carga de trabalho restante (em dias úteis de 8h) para as tarefas ainda não concluídas
+const calculateRemainingWorkingDays = (projectTickets) => {
+  // Soma todas as horas estimadas vs gastas das tarefas que ainda NÃO estão concluídas
+  let totalRemainingHours = 0;
+
+  projectTickets.forEach(t => {
+    const isDone = t.status && ['done', 'concluído', 'concluido'].includes(t.status.toLowerCase());
+    if (!isDone) {
+      const estimated = Number(t.estimated_hours) || 0;
+      const tracked = Number(t.tracked_hours) || 0;
+      // O que falta trabalhar nesta tarefa (se já gastou mais que o previsto, conta 0 ou o défice)
+      const remaining = Math.max(0, estimated - tracked);
+      totalRemainingHours += remaining;
+    }
+  });
+
+  if (totalRemainingHours <= 0) return "0 dias (0h)";
+
+  // Cada dia de trabalho tem 8 horas
+  const workingDays = totalRemainingHours / 8;
+
+  // Se for menos de 1 dia, mostra em horas; se for mais, mostra em dias e horas decimais arredondadas
+  if (workingDays < 1) {
+    return `${Math.round(totalRemainingHours)}h de trabalho (${(workingDays).toFixed(1)} dias úteis)`;
+  }
+
+  return `~${workingDays.toFixed(1)} dias de trabalho (${totalRemainingHours.toFixed(1)}h restantes)`;
+};
+
+// Calcula o estado inteligente do projeto: dias de trabalho necessários (esforço) + cor baseada na margem em dias úteis até ao prazo
+const getProjectSmartStatus = (project, projectTickets) => {
+  if (!project.due_date) {
+    return { text: "Sem prazo definido", badgeColor: "bg-zinc-800 text-zinc-300 border-zinc-700" };
+  }
+
+  const today = new Date();
+  // Em vez de: const dueDate = new Date(project.due_date);
+  // Isto garante que apanha o dia exato sem desfasamentos de fuso horário:
+  const rawDateStr = project.due_date.includes('T') ? project.due_date.split('T')[0] : project.due_date;
+  const [year, month, day] = rawDateStr.split('-').map(Number);
+  const dueDate = new Date(year, month - 1, day);
+
+  // 1. Calcular horas restantes nas tarefas ativas do projeto
+  let remainingHours = 0;
+  projectTickets.forEach(t => {
+    const isDone = t.status && ['done', 'concluído', 'concluido'].includes(t.status.toLowerCase());
+    if (!isDone) {
+      const estimated = Number(t.estimated_hours) || 0;
+      const tracked = Number(t.tracked_hours) || 0;
+      remainingHours += Math.max(0, estimated - tracked);
+    }
+  });
+
+  // Converter as horas restantes em dias de trabalho (8h = 1 dia)
+  const workDaysNeeded = remainingHours / 8;
+  const workDaysRounded = workDaysNeeded.toFixed(1);
+
+  // 2. Calcular quantos dias úteis reais faltam até à data limite do projeto (ignorando fins de semana)
+  let businessDaysUntilDeadline = 0;
+  let cursor = new Date(today);
+  while (cursor <= dueDate) {
+    const dayOfWeek = cursor.getDay();
+    if (dayOfWeek !== 0 && dayOfWeek !== 6) {
+      businessDaysUntilDeadline++;
+    }
+    cursor.setDate(cursor.getDate() + 1);
+  }
+
+  // 3. Definição limpa e direta da cor
+  const marginDays = businessDaysUntilDeadline - workDaysNeeded;
+
+  let badgeColor = "bg-emerald-500/10 text-emerald-400 border-emerald-500/30"; // Verde por defeito
+
+  if (businessDaysUntilDeadline <= 3) {
+    badgeColor = "bg-red-500/10 text-red-400 border-red-500/30"; // Vermelho se faltarem 3 dias ou menos para o prazo
+  } else if (businessDaysUntilDeadline <= 5 && marginDays <= 3) {
+    badgeColor = "bg-amber-500/10 text-amber-400 border-amber-500/30"; // Amarelo só se estiver em cima do joelho
+  }
+
+  return {
+    text: `Faltam ${workDaysRounded} dias (${remainingHours.toFixed(1)}h)`,
+    badgeColor
+  };
+};
+
 // Lista centralizada de cargos globais disponíveis na aplicação (sem Líder de Equipa)
 const ROLES_LIST = [
   { value: "Admin", label: "Administrador", color: "text-red-400 bg-red-500/10 border-red-500/30" },
@@ -33,6 +118,7 @@ export default function App() {
   const [password, setPassword] = useState('');
   
   const [activeTab, setActiveTab] = useState(localStorage.getItem('activeTab') || 'dashboard');
+  const [isFlowstate, setIsFlowstate] = useState(false);
   const [taskViewMode, setTaskViewMode] = useState('kanban'); // 'kanban', 'list'
   const [showGanttModal, setShowGanttModal] = useState(false);
   // Controla a abertura do menu/sidebar em modo gaveta no telemóvel
@@ -478,6 +564,9 @@ const fetchWeekStatus = async () => {
 
   // Estados da Barra de Pesquisa Rápida (Spotlight / Cmd+K)
   const [showQuickSearch, setShowQuickSearch] = useState(false);
+  const [showDelayedModal, setShowDelayedModal] = useState(false);
+  const [showCompletedModal, setShowCompletedModal] = useState(false);
+  const [projectTab, setProjectTab] = useState('active');
   const [quickSearchQuery, setQuickSearchQuery] = useState('');
   
   const [adminUsersReports, setAdminUsersReports] = useState([]);
@@ -599,6 +688,9 @@ const fetchWeekStatus = async () => {
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+
+  const [expandedProjectId, setExpandedProjectId] = useState(null);
+  const [selectedUserWorkload, setSelectedUserWorkload] = useState(null);
 
   const [activeTimerTask, setActiveTimerTask] = useState(() => {
     const saved = localStorage.getItem('flowpulse_activeTimerTask');
@@ -1540,6 +1632,18 @@ const fetchWeekStatus = async () => {
     }
   };
 
+  const handleUpdateTicketUser = async (ticket, newUserId) => {
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      await axios.put(`${API_URL}/tickets/${ticket.id}`, {
+        assigned_to_id: newUserId ? Number(newUserId) : null
+      }, { headers });
+      fetchData();
+    } catch (error) {
+      alert(error.response?.data?.detail || "Erro ao reatribuir tarefa.");
+    }
+  };
+
   const handleLogin = async (e) => {
     e.preventDefault();
     try {
@@ -1596,24 +1700,10 @@ const fetchWeekStatus = async () => {
       try {
         const ticketsRes = await axios.get(query, { headers });
 
-        // 🔒 FILTRO DE SEGURANÇA PARA A LISTAGEM GERAL:
-        // Inclui tarefas onde o utilizador é o responsável, o criador OU tem uma subtarefa atribuída
-        const userRole = loggedRole?.toLowerCase();
-        let ticketsToSave = ticketsRes.data;
+        // 🔍 VÊ ISTO NA CONSOLA DO BROWSER AO RECARREGAR A PÁGINA
+        console.log("DADOS REAIS QUE O BACKEND ENVIU:", ticketsRes.data);
 
-        // 🔒 Só os cargos de gestão global veem todos os tickets à partida;
-        // os restantes cargos (Técnico, Gestor de Projeto, Líder de Equipa) ficam
-        // limitados aqui às suas próprias tarefas — a visibilidade extra de
-        // projeto/equipa é tratada depois em `canSeeProjectTickets`.
-        if (!["admin", "gestor de operações", "manager"].includes(userRole)) {
-          ticketsToSave = ticketsRes.data.filter(t => 
-            t.assigned_to_id === loggedId || 
-            t.creator_id === loggedId ||
-            t.sub_tasks?.some(sub => sub.assigned_to_id === loggedId)
-          );
-        }
-
-        setTickets(ticketsToSave);
+        setTickets(ticketsRes.data);
       } catch (e) { console.error(e); }
 
       try {
@@ -1788,6 +1878,18 @@ const fetchWeekStatus = async () => {
       fetchData();
     } catch (err) {
       alert('Erro ao apagar projeto.');
+    }
+  };
+
+  const toggleArchiveProject = async (projectId) => {
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      await axios.put(`${API_URL}/projects/${projectId}/archive`, {}, { headers });
+
+      // Atualiza a lista localmente para refletir a mudança instantaneamente sem recarregar a página
+      setProjects(prev => prev.map(p => p.id === projectId ? { ...p, is_archived: !p.is_archived } : p));
+    } catch (err) {
+      alert("Erro ao alterar o estado do projeto.");
     }
   };
 
@@ -2417,6 +2519,7 @@ const fetchWeekStatus = async () => {
 
   const isAdmin = userRole === "admin";
   const isManagerOrAdmin = ["admin", "gestor de operações", "manager"].includes(userRole);
+  const isOperationsManagerRole = userRole === "gestor de operações";
   const isProjectManagerRole = userRole === "gestor de projeto" || isManagerOrAdmin;
   const isTeamLeaderRole = userRole === "líder de equipa" || isManagerOrAdmin;
 
@@ -2454,10 +2557,10 @@ const fetchWeekStatus = async () => {
   const availableTickets = isAdmin
     ? tickets
     : tickets.filter(t => 
-        t.assigned_to_id === currentUserInfo.id || 
-        t.creator_id === currentUserInfo.id || 
-        t.sub_tasks?.some(sub => sub.assigned_to_id === currentUserInfo.id) ||
-        (canSeeProjectTickets && availableProjectIds.includes(t.project_id))
+        Number(t.assigned_to_id) === Number(currentUserInfo.id) || 
+        Number(t.creator_id) === Number(currentUserInfo.id) || 
+        t.sub_tasks?.some(sub => Number(sub.assigned_to_id) === Number(currentUserInfo.id)) ||
+        (canSeeProjectTickets && availableProjectIds.map(Number).includes(Number(t.project_id)))
       );
 
   const now = new Date();
@@ -2583,14 +2686,24 @@ const fetchWeekStatus = async () => {
     return 0;
   });
 
-  // 🛠️ Filtro da Kanban pessoal (mostra apenas as tuas tarefas, exceto se fores Admin/Manager)
+  // 🛠️ Filtro da Kanban pessoal (mostra as tuas tarefas + tarefas dos projetos/equipas a que tens acesso, exceto se fores Admin/Manager)
   const myKanbanTickets = availableTickets.filter(ticket => {
     if (isManagerOrAdmin) return true;
-    return (
+
+    // Se a tarefa estiver atribuída diretamente a ti, criada por ti ou numa subtarefa tua
+    const isPersonal = (
       ticket.assigned_to_id === currentUserInfo?.id || 
       ticket.creator_id === currentUserInfo?.id ||
       ticket.sub_tasks?.some(sub => sub.assigned_to_id === currentUserInfo?.id)
     );
+
+    // Se a tarefa não tiver dono atribuído (estiver livre) mas pertencer a um projeto visível para ti
+    const isFreeInVisibleProject = (
+      ticket.assigned_to_id === null &&
+      availableProjectIds.includes(ticket.project_id)
+    );
+
+    return isPersonal || isFreeInVisibleProject;
   });
 
   // Aplica os mesmos filtros de projeto/prioridade/tipo e a mesma ordenação da lista, mas sobre myKanbanTickets
@@ -3148,6 +3261,832 @@ const fetchWeekStatus = async () => {
 
           {activeTab === 'dashboard' && (
             <div>
+              {/* Cabeçalho da Dashboard com o Botão de Flowstate */}
+              <div className="flex items-center justify-between bg-zinc-900 border border-zinc-800 p-4 rounded-2xl mb-6">
+                <div>
+                  <h1 className="text-lg font-bold text-zinc-100">
+                    {isFlowstate ? "Modo Flowstate Ativo" : "Painel Geral"}
+                  </h1>
+                  <p className="text-xs text-zinc-400">
+                    {isFlowstate ? "Foco total na execução e equipa em campo." : "Visão geral de projetos e tarefas."}
+                  </p>
+                </div>
+
+                <button
+                  onClick={() => setIsFlowstate(!isFlowstate)}
+                  className={`px-4 py-2 rounded-xl text-xs font-semibold transition-all flex items-center gap-2 border ${
+                    isFlowstate
+                      ? "bg-purple-500/10 text-purple-400 border-purple-500/30 shadow-lg shadow-purple-500/10"
+                      : "bg-zinc-800 text-zinc-300 border-zinc-700 hover:bg-zinc-700"
+                  }`}
+                >
+                  <span>⚡</span>
+                  {isFlowstate ? "Desativar Flowstate" : "Ativar Flowstate"}
+                </button>
+              </div>
+
+              {/* Conteúdo Dinâmico: Muda dependendo do botão */}
+              {isFlowstate ? (
+                isAdmin ? (
+                  /* Vista Flowstate Exclusiva para ADMIN */
+                  <div className="space-y-6">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+
+                      {/* 1. Visão Global de Projetos com Acordeão (Expandir para ver tarefas) */}
+                      <div className="bg-zinc-900 border border-red-500/30 p-5 rounded-2xl space-y-4">
+                        <div className="flex justify-between items-center">
+                          <span className="text-[10px] font-semibold text-red-400 uppercase tracking-wider block">Visão Global de Projetos (Clica para expandir)</span>
+                          <span className="text-xs font-mono text-zinc-400">{availableProjects.length} Projetos Ativos</span>
+                        </div>
+
+                        <div className="space-y-3 max-h-[350px] overflow-y-auto pr-1">
+                          {availableProjects.map((p, idx) => {
+                            const pId = p.id || idx;
+                            const isExpanded = expandedProjectId === pId; // Estado para controlar qual está aberto
+
+                            const pTickets = tickets.filter(t => t.project_id === p.id || t.project === p.name);
+                            const totalT = pTickets.length;
+                            const doneT = pTickets.filter(t => t.status && ['done', 'concluído', 'concluido'].includes(t.status.toLowerCase())).length;
+                            const prog = totalT > 0 ? Math.round((doneT / totalT) * 100) : 0;
+
+                            return (
+                              <div key={pId} className="bg-zinc-950 rounded-xl border border-zinc-800/80 overflow-hidden transition-all">
+                                {/* Cabeçalho Clicável do Projeto */}
+                                <div
+                                  onClick={() => setExpandedProjectId(isExpanded ? null : pId)}
+                                  className="p-3 cursor-pointer hover:bg-zinc-900/60 space-y-2"
+                                >
+                                  <div className="flex justify-between items-center text-xs">
+                                    <span className="font-bold text-zinc-200 flex items-center gap-2">
+                                      <span>{isExpanded ? "▼" : "▶"}</span>
+                                      {p.name || p.title}
+                                    </span>
+                                    <span className="font-mono text-red-400 font-semibold">{prog}%</span>
+                                  </div>
+
+                                  <div className="w-full bg-zinc-800 h-1.5 rounded-full overflow-hidden">
+                                    <div className="bg-red-500 h-full rounded-full transition-all duration-300" style={{ width: `${prog}%` }}></div>
+                                  </div>
+
+                                  <div className="flex justify-between items-center text-[10px] font-mono text-zinc-400 pt-1">
+                                    <span>Prazo: {p.due_date ? p.due_date.split('T')[0] : "Sem prazo"}</span>
+                                    <span>{doneT}/{totalT} tarefas</span>
+                                  </div>
+                                </div>
+
+                                {/* Lista de Tarefas Expandida com Popup ao Clicar */}
+                                {isExpanded && (
+                                  <div className="bg-zinc-900/80 border-t border-zinc-800 p-3 space-y-2">
+                                    <span className="text-[9px] font-semibold text-zinc-400 uppercase tracking-wider block mb-1">Tarefas do Projeto:</span>
+                                    {pTickets.length > 0 ? (
+                                      pTickets.map((t, tIdx) => {
+                                        const isDone = t.status && ['done', 'concluído', 'concluido'].includes(t.status.toLowerCase());
+                                        const est = Number(t.estimated_hours) || 0;
+                                        const trk = Number(t.tracked_hours) || 0;
+
+                                        let taskProg = 0;
+                                        if (isDone) {
+                                          taskProg = 100;
+                                        } else if (est > 0) {
+                                          taskProg = Math.min(100, Math.round((trk / est) * 100));
+                                        }
+
+                                        return (
+                                          <div
+                                            key={tIdx}
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              setSelectedViewTicket(t);
+                                              setShowViewModal(true);
+                                            }}
+                                            className="bg-zinc-950 p-2.5 rounded-lg text-xs border border-zinc-800/50 space-y-2 cursor-pointer hover:border-zinc-700 transition-all"
+                                          >
+                                            <div className="flex justify-between items-center">
+                                              <span className="text-zinc-200 font-medium">{t.title}</span>
+                                              <span className="text-[10px] font-mono text-zinc-400 font-bold">{taskProg}%</span>
+                                            </div>
+
+                                            {/* Barra de progresso neutra (sem ser vermelho) */}
+                                            <div className="w-full bg-zinc-800 h-1 rounded-full overflow-hidden">
+                                              <div
+                                                className="bg-zinc-300 h-full rounded-full transition-all duration-300"
+                                                style={{ width: `${taskProg}%` }}
+                                              ></div>
+                                            </div>
+                                          </div>
+                                        );
+                                      })
+                                    ) : (
+                                      <p className="text-[11px] text-zinc-500 italic">Sem tarefas associadas a este projeto.</p>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      {/* 2. Todos os Users a Trabalhar no Momento + Tarefas Importantes */}
+                      <div className="space-y-6">
+
+                        {/* Equipa em Operação (Live) - Agrupado por Utilizador */}
+                        <div className="bg-zinc-900 border border-zinc-800 p-5 rounded-2xl space-y-4">
+                          <span className="text-[10px] font-semibold text-zinc-400 uppercase tracking-wider block">Equipa em Operação (Live)</span>
+                          <div className="space-y-2 max-h-[160px] overflow-y-auto pr-1">
+                            {(() => {
+                              // 1. Filtrar apenas as tarefas que têm o cronómetro ativo de momento
+                              const activeTickets = tickets.filter(t => t.is_running === true);
+
+                              if (activeTickets.length === 0) {
+                                return <p className="text-xs text-zinc-500 italic">Nenhum colaborador com tarefas ativas no momento.</p>;
+                              }
+
+                              // 2. Agrupar tarefas por utilizador (evita duplicados)
+                              const groupedByUser = activeTickets.reduce((acc, task) => {
+                                const userKey = task.assigned_to_id || "sem-atribuicao";
+                                const userName = getAssigneeName(task.assigned_to_id) || "Colaborador";
+                                if (!acc[userKey]) acc[userKey] = { name: userName, titles: [] };
+                                acc[userKey].titles.push(task.title);
+                                return acc;
+                              }, {});
+
+                              // 3. Renderizar cada utilizador uma única vez com as suas respetivas tarefas
+                              return Object.entries(groupedByUser).map(([userKey, { name, titles }], idx) => (
+                                <div key={idx} className="flex items-center justify-between bg-zinc-950 p-2.5 rounded-xl border border-zinc-800/80 text-xs">
+                                  <span className="font-medium text-zinc-200 flex items-center gap-2">
+                                    <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                                    {name}
+                                  </span>
+                                  <div className="flex gap-1.5 flex-wrap justify-end">
+                                    {titles.map((title, tIdx) => (
+                                      <span key={tIdx} className="text-red-400 bg-red-500/10 px-2 py-0.5 rounded-md font-mono text-[10px]">
+                                        {title}
+                                      </span>
+                                    ))}
+                                  </div>
+                                </div>
+                              ));
+                            })()}
+                          </div>
+                        </div>
+
+                        {/* Tarefas Críticas / Importantes */}
+                        <div className="bg-zinc-900 border border-zinc-800 p-5 rounded-2xl space-y-4">
+                          <span className="text-[10px] font-semibold text-amber-400 uppercase tracking-wider block">Tarefas Críticas / Alta Prioridade</span>
+                          <div className="space-y-2 max-h-[140px] overflow-y-auto pr-1">
+                            {tickets.filter(t => t.priority === 'Crítica' || t.priority === 'Alta').length > 0 ? (
+                              tickets.filter(t => t.priority === 'Crítica' || t.priority === 'Alta').map((t, idx) => (
+                                <div key={idx} className="flex items-center justify-between bg-zinc-950 p-2.5 rounded-xl border border-zinc-800/80 text-xs">
+                                  <span className="text-zinc-300 font-medium">{t.title}</span>
+                                  <span className="text-[10px] text-amber-400 font-mono bg-amber-500/10 px-2 py-0.5 rounded">{t.priority}</span>
+                                </div>
+                              ))
+                            ) : (
+                              <p className="text-xs text-zinc-500 italic">Sem tarefas críticas pendentes.</p>
+                            )}
+                          </div>
+                        </div>
+
+                      </div>
+                    </div>
+                  </div>
+                ) : isOperationsManagerRole ? (
+                  /* Vista Flowstate Exclusiva para Gestor de Operações */
+                  <div className="space-y-6">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+
+                      {/* 1. Alertas de Desvio de Horas (Estimated vs Tracked) */}
+                      <div className="bg-zinc-900 border border-emerald-500/30 p-5 rounded-2xl space-y-4">
+                        <div className="flex justify-between items-center">
+                          <span className="text-[10px] font-semibold text-emerald-400 uppercase tracking-wider block">Desvios de Horas (Crítico / Acima do Estimado)</span>
+                          <span className="text-xs font-mono text-zinc-400">
+                            {tickets.filter(t => {
+                              const est = Number(t.estimated_hours) || 0;
+                              const trk = Number(t.tracked_hours) || 0;
+                              return est > 0 && trk > est;
+                            }).length} Alertas
+                          </span>
+                        </div>
+
+                        <div className="space-y-3 max-h-[350px] overflow-y-auto pr-1">
+                          {tickets.filter(t => {
+                            const est = Number(t.estimated_hours) || 0;
+                            const trk = Number(t.tracked_hours) || 0;
+                            return est > 0 && trk > est;
+                          }).length > 0 ? (
+                            tickets
+                              .filter(t => {
+                                const est = Number(t.estimated_hours) || 0;
+                                const trk = Number(t.tracked_hours) || 0;
+                                return est > 0 && trk > est;
+                              })
+                              .map((t, idx) => {
+                                const est = Number(t.estimated_hours) || 0;
+                                const trk = Number(t.tracked_hours) || 0;
+                                const excess = trk - est;
+
+                                return (
+                                  <div
+                                    key={idx}
+                                    onClick={() => {
+                                      setSelectedViewTicket(t);
+                                      setShowViewModal(true);
+                                    }}
+                                    className="bg-zinc-950 p-3 rounded-xl border border-zinc-800/80 space-y-2 cursor-pointer hover:border-zinc-700 transition-all text-xs"
+                                  >
+                                    <div className="flex justify-between items-start">
+                                      <span className="font-bold text-zinc-200 truncate max-w-[180px]">{t.title}</span>
+                                      <span className="text-[10px] font-mono text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded">+{excess}h excesso</span>
+                                    </div>
+                                    <div className="flex justify-between text-[11px] font-mono text-zinc-400">
+                                      <span>Estimado: {est}h</span>
+                                      <span className="text-emerald-400 font-bold">Gasto: {trk}h</span>
+                                    </div>
+                                    <div className="w-full bg-zinc-800 h-1.5 rounded-full overflow-hidden">
+                                      <div className="bg-emerald-500 h-full rounded-full" style={{ width: '100%' }}></div>
+                                    </div>
+                                  </div>
+                                );
+                              })
+                          ) : (
+                            <p className="text-xs text-zinc-500 italic">Excelente! Nenhuma tarefa ultrapassou as horas estimadas.</p>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* 2. Gargalos Operacionais (Tarefas paradas em In Review / Validação) */}
+                      <div className="bg-zinc-900 border border-zinc-800 p-5 rounded-2xl space-y-4">
+                        <div className="flex justify-between items-center">
+                          <span className="text-[10px] font-semibold text-zinc-400 uppercase tracking-wider block">Gargalos Operacionais (Em Revisão / Bloqueadas)</span>
+                          <span className="text-xs font-mono text-zinc-400">
+                            {tickets.filter(t => {
+                              const s = String(t.status || "").toLowerCase().trim();
+                              return s.includes('review') || s.includes('revisão') || s.includes('rev') || s.includes('blocked') || s.includes('bloqueada') || s.includes('bloqueado');
+                            }).length} Em Fila
+                          </span>
+                        </div>
+
+                        <div className="space-y-3 max-h-[350px] overflow-y-auto pr-1">
+                          {tickets.filter(t => {
+                            const s = String(t.status || "").toLowerCase().trim();
+                            return s.includes('review') || s.includes('revisão') || s.includes('rev') || s.includes('blocked') || s.includes('bloqueada') || s.includes('bloqueado');
+                          }).length > 0 ? (
+                            tickets
+                              .filter(t => {
+                                const s = String(t.status || "").toLowerCase().trim();
+                                return s.includes('review') || s.includes('revisão') || s.includes('rev') || s.includes('blocked') || s.includes('bloqueada') || s.includes('bloqueado');
+                              })
+                              .map((t, idx) => (
+                                <div
+                                  key={idx}
+                                  onClick={() => {
+                                    setSelectedViewTicket(t);
+                                    setShowViewModal(true);
+                                  }}
+                                  className="bg-zinc-950 p-3 rounded-xl border border-zinc-800/80 space-y-2 cursor-pointer hover:border-zinc-700 transition-all text-xs"
+                                >
+                                  <div className="flex justify-between items-start">
+                                    <span className="font-bold text-zinc-200 truncate max-w-[180px]">{t.title}</span>
+                                    <span className="text-[10px] font-mono text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded">In Review</span>
+                                  </div>
+                                  <p className="text-[11px] text-zinc-400">Responsável: <span className="text-zinc-200">{getAssigneeName(t.assigned_to_id) || "Por atribuir"}</span></p>
+                                </div>
+                              ))
+                          ) : (
+                            <p className="text-xs text-zinc-500 italic">Sem tarefas paradas em revisão de momento.</p>
+                          )}
+                        </div>
+                      </div>
+
+                    </div>
+
+                    {/* Distribuição de Carga de Trabalho por Membro com Reatribuição Rápida */}
+                    <div className="bg-zinc-900 border border-zinc-800 p-5 rounded-2xl space-y-4">
+                      <span className="text-[10px] font-semibold text-emerald-400 uppercase tracking-wider block">Distribuição de Carga de Trabalho por Membro (Clica para ver e atribuir)</span>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
+                        {(() => {
+                          const activeTickets = tickets.filter(t => {
+                            const s = String(t.status || "").toLowerCase().trim();
+                            return s !== 'done' && s !== 'concluído' && s !== 'concluido' && s !== 'completed';
+                          });
+
+                          const workload = activeTickets.reduce((acc, t) => {
+                            const userKey = t.assigned_to_id || "sem-atribuicao";
+                            const userName = getAssigneeName(t.assigned_to_id) || "Por atribuir";
+                            if (!acc[userKey]) acc[userKey] = { name: userName, tasks: [] };
+                            acc[userKey].tasks.push(t);
+                            return acc;
+                          }, {});
+
+                          const entries = Object.entries(workload);
+
+                          if (entries.length === 0) {
+                            return <p className="text-xs text-zinc-500 italic col-span-full">Sem membros com tarefas ativas atribuídas.</p>;
+                          }
+
+                          return entries.map(([userKey, { name, tasks: userTasks }], idx) => {
+                            const isUserSelected = selectedUserWorkload === userKey;
+
+                            return (
+                              <div key={idx} className="space-y-2 col-span-1">
+                                {/* Cartão Clicável do Utilizador */}
+                                <div
+                                  onClick={() => setSelectedUserWorkload(isUserSelected ? null : userKey)}
+                                  className={`bg-zinc-950 p-3 rounded-xl border transition-all cursor-pointer flex justify-between items-center text-xs ${isUserSelected ? 'border-emerald-500/60 bg-zinc-900' : 'border-zinc-800/80 hover:border-zinc-700'}`}
+                                >
+                                  <span className="font-medium text-zinc-200 flex items-center gap-1.5">
+                                    <span>{isUserSelected ? "▼" : "▶"}</span>
+                                    {name}
+                                  </span>
+                                  <span className="font-mono bg-emerald-500/10 text-emerald-400 px-2.5 py-1 rounded-md font-bold">
+                                    {userTasks.length} {userTasks.length === 1 ? 'tarefa' : 'tarefas'}
+                                  </span>
+                                </div>
+
+                                {/* Lista de Tarefas Expandida com Opção de Reatribuir */}
+                                {isUserSelected && (
+                                  <div className="bg-zinc-950/90 border border-zinc-800/80 p-2.5 rounded-xl space-y-2 text-xs">
+                                    {userTasks.map((t, tIdx) => {
+                                      const est = Number(t.estimated_hours) || 0;
+                                      const trk = Number(t.tracked_hours) || 0;
+                                      const taskProg = est > 0 ? Math.min(100, Math.round((trk / est) * 100)) : 0;
+
+                                      return (
+                                        <div
+                                          key={tIdx}
+                                          className="bg-zinc-900 p-2.5 rounded-lg border border-zinc-800/50 space-y-2"
+                                        >
+                                          <div
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              setSelectedViewTicket(t);
+                                              setShowViewModal(true);
+                                            }}
+                                            className="flex justify-between items-center cursor-pointer"
+                                          >
+                                            <span className="font-bold text-zinc-200 truncate max-w-[130px]">{t.title}</span>
+                                            <span className="text-[10px] font-mono text-emerald-400">{taskProg}%</span>
+                                          </div>
+
+                                          <div className="w-full bg-zinc-800 h-1 rounded-full overflow-hidden">
+                                            <div className="bg-emerald-500 h-full rounded-full" style={{ width: `${taskProg}%` }}></div>
+                                          </div>
+
+                                          {/* Dropdown de Atribuição Rápida com Validação de Membros do Projeto */}
+                                          <div className="pt-1 flex items-center justify-between gap-1" onClick={(e) => e.stopPropagation()}>
+                                            <span className="text-[10px] text-zinc-400">Atribuir a:</span>
+                                            <select
+                                              value={t.assigned_to_id || ""}
+                                              onChange={(e) => handleUpdateTicketUser(t, e.target.value)}
+                                              className="bg-zinc-950 text-emerald-400 border border-zinc-700 rounded px-1.5 py-0.5 text-[10px] focus:outline-none cursor-pointer"
+                                            >
+                                              <option value="" disabled>Selecionar...</option>
+                                              {(() => {
+                                                // Encontrar o projeto associado a esta tarefa
+                                                const currentProject = projects.find(p => p.id === t.project_id || p.name === t.project);
+
+                                                // Tentar obter os membros diretamente do projeto (ajusta 'members'/'team' ao nome real na tua base de dados)
+                                                let projectMembers = currentProject?.members || currentProject?.team;
+
+                                                // Se o projeto não tiver membros próprios, derivar a partir das equipas associadas
+                                                if (!projectMembers || projectMembers.length === 0) {
+                                                  const projectTeamIds = currentProject?.team_ids || (currentProject?.team_id ? [currentProject.team_id] : []);
+                                                  const linkedTeams = teams.filter(team => projectTeamIds.includes(team.id));
+                                                  const seenIds = new Set();
+                                                  projectMembers = linkedTeams
+                                                    .flatMap(team => team.members || [])
+                                                    .filter(member => {
+                                                      const mId = typeof member === 'string' ? member : member.id;
+                                                      if (seenIds.has(mId)) return false;
+                                                      seenIds.add(mId);
+                                                      return true;
+                                                    });
+                                                }
+
+                                                // Último recurso: todos os utilizadores disponíveis
+                                                if (!projectMembers || projectMembers.length === 0) {
+                                                  projectMembers = usersList;
+                                                }
+
+                                                return projectMembers.map((member, mIdx) => {
+                                                  const value = typeof member === 'string' ? member : member.id;
+                                                  const label = typeof member === 'string' ? member : getUserDisplayName(member);
+                                                  return (
+                                                    <option key={value ?? mIdx} value={value}>
+                                                      {label}
+                                                    </option>
+                                                  );
+                                                });
+                                              })()}
+                                            </select>
+                                          </div>
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          });
+                        })()}
+                      </div>
+                    </div>
+                  </div>
+                ) : isProjectManagerRole ? (
+                  /* Vista Flowstate Exclusiva para Gestor de Projetos */
+                  <div className="space-y-6">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+
+                      {/* 1. Todos os Projetos e respetivas Tarefas (com Acordeão) */}
+                      <div className="bg-zinc-900 border border-blue-500/30 p-5 rounded-2xl space-y-4">
+                        <div className="flex justify-between items-center">
+                          <span className="text-[10px] font-semibold text-blue-400 uppercase tracking-wider block">Portefólio Global de Projetos</span>
+                          <span className="text-xs font-mono text-zinc-400">{availableProjects.length} Projetos</span>
+                        </div>
+
+                        <div className="space-y-3 max-h-[380px] overflow-y-auto pr-1">
+                          {availableProjects.map((p, idx) => {
+                            const pId = p.id || idx;
+                            const isExpanded = expandedProjectId === pId;
+
+                            const pTickets = tickets.filter(t => t.project_id === p.id || t.project === p.name);
+                            const totalT = pTickets.length;
+                            const doneT = pTickets.filter(t => t.status && ['done', 'concluído', 'concluido'].includes(t.status.toLowerCase())).length;
+                            const prog = totalT > 0 ? Math.round((doneT / totalT) * 100) : 0;
+
+                            return (
+                              <div key={pId} className="bg-zinc-950 rounded-xl border border-zinc-800/80 overflow-hidden transition-all">
+                                <div
+                                  onClick={() => setExpandedProjectId(isExpanded ? null : pId)}
+                                  className="p-3 cursor-pointer hover:bg-zinc-900/60 space-y-2"
+                                >
+                                  <div className="flex justify-between items-center text-xs">
+                                    <span className="font-bold text-zinc-200 flex items-center gap-2">
+                                      <span>{isExpanded ? "▼" : "▶"}</span>
+                                      {p.name || p.title}
+                                    </span>
+                                    <span className="font-mono text-blue-400 font-semibold">{prog}%</span>
+                                  </div>
+
+                                  <div className="w-full bg-zinc-800 h-1.5 rounded-full overflow-hidden">
+                                    <div className="bg-blue-500 h-full rounded-full transition-all duration-300" style={{ width: `${prog}%` }}></div>
+                                  </div>
+
+                                  <div className="flex justify-between items-center text-[10px] font-mono text-zinc-400 pt-1">
+                                    <span>Prazo: {p.due_date ? p.due_date.split('T')[0] : "Sem prazo"}</span>
+                                    <span>{doneT}/{totalT} tarefas</span>
+                                  </div>
+                                </div>
+
+                                {isExpanded && (
+                                  <div className="bg-zinc-900/80 border-t border-zinc-800 p-3 space-y-2">
+                                    <span className="text-[9px] font-semibold text-zinc-400 uppercase tracking-wider block mb-1">Tarefas do Projeto:</span>
+                                    {pTickets.length > 0 ? (
+                                      pTickets.map((t, tIdx) => {
+                                        const isDone = t.status && ['done', 'concluído', 'concluido'].includes(t.status.toLowerCase());
+                                        const est = Number(t.estimated_hours) || 0;
+                                        const trk = Number(t.tracked_hours) || 0;
+                                        let taskProg = isDone ? 100 : (est > 0 ? Math.min(100, Math.round((trk / est) * 100)) : 0);
+
+                                        return (
+                                          <div
+                                            key={tIdx}
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              setSelectedViewTicket(t);
+                                              setShowViewModal(true);
+                                            }}
+                                            className="bg-zinc-950 p-2.5 rounded-lg text-xs border border-zinc-800/50 space-y-2 cursor-pointer hover:border-zinc-700 transition-all"
+                                          >
+                                            <div className="flex justify-between items-center">
+                                              <span className="text-zinc-200 font-medium">{t.title}</span>
+                                              <span className="text-[10px] font-mono text-zinc-400 font-bold">{taskProg}%</span>
+                                            </div>
+                                            <div className="w-full bg-zinc-800 h-1 rounded-full overflow-hidden">
+                                              <div className="bg-zinc-300 h-full rounded-full transition-all duration-300" style={{ width: `${taskProg}%` }}></div>
+                                            </div>
+                                          </div>
+                                        );
+                                      })
+                                    ) : (
+                                      <p className="text-[11px] text-zinc-500 italic">Sem tarefas associadas a este projeto.</p>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      {/* 2. Equipa em Operação em Tempo Real (Timer Ativo) */}
+                      <div className="bg-zinc-900 border border-zinc-800 p-5 rounded-2xl space-y-4">
+                        <span className="text-[10px] font-semibold text-blue-400 uppercase tracking-wider block">Equipa em Operação (Live / Cronómetro Ativo)</span>
+                        <div className="space-y-2 max-h-[380px] overflow-y-auto pr-1">
+                          {(() => {
+                            // Filtra tarefas com cronómetro ativo
+                            const activeTickets = tickets.filter(t => t.is_running === true);
+
+                            if (activeTickets.length === 0) {
+                              return <p className="text-xs text-zinc-500 italic">Nenhum colaborador com o cronómetro ativo no momento.</p>;
+                            }
+
+                            return activeTickets.map((t, idx) => (
+                              <div key={idx} className="flex items-center justify-between bg-zinc-950 p-3 rounded-xl border border-zinc-800/80 text-xs">
+                                <span className="font-medium text-zinc-200 flex items-center gap-2">
+                                  <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                                  {getAssigneeName(t.assigned_to_id) || "Colaborador"}
+                                </span>
+                                <span className="text-blue-400 bg-blue-500/10 px-2.5 py-1 rounded-md font-mono text-[10px]">
+                                  {t.title}
+                                </span>
+                              </div>
+                            ));
+                          })()}
+                        </div>
+                      </div>
+
+                    </div>
+
+                    {/* Tarefas Ativas e Pendentes (Exclui 100% e concluídas) */}
+                    <div className="bg-zinc-900 border border-zinc-800 p-5 rounded-2xl space-y-4">
+                      <div className="flex justify-between items-center">
+                        <span className="text-[10px] font-semibold text-blue-400 uppercase tracking-wider block">Tarefas Ativas de Todos os Projetos (Por Concluir)</span>
+                        <span className="text-xs font-mono text-zinc-400">
+                          {tickets.filter(t => {
+                            const s = String(t.status || "").toLowerCase().trim();
+                            const est = Number(t.estimated_hours) || 0;
+                            const trk = Number(t.tracked_hours) || 0;
+                            const p = est > 0 ? Math.min(100, Math.round((trk / est) * 100)) : 0;
+
+                            const isDone = s.includes('done') || s.includes('concluí') || s.includes('conclui') || s.includes('terminad') || s.includes('complet') || s.includes('closed') || p >= 100;
+                            return !isDone;
+                          }).length} Tarefas Pendentes
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-3 max-h-[300px] overflow-y-auto pr-1">
+                        {tickets.filter(t => {
+                          const s = String(t.status || "").toLowerCase().trim();
+                          const est = Number(t.estimated_hours) || 0;
+                          const trk = Number(t.tracked_hours) || 0;
+                          const p = est > 0 ? Math.min(100, Math.round((trk / est) * 100)) : 0;
+
+                          const isDone = s.includes('done') || s.includes('concluí') || s.includes('conclui') || s.includes('terminad') || s.includes('complet') || s.includes('closed') || p >= 100;
+                          return !isDone;
+                        }).length > 0 ? (
+                          tickets
+                            .filter(t => {
+                              const s = String(t.status || "").toLowerCase().trim();
+                              const est = Number(t.estimated_hours) || 0;
+                              const trk = Number(t.tracked_hours) || 0;
+                              const p = est > 0 ? Math.min(100, Math.round((trk / est) * 100)) : 0;
+
+                              const isDone = s.includes('done') || s.includes('concluí') || s.includes('conclui') || s.includes('terminad') || s.includes('complet') || s.includes('closed') || p >= 100;
+                              return !isDone;
+                            })
+                            .map((t, idx) => {
+                              const est = Number(t.estimated_hours) || 0;
+                              const trk = Number(t.tracked_hours) || 0;
+                              const taskProg = est > 0 ? Math.min(100, Math.round((trk / est) * 100)) : 0;
+
+                              return (
+                                <div
+                                  key={idx}
+                                  onClick={() => {
+                                    setSelectedViewTicket(t);
+                                    setShowViewModal(true);
+                                  }}
+                                  className="bg-zinc-950 p-3 rounded-xl border border-zinc-800/80 space-y-2 cursor-pointer hover:border-zinc-700 transition-all text-xs"
+                                >
+                                  <div className="flex justify-between items-start">
+                                    <span className="font-bold text-zinc-200 truncate max-w-[160px]">{t.title}</span>
+                                    <span className="text-[10px] font-mono text-blue-400">{taskProg}%</span>
+                                  </div>
+                                  <p className="text-[11px] text-zinc-400 truncate">Resp: {getAssigneeName(t.assigned_to_id) || "Por atribuir"} • Estado: {t.status || "Pendente"}</p>
+                                  <div className="w-full bg-zinc-800 h-1 rounded-full overflow-hidden">
+                                    <div className="bg-blue-500 h-full rounded-full" style={{ width: `${taskProg}%` }}></div>
+                                  </div>
+                                </div>
+                              );
+                            })
+                        ) : (
+                          <p className="text-xs text-zinc-500 italic col-span-3">Parabéns! Não existem tarefas pendentes em nenhum projeto.</p>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Alerta de Projetos em Risco / Derrapagem de Prazo */}
+                    <div className="bg-zinc-900 border border-amber-500/30 p-5 rounded-2xl space-y-4">
+                      <div className="flex justify-between items-center">
+                        <span className="text-[10px] font-semibold text-amber-400 uppercase tracking-wider block">Análise de Risco e Derrapagem de Prazos</span>
+                        <span className="text-xs font-mono text-zinc-400">Monitorização de Prazos</span>
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                        {(() => {
+                          const today = new Date();
+
+                          const projectsAtRisk = availableProjects.filter(p => {
+                            if (!p.due_date) return false;
+                            const dueDate = new Date(p.due_date);
+                            const pTickets = tickets.filter(t => t.project_id === p.id || t.project === p.name);
+                            const totalT = pTickets.length;
+                            const doneT = pTickets.filter(t => t.status && ['done', 'concluído', 'concluido'].includes(t.status.toLowerCase())).length;
+                            const prog = totalT > 0 ? Math.round((doneT / totalT) * 100) : 0;
+
+                            // Consideramos em risco se a data limite já passou e o progresso ainda não está a 100%
+                            const isPastDue = dueDate < today && prog < 100;
+                            return isPastDue;
+                          });
+
+                          if (projectsAtRisk.length === 0) {
+                            return <p className="text-xs text-zinc-500 italic col-span-3">Excelente! Nenhum projeto se encontra em situação de derrapagem de prazo.</p>;
+                          }
+
+                          return projectsAtRisk.map((p, idx) => {
+                            const pTickets = tickets.filter(t => t.project_id === p.id || t.project === p.name);
+                            const totalT = pTickets.length;
+                            const doneT = pTickets.filter(t => t.status && ['done', 'concluído', 'concluido'].includes(t.status.toLowerCase())).length;
+                            const prog = totalT > 0 ? Math.round((doneT / totalT) * 100) : 0;
+
+                            return (
+                              <div key={p.id || idx} className="bg-zinc-950 p-3 rounded-xl border border-amber-500/20 space-y-2 text-xs">
+                                <div className="flex justify-between items-center">
+                                  <span className="font-bold text-zinc-200 truncate max-w-[140px]">{p.name || p.title}</span>
+                                  <span className="text-[10px] font-mono text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded">Em Risco</span>
+                                </div>
+                                <p className="text-[11px] text-zinc-400">Prazo limite: <span className="text-amber-400 font-mono">{p.due_date.split('T')[0]}</span></p>
+                                <div className="w-full bg-zinc-800 h-1.5 rounded-full overflow-hidden">
+                                  <div className="bg-amber-500 h-full rounded-full" style={{ width: `${prog}%` }}></div>
+                                </div>
+                                <div className="flex justify-between text-[10px] font-mono text-zinc-400">
+                                  <span>Progresso: {prog}%</span>
+                                  <span>{doneT}/{totalT} tarefas</span>
+                                </div>
+                              </div>
+                            );
+                          });
+                        })()}
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                /* Vista Flowstate Exclusiva para Utilizador Normal / Colaborador */
+                <div className="space-y-6">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+
+                    {/* 1. Colegas de Equipa em Operação (Live / Quem está a trabalhar e em quê) */}
+                    <div className="bg-zinc-900 border border-purple-500/30 p-5 rounded-2xl space-y-4">
+                      <div className="flex justify-between items-center">
+                        <span className="text-[10px] font-semibold text-purple-400 uppercase tracking-wider block">Equipa em Operação (Live)</span>
+                        <span className="text-xs font-mono text-zinc-400">Em tempo real</span>
+                      </div>
+
+                      <div className="space-y-2 max-h-[300px] overflow-y-auto pr-1">
+                        {(() => {
+                          // Colegas com cronómetro ativo neste momento, excluindo o próprio utilizador
+                          const liveColleagues = visibleWorkers.filter(w => w.assigned_to_id !== currentUserInfo.id);
+
+                          if (liveColleagues.length === 0) {
+                            return <p className="text-xs text-zinc-500 italic">Nenhum colega com o cronómetro ativo no momento.</p>;
+                          }
+
+                          return liveColleagues.map((t, idx) => (
+                            <div key={t.id || idx} className="flex items-center justify-between bg-zinc-950 p-3 rounded-xl border border-zinc-800/80 text-xs">
+                              <span className="font-medium text-zinc-200 flex items-center gap-2">
+                                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                                {getAssigneeName(t.assigned_to_id) || "Colega"}
+                              </span>
+                              <span className="text-purple-400 bg-purple-500/10 px-2.5 py-1 rounded-md font-mono text-[10px] truncate max-w-[160px]">
+                                {t.title}
+                              </span>
+                            </div>
+                          ));
+                        })()}
+                      </div>
+                    </div>
+
+                    {/* 2. Meus Projetos Associados (Com progresso) */}
+                    <div className="bg-zinc-900 border border-zinc-800 p-5 rounded-2xl space-y-4">
+                      <div className="flex justify-between items-center">
+                        <span className="text-[10px] font-semibold text-purple-400 uppercase tracking-wider block">Os Meus Projetos</span>
+                        <span className="text-xs font-mono text-zinc-400">Projetos Atribuídos</span>
+                      </div>
+
+                      <div className="space-y-3 max-h-[300px] overflow-y-auto pr-1">
+                        {(() => {
+                          // Projetos onde o utilizador está associado: é membro de uma equipa ligada ao projeto, ou tem tarefas atribuídas nele
+                          const myTeamIds = new Set(availableTeams.filter(tm => tm.members?.some(m => m.id === currentUserInfo.id) || tm.owner_id === currentUserInfo.id).map(tm => tm.id));
+
+                          const myProjects = availableProjects.filter(p => {
+                            const projectTeamIds = p.team_ids || (p.team_id ? [p.team_id] : []);
+                            const isTeamMember = projectTeamIds.some(tid => myTeamIds.has(tid));
+                            const hasMyTickets = tickets.some(t => (t.project_id === p.id || t.project === p.name) && t.assigned_to_id === currentUserInfo.id);
+                            return isTeamMember || hasMyTickets;
+                          });
+
+                          if (myProjects.length === 0) {
+                            return <p className="text-xs text-zinc-500 italic">Não estás associado a nenhum projeto de momento.</p>;
+                          }
+
+                          return myProjects.map((p, idx) => {
+                            const pTickets = tickets.filter(t => t.project_id === p.id || t.project === p.name);
+                            const totalT = pTickets.length;
+                            const doneT = pTickets.filter(t => t.status && ['done', 'concluído', 'concluido'].includes(t.status.toLowerCase())).length;
+                            const prog = totalT > 0 ? Math.round((doneT / totalT) * 100) : 0;
+
+                            return (
+                              <div key={p.id || idx} className="bg-zinc-950 p-3 rounded-xl border border-zinc-800/80 space-y-2 text-xs">
+                                <div className="flex justify-between items-center">
+                                  <span className="font-bold text-zinc-200">{p.name || p.title}</span>
+                                  <span className="font-mono text-purple-400 font-semibold">{prog}%</span>
+                                </div>
+                                <div className="w-full bg-zinc-800 h-1.5 rounded-full overflow-hidden">
+                                  <div className="bg-purple-500 h-full rounded-full transition-all duration-300" style={{ width: `${prog}%` }}></div>
+                                </div>
+                                <div className="flex justify-between text-[10px] font-mono text-zinc-400 pt-0.5">
+                                  <span>Prazo: {p.due_date ? p.due_date.split('T')[0] : "Sem prazo"}</span>
+                                  <span>{doneT}/{totalT} tarefas</span>
+                                </div>
+                              </div>
+                            );
+                          });
+                        })()}
+                      </div>
+                    </div>
+
+                  </div>
+
+                  {/* 3. Apenas as Minhas Tarefas (Pendentes e Ativas com respetiva % e popup) */}
+                  <div className="bg-zinc-900 border border-zinc-800 p-5 rounded-2xl space-y-4 col-span-full">
+                    <div className="flex justify-between items-center">
+                      <span className="text-[10px] font-semibold text-purple-400 uppercase tracking-wider block">As Minhas Tarefas (Por Concluir)</span>
+                      <span className="text-xs font-mono text-zinc-400">
+                        {(() => {
+                          return tickets.filter(t => {
+                            const isMine = t.assigned_to_id === currentUserInfo.id;
+                            const s = String(t.status || "").toLowerCase().trim();
+                            const est = Number(t.estimated_hours) || 0;
+                            const trk = Number(t.tracked_hours) || 0;
+                            const p = est > 0 ? Math.min(100, Math.round((trk / est) * 100)) : 0;
+                            const isDone = s.includes('done') || s.includes('concluí') || s.includes('conclui') || s.includes('terminad') || s.includes('complet') || s.includes('closed') || p >= 100;
+                            return isMine && !isDone;
+                          }).length;
+                        })()} Tarefas Pendentes
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3 max-h-[300px] overflow-y-auto pr-1">
+                      {(() => {
+                        const myActiveTickets = tickets.filter(t => {
+                          const isMine = t.assigned_to_id === currentUserInfo.id;
+                          const s = String(t.status || "").toLowerCase().trim();
+                          const est = Number(t.estimated_hours) || 0;
+                          const trk = Number(t.tracked_hours) || 0;
+                          const p = est > 0 ? Math.min(100, Math.round((trk / est) * 100)) : 0;
+                          const isDone = s.includes('done') || s.includes('concluí') || s.includes('conclui') || s.includes('terminad') || s.includes('complet') || s.includes('closed') || p >= 100;
+                          return isMine && !isDone;
+                        });
+
+                        if (myActiveTickets.length === 0) {
+                          return <p className="text-xs text-zinc-500 italic col-span-3">Parabéns! Não tens nenhuma tarefa pendente atribuída.</p>;
+                        }
+
+                        return myActiveTickets.map((t, idx) => {
+                          const est = Number(t.estimated_hours) || 0;
+                          const trk = Number(t.tracked_hours) || 0;
+                          const taskProg = est > 0 ? Math.min(100, Math.round((trk / est) * 100)) : 0;
+
+                          return (
+                            <div
+                              key={t.id || idx}
+                              onClick={() => {
+                                setSelectedViewTicket(t);
+                                setShowViewModal(true);
+                              }}
+                              className="bg-zinc-950 p-3 rounded-xl border border-zinc-800/80 space-y-2 cursor-pointer hover:border-zinc-700 transition-all text-xs"
+                            >
+                              <div className="flex justify-between items-start">
+                                <span className="font-bold text-zinc-200 truncate max-w-[160px]">{t.title}</span>
+                                <span className="text-[10px] font-mono text-purple-400">{taskProg}%</span>
+                              </div>
+                              <p className="text-[11px] text-zinc-400 truncate">Projeto: {getProjectName(t.project_id) || "Geral"} • Estado: {t.status || "Pendente"}</p>
+                              <div className="w-full bg-zinc-800 h-1 rounded-full overflow-hidden">
+                                <div className="bg-purple-500 h-full rounded-full" style={{ width: `${taskProg}%` }}></div>
+                              </div>
+                            </div>
+                          );
+                        });
+                      })()}
+                    </div>
+                  </div>
+                </div>
+                )
+              ) : (
+              <>
               <div className="flex items-center justify-between mb-6">
                 <h1 className="text-xl font-bold tracking-tight">Dashboard & Gestão</h1>
                 <button onClick={() => {fetchData(); fetchActiveWorkers();}} className="flex items-center gap-2 bg-zinc-900 border border-zinc-800 hover:bg-zinc-850 text-zinc-300 px-4 py-2 rounded-xl text-sm transition">
@@ -3214,8 +4153,8 @@ const fetchWeekStatus = async () => {
                 </div>
 
                 <div 
-                  onClick={() => { changeTab('tasks'); setStatusFilter(''); }}
-                  className="bg-zinc-900/80 border border-zinc-800/80 hover:border-red-500/40 p-5 rounded-2xl flex items-center justify-between cursor-pointer transition shadow-sm group"
+                  onClick={() => setShowDelayedModal(true)}
+                  className="bg-zinc-900/80 border border-zinc-800/80 hover:border-red-500/40 p-5 rounded-2xl flex items-center justify-between cursor-pointer hover:opacity-80 transition shadow-sm group"
                 >
                   <div>
                     <p className="text-xs font-medium text-red-400 uppercase tracking-wider">Atrasadas</p>
@@ -3225,8 +4164,8 @@ const fetchWeekStatus = async () => {
                 </div>
 
                 <div 
-                  onClick={() => { changeTab('tasks'); setStatusFilter('Done'); }}
-                  className="bg-zinc-900/80 border border-zinc-800/80 hover:border-emerald-500/40 p-5 rounded-2xl flex items-center justify-between cursor-pointer transition shadow-sm group"
+                  onClick={() => setShowCompletedModal(true)}
+                  className="bg-zinc-900/80 border border-zinc-800/80 hover:border-emerald-500/40 p-5 rounded-2xl flex items-center justify-between cursor-pointer hover:opacity-80 transition shadow-sm group"
                 >
                   <div>
                     <p className="text-xs font-medium text-emerald-400 uppercase tracking-wider">Concluídas</p>
@@ -3394,6 +4333,8 @@ const fetchWeekStatus = async () => {
                   </div>
                 )}
               </div>
+              </>
+              )}
             </div>
           )}
 
@@ -3905,14 +4846,32 @@ const fetchWeekStatus = async () => {
                   <FolderPlus className="w-4 h-4" /> Novo Projeto
                 </button>
               </div>
+
+              {/* ABAS DE NAVEGAÇÃO DOS PROJETOS */}
+              <div className="flex items-center gap-3 mb-4 border-b border-zinc-800 pb-3">
+                <button 
+                  onClick={() => setProjectTab('active')}
+                  className={`text-xs font-semibold px-3 py-1.5 rounded-xl transition ${projectTab === 'active' ? 'bg-blue-600/20 text-blue-400 border border-blue-500/30' : 'text-zinc-400 hover:text-zinc-200'}`}
+                >
+                  ⚡ Projetos Ativos ({availableProjects.filter(p => !p.is_archived).length})
+                </button>
+                <button 
+                  onClick={() => setProjectTab('archived')}
+                  className={`text-xs font-semibold px-3 py-1.5 rounded-xl transition ${projectTab === 'archived' ? 'bg-zinc-800 text-zinc-200 border border-zinc-700' : 'text-zinc-400 hover:text-zinc-200'}`}
+                >
+                  📦 Projetos Terminados ({availableProjects.filter(p => p.is_archived).length})
+                </button>
+              </div>
               
-              {availableProjects.length === 0 ? (
+              {availableProjects.filter(p => projectTab === 'archived' ? p.is_archived : !p.is_archived).length === 0 ? (
                 <div className="bg-zinc-900 border border-zinc-800 rounded-2xl p-12 text-center text-zinc-500 text-sm">
-                  Nenhum projeto associado.
+                  {projectTab === 'archived' ? 'Nenhum projeto arquivado.' : 'Nenhum projeto associado.'}
                 </div>
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                  {availableProjects.map(proj => {
+                  {availableProjects
+                    .filter(p => projectTab === 'archived' ? p.is_archived : !p.is_archived)
+                    .map(proj => {
                     const projTickets = availableTickets.filter(t => t.project_id === proj.id);
                     const total = projTickets.length;
                     const done = projTickets.filter(t => t.status && ['done', 'concluído', 'concluido'].includes(t.status.toLowerCase())).length;
@@ -3932,6 +4891,9 @@ const fetchWeekStatus = async () => {
                             <p className="text-xs text-zinc-400 mt-1 line-clamp-2 min-h-[32px]">{proj.description || 'Sem descrição'}</p>
                           </div>
                           <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition">
+                            <button onClick={(e) => { e.stopPropagation(); toggleArchiveProject(proj.id); }} className="text-[10px] font-mono text-zinc-400 bg-zinc-950 border border-zinc-800 hover:bg-zinc-800 hover:text-zinc-100 px-2.5 py-1.5 rounded-lg transition" title={proj.is_archived ? 'Restaurar Projeto' : 'Arquivar Projeto'}>
+                              {proj.is_archived ? '🔄 Restaurar' : '📁 Arquivar'}
+                            </button>
                             <button onClick={(e) => { e.stopPropagation(); openEditProjectModal(proj); }} className="p-1.5 bg-zinc-950 border border-zinc-800 text-zinc-400 hover:text-zinc-100 rounded-lg transition" title="Editar Projeto"><Edit3 className="w-3.5 h-3.5" /></button>
                             <button onClick={(e) => { e.stopPropagation(); handleDeleteProject(proj.id); }} className="p-1.5 bg-zinc-950 border border-zinc-800 text-red-400 hover:text-red-300 rounded-lg transition" title="Apagar Projeto"><Trash2 className="w-3.5 h-3.5" /></button>
                           </div>
@@ -3992,8 +4954,23 @@ const fetchWeekStatus = async () => {
                           );
                         })()}
 
+                        {/* Indicador Inteligente: Dias de trabalho necessários + Cor pela margem em dias úteis */}
+                        {(() => {
+                          const status = getProjectSmartStatus(proj, projTickets);
+
+                          return (
+                            <div className={`mt-3 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-[11px] font-mono font-medium w-fit ${status.badgeColor}`}>
+                              <span>⏳ Prazo:</span>
+                              <span>{status.text}</span>
+                            </div>
+                          );
+                        })()}
+
                         <button 
-                          onClick={() => openProjectTasksModal(proj)}
+                          onClick={(e) => {
+                            e.stopPropagation(); // 🛑 Impede que o clique dispare o container do projeto
+                            openProjectTasksModal(proj);
+                          }}
                           className="mt-auto w-full flex items-center justify-center gap-2 bg-zinc-950 hover:bg-zinc-800 border border-zinc-800 text-zinc-300 py-2 rounded-xl text-xs font-medium transition"
                         >
                           <ListFilter className="w-3.5 h-3.5" /> Ver Tarefas
@@ -5403,13 +6380,30 @@ const fetchWeekStatus = async () => {
                 if (isDone || dueDateStr >= todayString) return false;
               }
 
-              // 3. Filtro de Menos de 72h para o fim (Entre agora e daqui a 72h, não concluídas)
+              // 3. Filtro de Menos de 72h úteis para o fim (Ignorando fins de semana)
               if (filterUpcoming72h) {
                 if (isDone) return false;
-                const dueMs = new Date(t.due_date).getTime();
-                const diffMs = dueMs - nowMs;
-                // Se já passou (atrasada) ou se falta mais de 72h, esconde. Queremos estritamente entre 0h e 72h.
-                if (diffMs < 0 || diffMs > hours72Ms) return false;
+
+                const dueTime = new Date(t.due_date).getTime();
+                const nowTime = new Date().getTime();
+
+                if (dueTime < nowTime) return false; // Se já passou, não entra aqui (fica para as atrasadas)
+
+                // Função auxiliar para calcular dias úteis entre 'now' e o 'due_date'
+                let businessHours = 0;
+                let cursor = new Date(nowTime);
+
+                while (cursor.getTime() < dueTime) {
+                  const dayOfWeek = cursor.getDay();
+                  // Se não for Sábado (6) nem Domingo (0), conta as horas do dia ou o bloco restante
+                  if (dayOfWeek !== 0 && dayOfWeek !== 6) {
+                    businessHours += 24; // Conta 24h por cada dia útil
+                  }
+                  cursor.setDate(cursor.getDate() + 1);
+                }
+
+                // Se o total de horas úteis até ao prazo for menor ou igual a 72h (3 dias úteis), passa no filtro!
+                if (businessHours > 72) return false;
               }
 
               return true;
@@ -6535,7 +7529,8 @@ const fetchWeekStatus = async () => {
                             key={proj.id}
                             onClick={() => {
                               setShowQuickSearch(false);
-                              // goToProjectTasks(proj.id); // se tiveres essa função, descomenta
+                              setQuickSearchQuery('');
+                              openProjectTasksModal(proj);
                             }}
                             className="flex items-center justify-between p-3 rounded-xl hover:bg-zinc-800/80 cursor-pointer transition group"
                           >
@@ -6564,7 +7559,9 @@ const fetchWeekStatus = async () => {
                             key={ticket.id}
                             onClick={() => {
                               setShowQuickSearch(false);
-                              openComments(ticket);
+                              setQuickSearchQuery('');
+                              setSelectedViewTicket(ticket);
+                              setShowViewModal(true);
                             }}
                             className="flex items-center justify-between p-3 rounded-xl hover:bg-zinc-800/80 cursor-pointer transition group"
                           >
@@ -6593,6 +7590,86 @@ const fetchWeekStatus = async () => {
             <div className="px-4 py-2.5 border-t border-zinc-800 bg-zinc-950/40 flex items-center justify-between text-[11px] text-zinc-500">
               <span>Navegação rápida segura por função</span>
               <span className="font-mono">FlowPulse Spotlight</span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* POP-UP DE TAREFAS ATRASADAS */}
+      {showDelayedModal && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fadeIn" onClick={() => setShowDelayedModal(false)}>
+          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl max-w-lg w-full p-6 shadow-2xl flex flex-col max-h-[80vh]" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between pb-3 border-b border-zinc-800 mb-4">
+              <h2 className="text-sm font-semibold text-red-400 flex items-center gap-2">
+                🚨 Tarefas Atrasadas
+              </h2>
+              <button onClick={() => setShowDelayedModal(false)} className="p-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-xl transition text-xs">
+                ✕
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto space-y-2.5 pr-1">
+              {overdueTickets.length === 0 ? (
+                <p className="text-xs text-zinc-500 text-center py-6">Parabéns! Não tens tarefas atrasadas.</p>
+              ) : (
+                overdueTickets.map(ticket => (
+                  <div 
+                    key={ticket.id} 
+                    onClick={() => {
+                      setShowDelayedModal(false);
+                      setSelectedViewTicket(ticket);
+                      setShowViewModal(true);
+                    }}
+                    className="p-3 bg-zinc-950 border border-zinc-800/80 hover:border-zinc-700 rounded-xl cursor-pointer transition flex items-center justify-between"
+                  >
+                    <div>
+                      <p className="text-xs font-semibold text-zinc-200">{ticket.title}</p>
+                      <p className="text-[10px] text-red-400 mt-0.5">Prazo: {ticket.due_date.split('T')[0]}</p>
+                    </div>
+                    <span className="text-[10px] text-zinc-400 bg-zinc-900 px-2.5 py-1 rounded-lg">Ver ➔</span>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* POP-UP DE TAREFAS CONCLUÍDAS */}
+      {showCompletedModal && (
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fadeIn" onClick={() => setShowCompletedModal(false)}>
+          <div className="bg-zinc-900 border border-zinc-800 rounded-2xl max-w-lg w-full p-6 shadow-2xl flex flex-col max-h-[80vh]" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between pb-3 border-b border-zinc-800 mb-4">
+              <h2 className="text-sm font-semibold text-emerald-400 flex items-center gap-2">
+                ✅ Tarefas Concluídas
+              </h2>
+              <button onClick={() => setShowCompletedModal(false)} className="p-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-xl transition text-xs">
+                ✕
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto space-y-2.5 pr-1">
+              {doneTickets.length === 0 ? (
+                <p className="text-xs text-zinc-500 text-center py-6">Ainda não existem tarefas concluídas registadas.</p>
+              ) : (
+                doneTickets.map(ticket => (
+                  <div 
+                    key={ticket.id} 
+                    onClick={() => {
+                      setShowCompletedModal(false);
+                      setSelectedViewTicket(ticket);
+                      setShowViewModal(true);
+                    }}
+                    className="p-3 bg-zinc-950 border border-zinc-800/80 hover:border-zinc-700 rounded-xl cursor-pointer transition flex items-center justify-between"
+                  >
+                    <div>
+                      <p className="text-xs font-semibold text-zinc-200">{ticket.title}</p>
+                      <p className="text-[10px] text-emerald-500 mt-0.5">Concluída com sucesso</p>
+                    </div>
+                    <span className="text-[10px] text-zinc-400 bg-zinc-900 px-2.5 py-1 rounded-lg">Ver ➔</span>
+                  </div>
+                ))
+              )}
             </div>
           </div>
         </div>
@@ -7710,31 +8787,28 @@ const fetchWeekStatus = async () => {
                 <p className="mt-0.5">{selectedTicketDetails.status} • <span className="font-semibold">{selectedTicketDetails.priority}</span></p>
               </div>
 
-              {selectedTicketDetails.review_tracked_hours > 0 && (
-                <div className="grid grid-cols-2 gap-3 bg-zinc-950 border border-zinc-800 p-4 rounded-xl">
-
-                  {/* Horas de Execução Normal */}
-                  <div>
-                    <span className="text-[10px] font-mono text-zinc-500 uppercase tracking-wider block mb-1">
-                      ⏱️ Tempo de Execução
-                    </span>
-                    <span className="text-sm font-bold text-zinc-100 font-mono">
-                      {formatToHHMM(selectedTicketDetails.tracked_hours || 0)}
-                    </span>
-                  </div>
-
-                  {/* Horas de Revisão (Separado à parte) */}
-                  <div>
-                    <span className="text-[10px] font-mono text-amber-500/80 uppercase tracking-wider block mb-1">
-                      🔍 Tempo de Revisão
-                    </span>
-                    <span className="text-sm font-bold text-amber-400 font-mono">
-                      {formatToHHMM(selectedTicketDetails.review_tracked_hours || 0)}
-                    </span>
-                  </div>
-
+              <div className="space-y-3 bg-zinc-950 border border-zinc-800 p-4 rounded-xl">
+                {/* 1. Tempo Estimado */}
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-zinc-400">Tempo Estimado:</span>
+                  <span className="font-mono font-bold text-zinc-200">{formatToHHMM(selectedTicketDetails.estimated_hours || 0)}</span>
                 </div>
-              )}
+
+                {/* 2. Trabalho (Horas Gastas / Tracked) */}
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-zinc-400">Trabalho Realizado:</span>
+                  <span className="font-mono font-bold text-blue-400">{formatToHHMM(selectedTicketDetails.tracked_hours || 0)}</span>
+                </div>
+
+                {/* 3. Revisão */}
+                {selectedTicketDetails.review_tracked_hours > 0 && (
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="text-zinc-400">Revisão:</span>
+                    <span className="font-mono font-bold text-amber-400">{formatToHHMM(selectedTicketDetails.review_tracked_hours || 0)}</span>
+                  </div>
+                )}
+              </div>
+
 
               <div>
                 <span className="block text-xs font-medium text-zinc-500 uppercase">Descrição Inicial</span>
@@ -8368,7 +9442,20 @@ const fetchWeekStatus = async () => {
 
             {/* Corpo do Modal com Scroll */}
             <div className="space-y-6 flex-1 overflow-y-auto pr-1">
-              
+
+              {/* Carga de Trabalho Restante */}
+              {(() => {
+                const projTickets = (tickets || []).filter(t => t.project_id === selectedProjectDetailsModal.id);
+                return (
+                  <div className="bg-zinc-950 border border-zinc-800 p-3.5 rounded-xl flex items-center justify-between text-xs">
+                    <span className="text-zinc-400">📅 Carga de Trabalho Restante:</span>
+                    <span className="font-mono font-bold text-blue-400">
+                      {calculateRemainingWorkingDays(projTickets)}
+                    </span>
+                  </div>
+                );
+              })()}
+
               {/* Descrição e Info */}
               <div className="bg-zinc-950 border border-zinc-800/80 p-4 rounded-xl space-y-2">
                 <p className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">Descrição</p>
@@ -8411,24 +9498,70 @@ const fetchWeekStatus = async () => {
 
               {/* Tarefas do Projeto */}
               <div>
-                <p className="text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-2">Tarefas do Projeto</p>
-                <div className="space-y-1.5 max-h-48 overflow-y-auto">
+                <div className="space-y-3 mt-4 max-h-64 overflow-y-auto">
+                  <p className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">Progresso das Tarefas</p>
+
                   {(() => {
-                    const projTasks = (tickets || []).filter(t => t.project_id === selectedProjectDetailsModal.id);
-                    if (projTasks.length === 0) {
-                      return <p className="text-xs text-zinc-500 italic p-3 bg-zinc-950 border border-zinc-800 rounded-xl">Sem tarefas associadas.</p>;
+                    const projTickets = (tickets || []).filter(t => t.project_id === selectedProjectDetailsModal.id);
+
+                    if (projTickets.length === 0) {
+                      return <p className="text-xs text-zinc-500 italic">Sem tarefas associadas a este projeto.</p>;
                     }
-                    return projTasks.map(t => (
-                      <div key={t.id} className="p-3 bg-zinc-950 border border-zinc-800 rounded-xl flex items-center justify-between text-xs">
-                        <div className="flex items-center gap-2 min-w-0">
-                          <span className="font-mono text-zinc-500">#{t.id}</span>
-                          <span className="font-medium text-zinc-200 truncate">{t.title}</span>
+
+                    return projTickets.map(t => {
+                      const estimated = Number(t.estimated_hours) || 0;
+                      const tracked = Number(t.tracked_hours) || 0;
+                      const isOvertime = tracked > estimated && estimated > 0;
+                      const overtimeHours = isOvertime ? (tracked - estimated).toFixed(2) : 0;
+                      const percent = estimated > 0 ? Math.min(Math.round((tracked / estimated) * 100), 100) : (t.status === 'Done' ? 100 : 0);
+
+                      return (
+                        <div key={t.id} className="bg-zinc-950 border border-zinc-800/80 p-3.5 rounded-xl space-y-2">
+
+                          {/* Cabeçalho da Tarefa */}
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2 truncate">
+                              <span className="text-xs font-mono text-zinc-500">#{t.id}</span>
+                              <span className="text-xs font-medium text-zinc-200 truncate">{t.title}</span>
+                            </div>
+                            <span className={`text-[10px] px-2 py-0.5 rounded font-bold border ${
+                              t.status === 'Done' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' : 'bg-zinc-900 text-zinc-400 border-zinc-800'
+                            }`}>
+                              {t.status}
+                            </span>
+                          </div>
+
+                          {/* Barra de Progresso Individual */}
+                          <div className="space-y-1">
+                            <div className="flex justify-between text-[11px] font-mono">
+                              <span className="text-zinc-400">Progresso</span>
+                              <span className={isOvertime ? "text-red-400 font-bold" : "text-zinc-300"}>{percent}%</span>
+                            </div>
+                            <div className="w-full bg-zinc-900 rounded-full h-1.5 overflow-hidden border border-zinc-800">
+                              <div
+                                className={`h-full rounded-full transition-all duration-300 ${isOvertime ? 'bg-red-500' : 'bg-blue-500'}`}
+                                style={{ width: `${percent}%` }}
+                              />
+                            </div>
+                          </div>
+
+                          {/* Controlo de Horas e Horas a Mais */}
+                          <div className="flex flex-wrap items-center justify-between text-[11px] font-mono pt-1 text-zinc-400 border-t border-zinc-900">
+                            <span>⏱️ Real: <strong className="text-zinc-200">{formatToHHMM(tracked)}</strong></span>
+                            <span>🎯 Previsto: <strong className="text-zinc-200">{formatToHHMM(estimated)}</strong></span>
+
+                            {isOvertime ? (
+                              <span className="text-red-400 font-bold bg-red-500/10 border border-red-500/20 px-2 py-0.5 rounded">
+                                ⚠️ +{formatToHHMM(overtimeHours)} a mais
+                              </span>
+                            ) : (
+                              <span className="text-emerald-400">Dentro do prazo</span>
+                            )}
+                          </div>
+
                         </div>
-                        <span className={`text-[10px] px-2 py-0.5 rounded font-medium shrink-0 ${t.status === 'Done' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-zinc-900 text-zinc-400'}`}>
-                          {t.status}
-                        </span>
-                      </div>
-                    ));
+                      );
+                    });
                   })()}
                 </div>
               </div>
@@ -8559,19 +9692,24 @@ const fetchWeekStatus = async () => {
                 </div>
               </div>
 
-              {/* Tempos (Trabalho, Estimado e Revisão) */}
-              <div className="grid grid-cols-3 gap-3 bg-zinc-950 border border-zinc-800 p-4 rounded-xl font-mono text-center">
-                <div>
-                  <span className="text-[10px] text-zinc-500 uppercase tracking-wider block mb-1 font-sans">Trabalho</span>
-                  <span className="text-xs font-bold text-zinc-200">{formatToHHMM(selectedViewTicket.tracked_hours || 0)}</span>
+              {/* Tempos (Estimado, Trabalho e Revisão) */}
+              <div className="grid grid-cols-3 gap-3">
+                {/* 1. Estimado */}
+                <div className="bg-zinc-950 border border-zinc-800/80 p-3 rounded-xl text-center">
+                  <span className="text-[10px] font-semibold text-zinc-400 uppercase tracking-wider block mb-1">Estimado</span>
+                  <span className="font-mono text-sm font-bold text-zinc-200">{formatToHHMM(selectedViewTicket.estimated_hours || 0)}</span>
                 </div>
-                <div>
-                  <span className="text-[10px] text-zinc-500 uppercase tracking-wider block mb-1 font-sans">Estimado</span>
-                  <span className="text-xs font-bold text-zinc-300">{formatToHHMM(selectedViewTicket.estimated_hours || 0)}</span>
+
+                {/* 2. Trabalho */}
+                <div className="bg-zinc-950 border border-zinc-800/80 p-3 rounded-xl text-center">
+                  <span className="text-[10px] font-semibold text-zinc-400 uppercase tracking-wider block mb-1">Trabalho</span>
+                  <span className="font-mono text-sm font-bold text-zinc-200">{formatToHHMM(selectedViewTicket.tracked_hours || 0)}</span>
                 </div>
-                <div>
-                  <span className="text-[10px] text-amber-500/80 uppercase tracking-wider block mb-1 font-sans">Revisão</span>
-                  <span className="text-xs font-bold text-amber-400">{formatToHHMM(selectedViewTicket.review_tracked_hours || 0)}</span>
+
+                {/* 3. Revisão */}
+                <div className="bg-zinc-950 border border-zinc-800/80 p-3 rounded-xl text-center">
+                  <span className="text-[10px] font-semibold text-amber-400 uppercase tracking-wider block mb-1">Revisão</span>
+                  <span className="font-mono text-sm font-bold text-amber-400">{formatToHHMM(selectedViewTicket.review_tracked_hours || 0)}</span>
                 </div>
               </div>
 
