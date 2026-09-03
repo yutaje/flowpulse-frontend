@@ -19,6 +19,19 @@ const formatToHHMM = (hoursFloat) => {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
 };
 
+// Formatador de horas decimais -> HH:MMh, com sinal (usado na etiqueta de excesso do bloco de Desvios de Horas)
+const formatarExcessoHHMM = (horasDecimais) => {
+  if (!horasDecimais || isNaN(horasDecimais)) return "00:00";
+  const horas = Math.floor(Math.abs(horasDecimais));
+  const minutos = Math.round((Math.abs(horasDecimais) - horas) * 60);
+
+  const hFormatado = String(horas).padStart(2, '0');
+  const mFormatado = String(minutos).padStart(2, '0');
+  const sinal = horasDecimais < 0 ? '-' : '+';
+
+  return `${sinal}${hFormatado}:${mFormatado}h`;
+};
+
 // Calcula a carga de trabalho restante (em dias úteis de 8h) para as tarefas ainda não concluídas
 const calculateRemainingWorkingDays = (projectTickets) => {
   // Soma todas as horas estimadas vs gastas das tarefas que ainda NÃO estão concluídas
@@ -52,6 +65,19 @@ const calculateRemainingWorkingDays = (projectTickets) => {
 const getProjectSmartStatus = (project, projectTickets) => {
   if (!project.due_date) {
     return { text: "Sem prazo definido", badgeColor: "bg-zinc-800 text-zinc-300 border-zinc-700" };
+  }
+
+  // Verificar se o projeto está 100% concluído
+  const totalT = projectTickets.length;
+  const doneT = projectTickets.filter(t => t.status && ['done', 'concluído', 'concluido'].includes(t.status.toLowerCase())).length;
+  const percent = totalT > 0 ? Math.round((doneT / totalT) * 100) : 0;
+
+  // Se estiver a 100%, força sempre a cor verde e limpa o texto de esforço pendente
+  if (percent >= 100 || (project.progress_percentage && project.progress_percentage >= 100)) {
+    return {
+      text: "Concluído (100%)",
+      badgeColor: "bg-emerald-500/10 text-emerald-400 border-emerald-500/30"
+    };
   }
 
   const today = new Date();
@@ -525,6 +551,7 @@ const fetchWeekStatus = async () => {
   // Estados para a Recomendação de IA (Foco Inteligente)
   const [aiRecommendation, setAiRecommendation] = useState('');
   const [loadingAiRec, setLoadingAiRec] = useState(false);
+  const [gerandoAI, setGerandoAI] = useState(false);
 
   const [tickets, setTickets] = useState([]);
   const [projects, setProjects] = useState([]);
@@ -537,6 +564,7 @@ const fetchWeekStatus = async () => {
 
   // --- ESTADOS DO CHAT ---
   const [chatRooms, setChatRooms] = useState([]);
+  const [isRefreshingRooms, setIsRefreshingRooms] = useState(false);
   const [activeChatRoom, setActiveChatRoom] = useState(null);
   const [chatMessages, setChatMessages] = useState([]);
   const [chatInput, setChatInput] = useState('');
@@ -748,6 +776,8 @@ const fetchWeekStatus = async () => {
   const [taskTypes, setTaskTypes] = useState(['Geral', 'Software', 'Hardware', 'Redes']);
   const [typeFilter, setTypeFilter] = useState('');
   const [knowledgeSort, setKnowledgeSort] = useState('newest');
+  // Estado exclusivo da Base de Conhecimento — alimentado pela rota dedicada, não filtra por ocultação
+  const [baseConhecimento, setBaseConhecimento] = useState([]);
   const [selectedKnowledgeTicket, setSelectedKnowledgeTicket] = useState(null);
   const [selectedProjectDetailsModal, setSelectedProjectDetailsModal] = useState(null);
   const [selectedClientDetailsModal, setSelectedClientDetailsModal] = useState(null);
@@ -885,6 +915,10 @@ const fetchWeekStatus = async () => {
   }, [token, search, statusFilter, projectFilter, priorityFilter]);
 
   useEffect(() => {
+    if (token && taskViewMode === 'knowledge') fetchBaseConhecimento();
+  }, [token, taskViewMode]);
+
+  useEffect(() => {
     let interval = null;
     if (activeTimerTask && timerStartTime) {
       // Recalcula imediatamente os segundos reais
@@ -974,6 +1008,26 @@ const fetchWeekStatus = async () => {
     }
   };
 
+  // 🔄 Força a sincronização do canal geral de um projeto com os membros atuais
+  const handleSyncChatGeral = async (projectId) => {
+    if (!projectId) return;
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      const response = await axios.post(
+        `${API_URL}/chat/projects/${projectId}/sync-general?current_user_id=${currentUserInfo.id}`,
+        {},
+        { headers }
+      );
+      // Sincronização silenciosa: sem alert de sucesso, só log para debug se precisares
+      console.log("Canal geral sincronizado. Total de membros:", response.data?.member_count);
+      // Recarrega as salas de chat para mostrar o resultado imediatamente
+      fetchChatRooms();
+    } catch (error) {
+      console.error("Erro ao sincronizar canal geral:", error);
+      alert("Erro ao sincronizar o chat geral.");
+    }
+  };
+
   // Carregar salas de chat do utilizador (Diretas ou de Projetos)
   const fetchChatRooms = async () => {
     if (!token || !currentUserInfo.id) return;
@@ -1012,6 +1066,19 @@ const fetchWeekStatus = async () => {
 
     } catch (e) {
       console.error("Erro ao carregar salas de chat", e);
+    }
+  };
+
+  // 🔄 Refresh manual e silencioso das salas: sem alerts, só feedback visual (ícone a rodar)
+  const handleRefreshRoomsSilencioso = async () => {
+    setIsRefreshingRooms(true);
+    try {
+      await fetchChatRooms();
+      // Sem alert — o feedback é apenas visual (o ícone RefreshCw roda enquanto isRefreshingRooms é true)
+    } catch (error) {
+      console.error("Erro ao atualizar salas:", error);
+    } finally {
+      setIsRefreshingRooms(false);
     }
   };
 
@@ -1644,6 +1711,27 @@ const fetchWeekStatus = async () => {
     }
   };
 
+  // 🚨 Envia um aviso ao responsável por uma tarefa atrasada
+  const handleNotificarUtilizador = async (tarefa) => {
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      const response = await axios.post(`${API_URL}/notifications/`, {
+        user_id: tarefa.assigned_to_id,
+        title: "Aviso de Prazo Excedido",
+        message: `Foste avisado que tens de acabar a tarefa atrasada: "${tarefa.title}"`
+      }, { headers });
+
+      if (response.status >= 200 && response.status < 300) {
+        alert(`Notificação enviada com sucesso para ${getAssigneeName(tarefa.assigned_to_id) || 'o responsável'}!`);
+      } else {
+        alert("Erro ao enviar a notificação.");
+      }
+    } catch (error) {
+      console.error("Erro de rede:", error);
+      alert(error.response?.data?.detail || "Erro ao enviar a notificação.");
+    }
+  };
+
   const handleLogin = async (e) => {
     e.preventDefault();
     try {
@@ -1919,12 +2007,15 @@ const fetchWeekStatus = async () => {
   // Função para gerar relatório automaticamente com o Gemini
   const handleGenerateAI = async () => {
     if (!ticketToComplete) return;
+    setGerandoAI(true);
     try {
       const headers = { Authorization: `Bearer ${token}` };
       const res = await axios.post(`${API_URL}/tickets/${ticketToComplete.id}/generate-ai-report`, {}, { headers });
       setFinalDesc(res.data.generated_report);
     } catch (err) {
       alert('Erro ao gerar relatório automático com o Gemini.');
+    } finally {
+      setGerandoAI(false);
     }
   };
 
@@ -2460,6 +2551,42 @@ const fetchWeekStatus = async () => {
     }
   };
 
+  // Esconde uma tarefa concluída das vistas de Kanban e Lista (mantém-na na Base de Conhecimento)
+  const handleOcultarDasAtivas = async (tarefaId) => {
+    try {
+      const response = await fetch(`${API_URL}/tickets/${tarefaId}/hide-active`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('token')}`
+        }
+      });
+
+      if (response.ok) {
+        // Remove a tarefa apenas da vista atual do Kanban/Lista no frontend
+        setTickets(prev => prev.filter(t => t.id !== tarefaId));
+      }
+    } catch (error) {
+      console.error("Erro ao esconder tarefa:", error);
+    }
+  };
+
+  // Vai buscar a Base de Conhecimento à rota dedicada — traz TODAS as tarefas concluídas,
+  // incluindo as ocultadas do Kanban/Lista via hide-active
+  const fetchBaseConhecimento = async () => {
+    try {
+      const response = await fetch(`${API_URL}/tickets/knowledge-base/list`, {
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('token')}`
+        }
+      });
+      const data = await response.json();
+      setBaseConhecimento(data); // Estado exclusivo da Base de Conhecimento
+    } catch (error) {
+      console.error("Erro ao carregar a Base de Conhecimento:", error);
+    }
+  };
+
   const handleDragStart = (e, ticketId) => {
     e.dataTransfer.setData('text/plain', ticketId);
   };
@@ -2933,6 +3060,31 @@ const fetchWeekStatus = async () => {
   // Se não puder gerir a tarefa, o modal abre estritamente em modo de leitura (Read-only)
   const isReadOnly = editMode && !userHasPermission;
 
+  // 🚨 Alertas de Flowstate: isola tarefas que precisam de atenção urgente
+  const agoraFlowstate = new Date();
+
+  // 1. Tarefas Atrasadas (prazo já passou e não estão concluídas)
+  const tarefasAtrasadas = availableTickets.filter(t => {
+    const isDone = t.status && ['done', 'concluído', 'concluido'].includes(t.status.toLowerCase());
+    return !isDone && t.due_date && new Date(t.due_date) < agoraFlowstate;
+  });
+
+  // 2. Tarefas em Risco (prazo a terminar nas próximas 24h ou trabalho restante colado ao prazo)
+  const tarefasEmRisco = availableTickets.filter(t => {
+    const isDone = t.status && ['done', 'concluído', 'concluido'].includes(t.status.toLowerCase());
+    if (isDone || !t.due_date) return false;
+
+    const dataLimite = new Date(t.due_date);
+    const horasAteAoPrazo = (dataLimite - agoraFlowstate) / (1000 * 60 * 60); // horas restantes até ao prazo
+    const horasRestantesTrabalho = (Number(t.estimated_hours) || 0) - (Number(t.tracked_hours) || 0);
+
+    // Em risco se faltam menos de 24h para o prazo OU se o trabalho que falta excede o tempo até ao limite
+    const expiraBrevemente = horasAteAoPrazo > 0 && horasAteAoPrazo <= 24;
+    const trabalhoColadoAoPrazo = horasAteAoPrazo > 0 && horasRestantesTrabalho >= horasAteAoPrazo;
+
+    return expiraBrevemente || trabalhoColadoAoPrazo;
+  });
+
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 flex overflow-hidden">
       
@@ -3110,6 +3262,37 @@ const fetchWeekStatus = async () => {
                       <button onClick={() => setShowChatModal(false)} className="text-zinc-500 hover:text-zinc-300 text-sm">✕</button>
                     </div>
                   </div>
+
+                  {/* Seletor de Abas de Mensagens (Sincronizado com a página de Mensagens) */}
+                  {!activeChatRoom && !showNewChatList && (
+                    <div style={{ display: 'flex', gap: '6px', padding: '0 16px 12px 16px', borderBottom: '1px solid #262626' }}>
+                      <button
+                        onClick={() => setChatContext('direct')}
+                        style={{
+                          background: chatContext === 'direct' ? '#262626' : 'transparent',
+                          color: chatContext === 'direct' ? '#fff' : '#888',
+                          border: 'none', padding: '5px 10px', borderRadius: '6px', cursor: 'pointer', fontSize: '11px', fontWeight: '500'
+                        }}
+                      >
+                        Normais
+                      </button>
+                      <button
+                        onClick={() => {
+                          setChatContext('project');
+                          if (!selectedChatProjectId && availableProjects.length > 0) {
+                            setSelectedChatProjectId(String(availableProjects[0].id));
+                          }
+                        }}
+                        style={{
+                          background: chatContext === 'project' ? '#262626' : 'transparent',
+                          color: chatContext === 'project' ? '#fff' : '#888',
+                          border: 'none', padding: '5px 10px', borderRadius: '6px', cursor: 'pointer', fontSize: '11px', fontWeight: '500'
+                        }}
+                      >
+                        Projetos 🚀
+                      </button>
+                    </div>
+                  )}
 
                   {/* Conteúdo dinâmico da Aba */}
                   {activeChatRoom ? (
@@ -3290,6 +3473,82 @@ const fetchWeekStatus = async () => {
                 isAdmin ? (
                   /* Vista Flowstate Exclusiva para ADMIN */
                   <div className="space-y-6">
+
+                    {/* Alertas de Tarefas Atrasadas e Em Risco */}
+                    <div className="flowstate-alerts-container" style={{ marginBottom: '24px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+
+                      {/* Secção de Tarefas Atrasadas (Dark & Lowkey) */}
+                      <div style={{ border: '1px solid #2a2a2a', background: '#141414', borderRadius: '12px', padding: '16px' }}>
+                        <h4 style={{ color: '#ff4d4f', fontSize: '12px', textTransform: 'uppercase', letterSpacing: '0.5px', margin: '0 0 12px 0' }}>
+                          🚨 Tarefas Atrasadas ({tarefasAtrasadas.length})
+                        </h4>
+                        {tarefasAtrasadas.length === 0 ? (
+                          <p style={{ fontSize: '13px', color: '#666', margin: 0 }}>Sem tarefas atrasadas. Tudo em dia.</p>
+                        ) : (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                            {tarefasAtrasadas.map(t => (
+                              <div
+                                key={t.id}
+                                onClick={() => { setSelectedViewTicket(t); setShowViewModal(true); }}
+                                style={{
+                                  background: '#1a1a1a',
+                                  border: '1px solid #262626',
+                                  padding: '10px 12px',
+                                  borderRadius: '8px',
+                                  cursor: 'pointer',
+                                  display: 'flex',
+                                  justifyContent: 'space-between',
+                                  alignItems: 'center',
+                                  transition: 'border-color 0.2s'
+                                }}
+                                onMouseEnter={(e) => e.currentTarget.style.borderColor = '#ff4d4f'}
+                                onMouseLeave={(e) => e.currentTarget.style.borderColor = '#262626'}
+                              >
+                                <span style={{ color: '#e0e0e0', fontSize: '13px', fontWeight: '500' }}>{t.title}</span>
+                                <span style={{ color: '#ff4d4f', fontSize: '12px' }}>{t.due_date ? new Date(t.due_date).toLocaleDateString() : ''}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Secção de Tarefas em Risco (Dark & Lowkey) */}
+                      <div style={{ border: '1px solid #2a2a2a', background: '#141414', borderRadius: '12px', padding: '16px' }}>
+                        <h4 style={{ color: '#faad14', fontSize: '12px', textTransform: 'uppercase', letterSpacing: '0.5px', margin: '0 0 12px 0' }}>
+                          ⚠️ Em Risco de Derrapagem ({tarefasEmRisco.length})
+                        </h4>
+                        {tarefasEmRisco.length === 0 ? (
+                          <p style={{ fontSize: '13px', color: '#666', margin: 0 }}>Nenhuma tarefa em risco crítico de prazo.</p>
+                        ) : (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                            {tarefasEmRisco.map(t => (
+                              <div
+                                key={t.id}
+                                onClick={() => { setSelectedViewTicket(t); setShowViewModal(true); }}
+                                style={{
+                                  background: '#1a1a1a',
+                                  border: '1px solid #262626',
+                                  padding: '10px 12px',
+                                  borderRadius: '8px',
+                                  cursor: 'pointer',
+                                  display: 'flex',
+                                  justifyContent: 'space-between',
+                                  alignItems: 'center',
+                                  transition: 'border-color 0.2s'
+                                }}
+                                onMouseEnter={(e) => e.currentTarget.style.borderColor = '#faad14'}
+                                onMouseLeave={(e) => e.currentTarget.style.borderColor = '#262626'}
+                              >
+                                <span style={{ color: '#e0e0e0', fontSize: '13px', fontWeight: '500' }}>{t.title}</span>
+                                <span style={{ color: '#faad14', fontSize: '12px' }}>Crítico</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+
+                    </div>
+
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
 
                       {/* 1. Visão Global de Projetos com Acordeão (Expandir para ver tarefas) */}
@@ -3454,6 +3713,82 @@ const fetchWeekStatus = async () => {
                 ) : isOperationsManagerRole ? (
                   /* Vista Flowstate Exclusiva para Gestor de Operações */
                   <div className="space-y-6">
+
+                    {/* Alertas de Tarefas Atrasadas e Em Risco */}
+                    <div className="flowstate-alerts-container" style={{ marginBottom: '24px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+
+                      {/* Secção de Tarefas Atrasadas (Dark & Lowkey) */}
+                      <div style={{ border: '1px solid #2a2a2a', background: '#141414', borderRadius: '12px', padding: '16px' }}>
+                        <h4 style={{ color: '#ff4d4f', fontSize: '12px', textTransform: 'uppercase', letterSpacing: '0.5px', margin: '0 0 12px 0' }}>
+                          🚨 Tarefas Atrasadas ({tarefasAtrasadas.length})
+                        </h4>
+                        {tarefasAtrasadas.length === 0 ? (
+                          <p style={{ fontSize: '13px', color: '#666', margin: 0 }}>Sem tarefas atrasadas. Tudo em dia.</p>
+                        ) : (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                            {tarefasAtrasadas.map(t => (
+                              <div
+                                key={t.id}
+                                onClick={() => { setSelectedViewTicket(t); setShowViewModal(true); }}
+                                style={{
+                                  background: '#1a1a1a',
+                                  border: '1px solid #262626',
+                                  padding: '10px 12px',
+                                  borderRadius: '8px',
+                                  cursor: 'pointer',
+                                  display: 'flex',
+                                  justifyContent: 'space-between',
+                                  alignItems: 'center',
+                                  transition: 'border-color 0.2s'
+                                }}
+                                onMouseEnter={(e) => e.currentTarget.style.borderColor = '#ff4d4f'}
+                                onMouseLeave={(e) => e.currentTarget.style.borderColor = '#262626'}
+                              >
+                                <span style={{ color: '#e0e0e0', fontSize: '13px', fontWeight: '500' }}>{t.title}</span>
+                                <span style={{ color: '#ff4d4f', fontSize: '12px' }}>{t.due_date ? new Date(t.due_date).toLocaleDateString() : ''}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Secção de Tarefas em Risco (Dark & Lowkey) */}
+                      <div style={{ border: '1px solid #2a2a2a', background: '#141414', borderRadius: '12px', padding: '16px' }}>
+                        <h4 style={{ color: '#faad14', fontSize: '12px', textTransform: 'uppercase', letterSpacing: '0.5px', margin: '0 0 12px 0' }}>
+                          ⚠️ Em Risco de Derrapagem ({tarefasEmRisco.length})
+                        </h4>
+                        {tarefasEmRisco.length === 0 ? (
+                          <p style={{ fontSize: '13px', color: '#666', margin: 0 }}>Nenhuma tarefa em risco crítico de prazo.</p>
+                        ) : (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                            {tarefasEmRisco.map(t => (
+                              <div
+                                key={t.id}
+                                onClick={() => { setSelectedViewTicket(t); setShowViewModal(true); }}
+                                style={{
+                                  background: '#1a1a1a',
+                                  border: '1px solid #262626',
+                                  padding: '10px 12px',
+                                  borderRadius: '8px',
+                                  cursor: 'pointer',
+                                  display: 'flex',
+                                  justifyContent: 'space-between',
+                                  alignItems: 'center',
+                                  transition: 'border-color 0.2s'
+                                }}
+                                onMouseEnter={(e) => e.currentTarget.style.borderColor = '#faad14'}
+                                onMouseLeave={(e) => e.currentTarget.style.borderColor = '#262626'}
+                              >
+                                <span style={{ color: '#e0e0e0', fontSize: '13px', fontWeight: '500' }}>{t.title}</span>
+                                <span style={{ color: '#faad14', fontSize: '12px' }}>Crítico</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+
+                    </div>
+
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
 
                       {/* 1. Alertas de Desvio de Horas (Estimated vs Tracked) */}
@@ -3484,7 +3819,6 @@ const fetchWeekStatus = async () => {
                               .map((t, idx) => {
                                 const est = Number(t.estimated_hours) || 0;
                                 const trk = Number(t.tracked_hours) || 0;
-                                const excess = trk - est;
 
                                 return (
                                   <div
@@ -3497,11 +3831,11 @@ const fetchWeekStatus = async () => {
                                   >
                                     <div className="flex justify-between items-start">
                                       <span className="font-bold text-zinc-200 truncate max-w-[180px]">{t.title}</span>
-                                      <span className="text-[10px] font-mono text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded">+{excess}h excesso</span>
+                                      <span className="text-[10px] font-mono text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded">{formatarExcessoHHMM(trk - est)} excesso</span>
                                     </div>
                                     <div className="flex justify-between text-[11px] font-mono text-zinc-400">
-                                      <span>Estimado: {est}h</span>
-                                      <span className="text-emerald-400 font-bold">Gasto: {trk}h</span>
+                                      <span>Estimado: {formatToHHMM(est)}</span>
+                                      <span className="text-emerald-400 font-bold">Gasto: {formatToHHMM(trk)}</span>
                                     </div>
                                     <div className="w-full bg-zinc-800 h-1.5 rounded-full overflow-hidden">
                                       <div className="bg-emerald-500 h-full rounded-full" style={{ width: '100%' }}></div>
@@ -5099,7 +5433,7 @@ const fetchWeekStatus = async () => {
                   </div>
 
                   <div className="space-y-3">
-                    {availableTickets
+                    {baseConhecimento
                       .filter(t => t.status && ['done', 'concluído', 'concluido'].includes(t.status.toLowerCase()))
                       .filter(t => typeFilter === '' || t.task_type === typeFilter)
                       .sort((a, b) => {
@@ -5404,6 +5738,18 @@ const fetchWeekStatus = async () => {
                                           <Trash2 className="w-3.5 h-3.5" />
                                         </button>
                                       )}
+
+                                      {/* 8. Remover das Listas Ativas (📚) — apenas em tarefas concluídas */}
+                                      {isDone && (
+                                        <button
+                                          type="button"
+                                          onClick={(e) => { e.stopPropagation(); handleOcultarDasAtivas(ticket.id); }}
+                                          title="Remover das listas ativas"
+                                          className="p-1.5 bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-zinc-200 rounded-md transition cursor-pointer"
+                                        >
+                                          📚
+                                        </button>
+                                      )}
                                     </div>
                                   </div>
 
@@ -5457,15 +5803,31 @@ const fetchWeekStatus = async () => {
                                               <span className="text-zinc-500">{formatToHHMM(ticket.estimated_hours)}</span>
                                             </span>
 
-                                            {ticket.due_date ? (
-                                              <span className={`flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-mono font-medium ${
-                                                ticket.due_date.split('T')[0] < todayStr && ticket.status !== 'Done'
-                                                  ? 'bg-red-500/10 text-red-400 border border-red-500/30'
-                                                  : 'bg-zinc-950 text-zinc-300 border border-zinc-800'
-                                              }`}>
-                                                📅 {ticket.due_date.split('T')[0]}
-                                              </span>
-                                            ) : (
+                                            {ticket.due_date ? (() => {
+                                              const dueDateStr = ticket.due_date.includes('T') ? ticket.due_date.split('T')[0] : ticket.due_date;
+                                              const [dy, dm, dd] = dueDateStr.split('-').map(Number);
+                                              const [ty, tm, td] = todayStr.split('-').map(Number);
+                                              const dueDateObj = new Date(dy, dm - 1, dd);
+                                              const hojeObj = new Date(ty, tm - 1, td);
+                                              const diasRestantes = Math.round((dueDateObj - hojeObj) / (1000 * 60 * 60 * 24));
+                                              return (
+                                                <span
+                                                  className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-mono font-medium"
+                                                  style={{
+                                                    background: percent >= 100 ? '#065F46' : (diasRestantes <= 0 ? '#7F1D1D' : '#374151'),
+                                                    color: '#FFF'
+                                                  }}
+                                                >
+                                                  ⏳ {percent >= 100
+                                                    ? `Concluído`
+                                                    : diasRestantes < 0
+                                                      ? `Atrasado ${Math.abs(diasRestantes)} dias`
+                                                      : diasRestantes === 0
+                                                        ? `Prazo: Hoje`
+                                                        : `Faltam ${diasRestantes} dias`}
+                                                </span>
+                                              );
+                                            })() : (
                                               <span className="text-[10px] text-zinc-600 italic">Sem prazo</span>
                                             )}
                                           </div>
@@ -5641,6 +6003,15 @@ const fetchWeekStatus = async () => {
                                   <Trash2 className="w-4 h-4" />
                                 </button>
                               )}
+                              {isDone && (
+                                <button
+                                  onClick={() => handleOcultarDasAtivas(ticket.id)}
+                                  className="p-2 text-zinc-400 hover:text-zinc-200 bg-zinc-950 border border-zinc-800 rounded-lg transition"
+                                  title="Remover das listas ativas"
+                                >
+                                  📚
+                                </button>
+                              )}
                             </div>
                           </div>
                         );
@@ -5777,17 +6148,28 @@ const fetchWeekStatus = async () => {
                         {showNewChatView ? 'Seleciona os participantes' : 'Conversas de equipa e projetos'}
                       </p>
                     </div>
-                    <button 
-                      onClick={() => {
-                        setShowNewChatView(!showNewChatView);
-                        setSelectedUserIdsForNewChat([]);
-                        setGroupChatName('');
-                        setNewChatProjectId(selectedChatProjectId || '');
-                      }}
-                      className={`text-xs px-2.5 py-1.5 rounded-lg transition ${showNewChatView ? 'bg-zinc-800 text-zinc-300' : 'bg-blue-600 hover:bg-blue-500 text-white'}`}
-                    >
-                      {showNewChatView ? '✕ Cancelar' : '+ Nova'}
-                    </button>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={handleRefreshRoomsSilencioso}
+                        disabled={isRefreshingRooms}
+                        className={`p-1.5 border rounded-lg transition ${isRefreshingRooms ? 'bg-zinc-800 border-zinc-700 text-blue-400' : 'bg-zinc-900 hover:bg-zinc-800 border-zinc-800 text-zinc-300'}`}
+                        title="Atualizar salas"
+                        type="button"
+                      >
+                        <RefreshCw className={`w-3.5 h-3.5 ${isRefreshingRooms ? 'animate-spin' : ''}`} />
+                      </button>
+                      <button 
+                        onClick={() => {
+                          setShowNewChatView(!showNewChatView);
+                          setSelectedUserIdsForNewChat([]);
+                          setGroupChatName('');
+                          setNewChatProjectId(selectedChatProjectId || '');
+                        }}
+                        className={`text-xs px-2.5 py-1.5 rounded-lg transition ${showNewChatView ? 'bg-zinc-800 text-zinc-300' : 'bg-blue-600 hover:bg-blue-500 text-white'}`}
+                      >
+                        {showNewChatView ? '✕ Cancelar' : '+ Nova'}
+                      </button>
+                    </div>
                   </div>
 
                   {/* SELETOR DE CONTEXTO: CONVERSAS DIRETAS VS PROJETOS */}
@@ -5842,15 +6224,7 @@ const fetchWeekStatus = async () => {
                             <>
                               <button
                                 type="button"
-                                onClick={async () => {
-                                  try {
-                                    const headers = { Authorization: `Bearer ${token}` };
-                                    await axios.post(`${API_URL}/chat/projects/${selectedChatProjectId}/sync-general?current_user_id=${currentUserInfo.id}`, {}, { headers });
-                                    fetchChatRooms();
-                                  } catch (err) {
-                                    alert("Erro ao sincronizar canal geral do projeto.");
-                                  }
-                                }}
+                                onClick={() => handleSyncChatGeral(selectedChatProjectId)}
                                 className="p-1.5 bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-300 rounded-xl text-xs transition"
                                 title="Sincronizar canal geral do projeto"
                               >
@@ -7322,9 +7696,21 @@ const fetchWeekStatus = async () => {
                   <button
                     type="button"
                     onClick={handleGenerateAI}
-                    className="flex items-center gap-1.5 text-[11px] font-medium bg-purple-500/10 hover:bg-purple-500/20 text-purple-400 border border-purple-500/30 px-2.5 py-1 rounded-lg transition"
+                    disabled={gerandoAI}
+                    className={`flex items-center gap-1.5 text-[11px] font-medium px-2.5 py-1 rounded-lg transition border ${
+                      gerandoAI
+                        ? 'bg-purple-500/5 text-purple-300/60 border-purple-500/20 cursor-not-allowed'
+                        : 'bg-purple-500/10 hover:bg-purple-500/20 text-purple-400 border-purple-500/30'
+                    }`}
                   >
-                    ✨ Gerar com IA
+                    {gerandoAI ? (
+                      <>
+                        <span className="w-3 h-3 border-2 border-purple-400/40 border-t-purple-400 rounded-full animate-spin"></span>
+                        A gerar relatório com IA...
+                      </>
+                    ) : (
+                      <>✨ Gerar com IA</>
+                    )}
                   </button>
                 </div>
                 <textarea 
@@ -7333,8 +7719,9 @@ const fetchWeekStatus = async () => {
                   rows="4"
                   maxLength="500"
                   required
-                  placeholder="Clica em 'Gerar com IA' ou descreve o trabalho realizado..."
-                  className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-sm text-zinc-100 focus:outline-none focus:border-zinc-700 resize-none"
+                  disabled={gerandoAI}
+                  placeholder={gerandoAI ? "A gerar relatório com IA..." : "Clica em 'Gerar com IA' ou descreve o trabalho realizado..."}
+                  className={`w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-sm text-zinc-100 focus:outline-none focus:border-zinc-700 resize-none ${gerandoAI ? 'opacity-60 cursor-not-allowed' : ''}`}
                 />
                 <div className="flex justify-between items-center mt-1 text-[11px] text-zinc-500">
                   <span>{finalDesc.length}/500 caracteres (mínimo 10)</span>
@@ -9716,7 +10103,41 @@ const fetchWeekStatus = async () => {
             </div>
 
             {/* Rodapé */}
-            <div className="flex justify-end pt-4 mt-4 border-t border-zinc-800">
+            <div className="flex items-center justify-between pt-4 mt-4 border-t border-zinc-800">
+              {(() => {
+                const isDone = selectedViewTicket.status && ['done', 'concluído', 'concluido'].includes(selectedViewTicket.status.toLowerCase());
+                const isOverdue = !isDone && selectedViewTicket.due_date && new Date(selectedViewTicket.due_date) < agoraFlowstate;
+                if (!isOverdue) return <div />;
+                return (
+                  <button
+                    onClick={() => handleNotificarUtilizador(selectedViewTicket)}
+                    style={{
+                      background: '#1a1a1a',
+                      border: '1px solid #333',
+                      color: '#ff4d4f',
+                      padding: '8px 14px',
+                      borderRadius: '6px',
+                      cursor: 'pointer',
+                      fontSize: '13px',
+                      fontWeight: '500',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '6px',
+                      transition: 'all 0.2s'
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.borderColor = '#ff4d4f';
+                      e.currentTarget.style.background = '#220f0f';
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.borderColor = '#333';
+                      e.currentTarget.style.background = '#1a1a1a';
+                    }}
+                  >
+                    🚨 Enviar Aviso de Atraso
+                  </button>
+                );
+              })()}
               <button
                 onClick={() => setShowViewModal(false)}
                 className="bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-medium px-4 py-2 rounded-xl transition"
