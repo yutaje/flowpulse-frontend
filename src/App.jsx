@@ -785,6 +785,7 @@ const fetchWeekStatus = async () => {
   const [newProjectId, setNewProjectId] = useState('');
   const [newClientId, setNewClientId] = useState(''); 
   const [newAssignedTo, setNewAssignedTo] = useState('');
+  const [newTeamId, setNewTeamId] = useState('');
   const [estHours, setEstHours] = useState(1);
   const [estMinutes, setEstMinutes] = useState(30);
   const [newDueDate, setNewDueDate] = useState('');
@@ -2372,7 +2373,8 @@ const fetchWeekStatus = async () => {
         project_id: newProjectId ? Number(newProjectId) : null,
         client_id: newClientId ? Number(newClientId) : null,
         assigned_to_id: newAssignedTo ? Number(newAssignedTo) : null,
-        estimated_hours: Number(estHours) + (Number(estMinutes) / 60),
+        team_id: newTeamId ? Number(newTeamId) : null,
+        estimated_hours: (estHours !== '' && !isNaN(estHours)) ? Number(estHours) + (Number(estMinutes) / 60) : 0.0,
         due_date: newDueDate ? newDueDate : null,
         start_date: newStartDate ? newStartDate : null,
         blocked_by_id: newBlockedById ? Number(newBlockedById) : null
@@ -8611,51 +8613,70 @@ const fetchWeekStatus = async () => {
               )}
 
               <div className="grid grid-cols-2 gap-3">
-                {isManagerOrAdmin && (
-                  <div>
-                    <label className="block text-xs font-medium text-zinc-400 mb-1">Atribuir a</label>
-                    <select value={newAssignedTo} onChange={e => setNewAssignedTo(e.target.value)} className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-sm text-zinc-100 focus:outline-none">
-                      <option value="">Não atribuído</option>
-                      {usersList.map(u => <option key={u.id} value={u.id}>{getUserDisplayName(u)}</option>)}
-                    </select>
-                  </div>
-                )}
-                <div className={!isManagerOrAdmin ? "col-span-2" : ""}>
-                  <label className="block text-xs font-medium text-zinc-400 mb-1">
-                    Horas Estimadas <span className="text-red-400">*</span>
-                  </label>
-                  <div className="grid grid-cols-2 gap-2">
-                    {/* Campo das Horas */}
-                    <div className="relative">
-                      <input
-                        type="number"
-                        min="0"
-                        max="999"
-                        value={estHours}
-                        onChange={e => setEstHours(Math.max(0, parseInt(e.target.value) || 0))}
-                        disabled={isSubtaskCollaborator}
-                        className={`w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-sm text-zinc-100 outline-none pr-8 ${
-                          isSubtaskCollaborator ? 'opacity-70 cursor-not-allowed bg-zinc-900/50' : 'focus:border-blue-500'
-                        }`}
-                      />
-                      <span className="absolute right-3 top-2 text-xs text-zinc-500 font-mono">h</span>
-                    </div>
+                <div>
+                  {/* Campo para atribuir a um Membro */}
+                  <label className="block text-xs font-medium text-zinc-400 mb-1.5 uppercase tracking-wider">Atribuir a Utilizador</label>
+                  <select
+                    value={newAssignedTo}
+                    onChange={e => setNewAssignedTo(e.target.value)}
+                    className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-2.5 text-sm text-zinc-100 focus:outline-none cursor-pointer"
+                  >
+                    <option value="">Nenhum (Livre para agarrar)</option>
+                    {usersList.map(u => (
+                      <option key={u.id} value={u.id}>{u.name || u.email}</option>
+                    ))}
+                  </select>
+                </div>
 
-                    {/* Dropdown de Minutos Exatos */}
-                    <select
-                      value={estMinutes}
-                      onChange={e => setEstMinutes(Number(e.target.value))}
+                {/* Campo para atribuir a uma Equipa */}
+                <div>
+                  <label className="block text-xs font-medium text-zinc-400 mb-1.5 uppercase tracking-wider">Atribuir a Equipa</label>
+                  <select
+                    value={newTeamId || ''}
+                    onChange={e => setNewTeamId(e.target.value)}
+                    className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-2.5 text-sm text-zinc-100 focus:outline-none cursor-pointer"
+                  >
+                    <option value="">Nenhuma equipa específica</option>
+                    {teams.map(t => (
+                      <option key={t.id} value={t.id}>{t.name}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-zinc-400 mb-1.5 uppercase tracking-wider">Horas Estimadas (Opcional)</label>
+                <div className="grid grid-cols-2 gap-2">
+                  {/* Campo das Horas */}
+                  <div className="relative">
+                    <input
+                      type="number"
+                      min="0"
+                      max="999"
+                      value={estHours}
+                      onChange={e => setEstHours(Math.max(0, parseInt(e.target.value) || 0))}
                       disabled={isSubtaskCollaborator}
-                      className={`w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-sm text-zinc-100 outline-none ${
+                      className={`w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-sm text-zinc-100 outline-none pr-8 ${
                         isSubtaskCollaborator ? 'opacity-70 cursor-not-allowed bg-zinc-900/50' : 'focus:border-blue-500'
                       }`}
-                    >
-                      <option value={0}>00 min</option>
-                      <option value={15}>15 min</option>
-                      <option value={30}>30 min</option>
-                      <option value={45}>45 min</option>
-                    </select>
+                    />
+                    <span className="absolute right-3 top-2 text-xs text-zinc-500 font-mono">h</span>
                   </div>
+
+                  {/* Dropdown de Minutos Exatos */}
+                  <select
+                    value={estMinutes}
+                    onChange={e => setEstMinutes(Number(e.target.value))}
+                    disabled={isSubtaskCollaborator}
+                    className={`w-full bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-sm text-zinc-100 outline-none ${
+                      isSubtaskCollaborator ? 'opacity-70 cursor-not-allowed bg-zinc-900/50' : 'focus:border-blue-500'
+                    }`}
+                  >
+                    <option value={0}>00 min</option>
+                    <option value={15}>15 min</option>
+                    <option value={30}>30 min</option>
+                    <option value={45}>45 min</option>
+                  </select>
                 </div>
               </div>
               <div className="grid grid-cols-2 gap-3">
