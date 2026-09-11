@@ -4,7 +4,7 @@ import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { 
   CheckCircle2, Clock, AlertCircle, Plus, Search, 
-  LogOut, ShieldAlert, LayoutDashboard, Ticket as TicketIcon, Trash2, Edit3, Play, Pause, Hand, Square, MessageSquare, FolderPlus, RefreshCw, Calendar, Users, Crown, Folder, UserCheck, Kanban, ListFilter, ArrowUpDown, ChevronLeft, ChevronRight, Settings, BarChart3, Bell, Check, Download, Building2, Phone, Mail, BarChart, X, Upload, Paperclip, Star 
+  LogOut, ShieldAlert, Shield, LayoutDashboard, Ticket as TicketIcon, Trash2, Edit3, Play, Pause, Hand, Square, MessageSquare, FolderPlus, RefreshCw, Calendar, Users, Crown, Folder, UserCheck, Kanban, ListFilter, ArrowUpDown, ChevronLeft, ChevronRight, Settings, BarChart3, Bell, Check, Download, Building2, Phone, Mail, BarChart, X, Upload, Paperclip, Star 
 } from 'lucide-react';
 
 const API_URL = 'http://127.0.0.1:8000'; 
@@ -689,6 +689,8 @@ const fetchWeekStatus = async () => {
 
   const [activeWorkers, setActiveWorkers] = useState([]);
   const [currentUserInfo, setCurrentUserInfo] = useState({ id: null, role: 'Técnico', name: '', email: '' });
+  const [permissionsList, setPermissionsList] = useState([]);
+  const [selectedRoleForPerm, setSelectedRoleForPerm] = useState('Admin');
 
   // Estados do Perfil / Definições
   const [settingsName, setSettingsName] = useState('');
@@ -1356,6 +1358,51 @@ const fetchWeekStatus = async () => {
       fetchPendingFeedbacks();
     }
   }, [token]);
+
+  // Função para buscar as permissões do backend
+  const fetchPermissions = async () => {
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      const res = await axios.get(`${API_URL}/permissions`, { headers });
+      setPermissionsList(res.data);
+    } catch (err) {
+      console.error("Erro ao carregar permissões:", err);
+    }
+  };
+
+  // Carrega a matriz de permissões (apenas relevante para Admins, mas o pedido é seguro para qualquer utilizador autenticado)
+  useEffect(() => {
+    if (token) {
+      fetchPermissions();
+    }
+  }, [token]);
+
+  // Função para atualizar uma permissão específica
+  const handleUpdatePermission = async (role, module, field, value) => {
+    // Encontrar ou criar o objeto localmente para envio
+    const currentPerm = permissionsList.find(p => p.role === role && p.module === module) || {
+      role,
+      module,
+      can_view: true,
+      can_create: false,
+      can_edit: false,
+      can_delete: false,
+      can_approve: false
+    };
+
+    const payload = {
+      ...currentPerm,
+      [field]: value
+    };
+
+    try {
+      const headers = { Authorization: `Bearer ${token}` };
+      await axios.put(`${API_URL}/permissions`, payload, { headers });
+      fetchPermissions(); // Recarregar lista atualizada
+    } catch (err) {
+      alert("Erro ao atualizar permissão: " + (err.response?.data?.detail || err.message));
+    }
+  };
 
   const markNotifAsRead = async (id) => {
     try {
@@ -3166,6 +3213,12 @@ const fetchWeekStatus = async () => {
             </button>
           )}
 
+          {isAdmin && (
+            <button onClick={() => changeTab('permissions')} className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition border ${activeTab === 'permissions' ? 'bg-amber-500/10 text-amber-400 border-amber-500/30 shadow-sm' : 'border-transparent text-amber-500/70 hover:text-amber-400 hover:bg-amber-500/10'}`}>
+              <Shield className="w-4 h-4" /> Gestão de Permissões
+            </button>
+          )}
+
           <div className="pt-4 mt-2 border-t border-zinc-800/80">
             <button onClick={() => changeTab('settings')} className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition ${activeTab === 'settings' ? 'bg-zinc-800 text-zinc-100 shadow-sm' : 'text-zinc-400 hover:text-zinc-100 hover:bg-zinc-850'}`}>
               <Settings className="w-4 h-4" /> Definições
@@ -4800,6 +4853,71 @@ const fetchWeekStatus = async () => {
                     </tbody>
                   </table>
                 </div>
+              </div>
+            </div>
+          )}
+
+          {/* GESTÃO DE PERMISSÕES */}
+          {activeTab === 'permissions' && isAdmin && (
+            <div className="max-w-6xl mx-auto py-4 space-y-6">
+              {/* Seletor de Cargo no Topo */}
+              <div className="flex justify-between items-center bg-zinc-900/60 p-4 rounded-xl border border-zinc-800">
+                <div>
+                  <h3 className="text-lg font-semibold text-zinc-100">Permissões do Cargo</h3>
+                  <p className="text-xs text-zinc-400">Ativa ou desativa as capacidades específicas para este cargo na aplicação.</p>
+                </div>
+                <select 
+                  value={selectedRoleForPerm} 
+                  onChange={e => setSelectedRoleForPerm(e.target.value)}
+                  className="bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-2 text-sm text-zinc-100 focus:outline-none cursor-pointer"
+                >
+                  {Array.from(new Set([
+                    ...ROLES_LIST.map(r => r.value),
+                    ...permissionsList.map(p => p.role),
+                    ...usersList.map(u => u.role)
+                  ].filter(Boolean)))
+                  .filter(roleName => roleName.toLowerCase() !== 'member')
+                  .map(roleName => (
+                    <option key={roleName} value={roleName}>
+                      {ROLES_LIST.find(r => r.value === roleName)?.label || roleName}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Lista Vertical Estilo Discord */}
+              <div className="space-y-4">
+                {[
+                  { key: 'can_create_tasks', title: 'Criar Tarefas', desc: 'Permite criar novas tarefas e definir prazos.' },
+                  { key: 'can_assign_teams', title: 'Atribuir a Equipas e Membros', desc: 'Permite delegar tarefas a outros colaboradores ou equipas.' },
+                  { key: 'can_use_timers', title: 'Gerir Cronómetros', desc: 'Permite iniciar e parar o registo de horas em tarefas.' },
+                  { key: 'can_approve_reports', title: 'Aprovar Relatórios e Subtarefas', desc: 'Permite validar ou recusar submissões de campo de outros membros.' },
+                  { key: 'can_use_ai', title: 'Utilizar Ferramentas de IA', desc: 'Permite gerar relatórios automáticos e recomendações de foco via Gemini.' },
+                  { key: 'can_delete_records', title: 'Apagar Registos', desc: 'Permite eliminar tarefas, projetos ou dados do sistema.' }
+                ].map(item => {
+                  // Validação local do estado para cada ação
+                  const perm = permissionsList.find(p => p.role === selectedRoleForPerm && p.module === item.key) || { can_view: false };
+
+                  return (
+                    <div key={item.key} className="flex items-center justify-between p-4 bg-zinc-900/40 border border-zinc-800/80 rounded-xl hover:border-zinc-700 transition-all">
+                      <div className="space-y-0.5 pr-4">
+                        <h4 className="text-sm font-medium text-zinc-200">{item.title}</h4>
+                        <p className="text-xs text-zinc-400">{item.desc}</p>
+                      </div>
+                      
+                      {/* Interruptor Estilo Discord */}
+                      <label className="relative inline-flex items-center cursor-pointer">
+                        <input 
+                          type="checkbox" 
+                          checked={perm.can_view} 
+                          onChange={e => handleUpdatePermission(selectedRoleForPerm, item.key, 'can_view', e.target.checked)}
+                          className="sr-only peer"
+                        />
+                        <div className="w-11 h-6 bg-zinc-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-zinc-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-amber-500"></div>
+                      </label>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           )}
